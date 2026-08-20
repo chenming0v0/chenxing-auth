@@ -79,11 +79,16 @@ export function Select({
     const rect = trigger.getBoundingClientRect()
     const spaceBelow = window.innerHeight - rect.bottom - GAP - VIEWPORT_MARGIN
     const spaceAbove = rect.top - GAP - VIEWPORT_MARGIN
-    const flip = spaceBelow < MIN_POPUP_HEIGHT && spaceAbove > spaceBelow
+    const availableBelow = Math.max(0, spaceBelow)
+    const availableAbove = Math.max(0, spaceAbove)
+    const flip = availableBelow < MIN_POPUP_HEIGHT && availableAbove > availableBelow
+    const available = flip ? availableAbove : availableBelow
     setPosition({
-      left: rect.left,
-      width: rect.width,
-      maxHeight: Math.max(MIN_POPUP_HEIGHT, Math.min(MAX_POPUP_HEIGHT, flip ? spaceAbove : spaceBelow)),
+      left: Math.max(VIEWPORT_MARGIN, Math.min(rect.left, window.innerWidth - rect.width - VIEWPORT_MARGIN)),
+      width: Math.min(rect.width, window.innerWidth - VIEWPORT_MARGIN * 2),
+      // Short viewports may have less than MIN_POPUP_HEIGHT available. Never let
+      // the popup exceed the viewport just to satisfy the preferred row count.
+      maxHeight: Math.max(1, Math.min(MAX_POPUP_HEIGHT, available)),
       ...(flip ? { bottom: window.innerHeight - rect.top + GAP } : { top: rect.bottom + GAP }),
     })
   }, [])
@@ -269,7 +274,7 @@ export function Select({
                   key={option.value}
                   id={optionId(index)}
                   role="option"
-                  aria-selected={index === activeIndex}
+                  aria-selected={option.value === value}
                   aria-disabled={option.disabled || undefined}
                   data-index={index}
                   className={[

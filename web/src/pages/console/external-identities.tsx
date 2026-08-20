@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { apiFetch, type ExternalIdentity, type ExternalIdentityListResponse, type PublicExternalProvider } from '../../api'
+import { useDrawerFocus } from '../../components/drawer'
 import { Badge, Button, HudPanel, Icon, PasswordField } from '../../components/ui'
 import type { MessageTone } from './profile-avatar'
 
@@ -23,11 +24,13 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
   const [identities, setIdentities] = useState<ExternalIdentity[]>([])
   const [providers, setProviders] = useState<PublicExternalProvider[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [unlinking, setUnlinking] = useState<ExternalIdentity | null>(null)
   const [password, setPassword] = useState('')
 
   async function load(): Promise<void> {
     setLoading(true)
+    setLoadError(null)
     try {
       const [identityResponse, providerResponse] = await Promise.all([
         apiFetch<ExternalIdentityListResponse>('/api/v1/auth/external-identities'),
@@ -36,6 +39,7 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
       setIdentities(Array.isArray(identityResponse.items) ? identityResponse.items : [])
       setProviders(providerResponse.filter(isProvider))
     } catch (error) {
+      setLoadError(error instanceof Error ? error.message : '外部账户状态加载失败。')
       onNotice({ text: error instanceof Error ? error.message : '外部账户状态加载失败。', tone: 'warning' })
     } finally {
       setLoading(false)
@@ -74,7 +78,8 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
     onNotice(null)
     try {
       await apiFetch<void>(`/api/v1/auth/external-identities/${encodeURIComponent(identity.provider)}`, {
-        method: 'DELETE', body: JSON.stringify({ password }),
+        method: 'DELETE',
+        redirectOn401: false, body: JSON.stringify({ password }),
       })
       setIdentities((current) => current.filter((item) => item.provider !== identity.provider))
       setUnlinking(null)
@@ -140,7 +145,14 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
         ))}
       </div>
 
-      {!loading && bindings.length === 0 ? (
+      {loadError ? (
+        <div className="mt-4 flex items-start gap-2 border-t border-[var(--chenxing-border)] pt-4">
+          <Icon name="circle-alert" size={16} className="mt-0.5 shrink-0 text-[var(--chenxing-warning)]" />
+          <p className="chenxing-caption">登录身份暂时不可用。{loadError} <button type="button" className="chenxing-link ml-2" onClick={() => void load()}>重试</button></p>
+        </div>
+      ) : null}
+
+      {!loading && !loadError && bindings.length === 0 ? (
         <div className="mt-4 flex items-start gap-2 border-t border-[var(--chenxing-border)] pt-4">
           <Icon name="info" size={16} className="mt-0.5 shrink-0 text-[var(--chenxing-muted-foreground)]" />
           <p className="chenxing-caption">管理员尚未启用其他登录身份。启用新的 OAuth/OIDC 提供方后，本列表会自动扩展。</p>
@@ -214,15 +226,17 @@ function UnlinkDialog({ identity, password, busy, onPassword, onCancel, onConfir
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const containerRef = useDrawerFocus(onCancel, busy)
+
   return (
-    <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-black/70 p-4" role="presentation">
-      <HudPanel as="section" role="dialog" aria-modal="true" aria-labelledby="unlink-external-title" className="relative z-[var(--chenxing-z-dialog)] w-full max-w-md">
+    <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-black/70 p-4" role="presentation" onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onCancel() }}>
+      <HudPanel ref={containerRef} as="section" role="dialog" aria-modal="true" aria-labelledby="unlink-external-title" aria-busy={busy || undefined} tabIndex={-1} className="relative z-[var(--chenxing-z-dialog)] w-full max-w-md">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-error)]">// Re-authentication</p>
             <h2 id="unlink-external-title" className="chenxing-h2 mt-2">解除 {identity.provider_name}</h2>
           </div>
-          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel}><Icon name="x" size={17} /></button>
+          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel} disabled={busy}><Icon name="x" size={17} /></button>
         </div>
         <p className="chenxing-caption mt-4">这是敏感安全操作。请输入当前密码确认身份，外部账户不会再用于登录。</p>
         <div className="mt-5"><PasswordField label="当前密码" autoComplete="current-password" value={password} onChange={(event) => onPassword(event.target.value)} /></div>

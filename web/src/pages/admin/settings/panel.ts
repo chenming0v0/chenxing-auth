@@ -89,7 +89,7 @@ const DRAFT_LEAVE_MESSAGE = '有未保存的设置修改，离开后这些修改
  * 工作区侧的未保存草稿离开守卫（#381）：dirty 为 true 时，
  * - SPA 路由跳转前用 window.confirm 拦截（navigate 的单例拦截器，见 router.tsx）；
  * - 刷新/关闭页面交给浏览器原生 beforeunload 提示（文案由浏览器决定，不可定制）。
- * 注意：浏览器前进/后退按钮直接触发 popstate、不经过 navigate，无法被这里拦截。
+ * 注意：浏览器前进/后退按钮会先恢复历史位置，再由 popstate 守卫询问；取消时回滚到原条目。
  */
 export function useDraftLeaveGuard(dirty: boolean) {
   useEffect(() => {

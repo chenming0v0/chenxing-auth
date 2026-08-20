@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
 import { apiFetch, ApiError, type SessionItem, type UserMe } from '../../api'
@@ -52,6 +52,7 @@ export function ConsoleProfile() {
      每加一条成功提示都得记得让文案命中那个子串，是等着出错的写法。 */
   const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
   const [busy, setBusy] = useState(false)
+  const profileRequestIdRef = useRef(0)
   /* 撤销在途的会话 id。与 AuthorizedApps 的 busyClientId 同款约定：
      null 表示无在途请求，非 null 期间所有撤销按钮禁用，防止快速连点并发 DELETE。 */
   const [busySessionId, setBusySessionId] = useState<number | null>(null)
@@ -71,6 +72,8 @@ export function ConsoleProfile() {
 
   async function updateProfile(event: FormEvent) {
     event.preventDefault()
+    if (busy) return
+    const requestId = ++profileRequestIdRef.current
     setNotice(null)
     const normalizedUsername = username.trim().toLowerCase()
     const usernameChanged = Boolean(user) && normalizedUsername !== user?.username
@@ -92,25 +95,30 @@ export function ConsoleProfile() {
     try {
       const updated = await apiFetch<UserMe>('/api/v1/auth/me', {
         method: 'PATCH',
+        redirectOn401: false,
         body: JSON.stringify({
           display_name: displayName.trim() || null,
           username: normalizedUsername,
           ...(usernameChanged ? { current_password: profilePassword } : {}),
         }),
       })
+      if (requestId !== profileRequestIdRef.current) return
       if (updated.username !== normalizedUsername) {
         warn('服务端返回的用户名与本次修改不一致，请刷新后重试。')
         return
       }
       await refresh()
+      if (requestId !== profileRequestIdRef.current) return
       setDisplayName(updated.display_name || '')
       setUsername(updated.username)
       setProfilePassword('')
       setShowProfileEditor(false)
       notify('账户资料已保存。', 'success')
     } catch (error) {
-      warn(error instanceof Error ? error.message : '资料保存失败。')
-    } finally { setBusy(false) }
+      if (requestId === profileRequestIdRef.current) warn(error instanceof Error ? error.message : '资料保存失败。')
+    } finally {
+      if (requestId === profileRequestIdRef.current) setBusy(false)
+    }
   }
 
   async function updatePassword(event: FormEvent) {
@@ -122,7 +130,7 @@ export function ConsoleProfile() {
     if (newPassword !== confirmPassword) { warn('两次输入的新密码不一致。'); return }
     setBusy(true)
     try {
-      await apiFetch<void>('/api/v1/auth/password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) })
+      await apiFetch<void>('/api/v1/auth/password', { method: 'POST', redirectOn401: false, body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) })
       clear()
       navigate('/login?returnTo=%2Fconsole%2Fprofile')
     } catch (error) {
@@ -200,7 +208,7 @@ export function ConsoleProfile() {
     setBusy(true)
     try {
       if (!emailChallengeId) {
-        const result = await apiFetch<{ challenge_id: string }>('/api/v1/auth/email-change/start', { method: 'POST', body: JSON.stringify({ new_email: newEmail.trim(), current_password: emailPassword }) })
+        const result = await apiFetch<{ challenge_id: string }>('/api/v1/auth/email-change/start', { method: 'POST', redirectOn401: false, body: JSON.stringify({ new_email: newEmail.trim(), current_password: emailPassword }) })
         setEmailChallengeId(result.challenge_id)
         notify('验证码已发送到新邮箱。', 'success')
       } else {
@@ -275,6 +283,7 @@ export function ConsoleProfile() {
             password={emailPassword}
             code={emailCode}
             stage={emailChallengeId ? 'verify' : 'details'}
+            busy={busy}
             onNewEmail={(value) => setNewEmail(value.slice(0, 254))}
             onPassword={setEmailPassword}
             onCode={setEmailCode}

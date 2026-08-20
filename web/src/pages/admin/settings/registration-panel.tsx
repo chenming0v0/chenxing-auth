@@ -1,5 +1,5 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { ApiError, apiFetch, type IssuerSettingResponse, type RegistrationSetting } from '../../../api'
+import { useState, type FormEvent } from 'react'
+import { ApiError, apiFetch, type RegistrationSetting } from '../../../api'
 import { Button, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
@@ -17,10 +17,7 @@ export function RegistrationPanel({ onMessage, onDirtyChange }: SettingsPanelPro
   /* 上次成功加载/保存的基线：当前编辑与它不一致即视为有未保存草稿（#381）。 */
   const [savedSetting, setSavedSetting] = useState<RegistrationSetting | null>(null)
   const [busy, setBusy] = useState(false)
-  /* Issuer 闸门：公开注册依赖运行时有效的 OIDC Issuer，未配置时保存会被后端
-     以 503 issuer_not_configured 拒绝。复用 IssuerPanel 的同一端点与响应形状
-     推导就绪状态，在前端先行拦截。null = 尚未取回，此时不拦截、由后端兜底。 */
-  const [issuerReady, setIssuerReady] = useState<boolean | null>(null)
+  /* Issuer readiness is enforced authoritatively by the registration endpoint. */
 
   const { loading } = useSettingsResource<RegistrationSetting>({
     path: '/api/v1/admin/settings/registration',
@@ -32,23 +29,11 @@ export function RegistrationPanel({ onMessage, onDirtyChange }: SettingsPanelPro
     },
   })
 
-  useEffect(() => {
-    let active = true
-    apiFetch<IssuerSettingResponse>('/api/v1/admin/settings/issuer')
-      .then((value) => { if (active) setIssuerReady(value.phase === 'issuer_loaded') })
-      .catch(() => { if (active) setIssuerReady(false) })
-    return () => { active = false }
-  }, [])
-
   const dirty = Boolean(savedSetting && !settingsEqual(setting, savedSetting))
   useDirtyReport(dirty, onDirtyChange)
 
   function updateSetting(patch: Partial<RegistrationSetting>) {
     if (busy) return
-    if (patch.enabled === true && issuerReady === false) {
-      onMessage(ISSUER_GATE_MESSAGE, 'warning')
-      return
-    }
     setSetting((current) => current ? { ...current, ...patch } : current)
   }
 
@@ -86,9 +71,6 @@ export function RegistrationPanel({ onMessage, onDirtyChange }: SettingsPanelPro
           <p className="chenxing-caption mt-1.5">控制访客能否在登录页自助创建辰星通行证账号。</p>
         </div>
       </div>
-      {issuerReady === false ? (
-        <div className="mt-5"><Notice tone="warning">{ISSUER_GATE_MESSAGE}</Notice></div>
-      ) : null}
       {loading || !setting ? (
         <div className="mt-5"><Notice>正在加载公开注册设置。</Notice></div>
       ) : (

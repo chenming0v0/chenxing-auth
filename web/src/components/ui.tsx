@@ -1,4 +1,4 @@
-import { createElement, useEffect, useId, useRef, useState } from 'react'
+import { createElement, forwardRef, useEffect, useId, useRef, useState } from 'react'
 import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
 import {
   Activity, AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Box, CalendarClock, Check, ChevronDown,
@@ -83,10 +83,10 @@ type HudPanelProps = HTMLAttributes<HTMLElement> & {
  * 玻璃容器唯一入口：`.chenxing-hud-panel` 的类名契约只在这里出现一次。
  * 页面不得直接写该类名，否则容器结构变更时无法统一跟随。
  */
-export function HudPanel({ as = 'div', children, className = '', ...rest }: HudPanelProps) {
-  // 用 createElement 承载多态标签，避免为一个受限联合类型引入完整的多态组件泛型
-  return createElement(as, { className: `chenxing-hud-panel ${className}`, ...rest }, children)
-}
+export const HudPanel = forwardRef<HTMLElement, HudPanelProps>(function HudPanel({ as = 'div', children, className = '', ...rest }, ref) {
+  // 用 createElement 承载多态标签，ref 始终指向唯一的实际面板容器。
+  return createElement(as, { ref, className: `chenxing-hud-panel ${className}`, ...rest }, children)
+})
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: 'primary' | 'ghost' | 'danger'

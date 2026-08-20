@@ -2,6 +2,45 @@ import { useEffect, useState, type AnchorHTMLAttributes, type MouseEvent, type R
 
 function currentPath() { return window.location.pathname }
 
+const HISTORY_INDEX = '__chenxing_history_index'
+let historyIndex = typeof window !== 'undefined' && typeof window.history.state?.[HISTORY_INDEX] === 'number'
+  ? window.history.state[HISTORY_INDEX] as number
+  : 0
+let restoringHistory = false
+if (typeof window !== 'undefined' && window.history.state?.[HISTORY_INDEX] !== historyIndex) {
+  window.history.replaceState({ ...(window.history.state ?? {}), [HISTORY_INDEX]: historyIndex }, '', window.location.href)
+}
+
+function commitHistory(to: string, options?: NavigationOptions) {
+  const index = options?.replace ? historyIndex : historyIndex + 1
+  historyIndex = index
+  const state = { ...(window.history.state ?? {}), [HISTORY_INDEX]: index }
+  if (options?.replace) window.history.replaceState(state, '', to)
+  else window.history.pushState(state, '', to)
+}
+
+function installPopstateGuard() {
+  if (typeof window === 'undefined') return
+  window.addEventListener('popstate', (event) => {
+    if (restoringHistory) {
+      restoringHistory = false
+      return
+    }
+    const targetIndex = typeof event.state?.[HISTORY_INDEX] === 'number'
+      ? event.state[HISTORY_INDEX] as number
+      : historyIndex - 1
+    if (navigationBlocker && !navigationBlocker()) {
+      const delta = historyIndex - targetIndex
+      if (delta !== 0) {
+        restoringHistory = true
+        window.history.go(delta)
+      }
+      return
+    }
+    historyIndex = targetIndex
+  })
+}
+
 /**
  * 路由级导航拦截器：本项目没有 react-router，这是 useBlocker 的自制等价物。
  * navigate 是 Link 点击与程序化跳转的唯一入口，跳转前询问已注册的拦截器，
@@ -13,6 +52,7 @@ function currentPath() { return window.location.pathname }
  * 再次触发重定向，永远回不到目标页之前的正常历史。
  */
 let navigationBlocker: (() => boolean) | null = null
+installPopstateGuard()
 
 export type NavigationOptions = { replace?: boolean }
 
@@ -37,11 +77,7 @@ export function prepareNavigation(to: string, options?: NavigationOptions): Navi
     commit(nextTo = to, nextOptions = options) {
       if (committed) return false
       committed = true
-      if (nextOptions?.replace) {
-        window.history.replaceState({}, '', nextTo)
-      } else {
-        window.history.pushState({}, '', nextTo)
-      }
+      commitHistory(nextTo, nextOptions)
       window.dispatchEvent(new PopStateEvent('popstate'))
       return true
     },

@@ -31,11 +31,12 @@ const FACTOR_LABELS: Record<FactorMethod, { icon: string; title: string; hint: s
  * pending/setup 状态、回到登录表单（#334）。
  */
 export function FactorOrchestrator({
-  pending, busy, onComplete, onBusy, onMessage, onRelogin,
+  pending, busy, onComplete, onPending, onBusy, onMessage, onRelogin,
 }: {
   pending: PendingLoginResponse
   busy: boolean
   onComplete: () => Promise<void>
+  onPending: (value: PendingLoginResponse) => void
   onBusy: BusyHandler
   onMessage: (value: string) => void
   onRelogin: () => void
@@ -47,6 +48,13 @@ export function FactorOrchestrator({
   const methods = availableFactors(pending.methods)
   const setupRequired = pending.status === 'factor_setup_required'
   const active = methods.length === 1 ? methods[0] : selected
+
+  function handlePending(next: PendingLoginResponse) {
+    setSelected(null)
+    setTotpSetup(null)
+    setInvalidated(false)
+    onPending(next)
+  }
 
   // login_ticket 失效与无可用因子都会让 MFA 流程无法继续，渲染同一恢复视图：
   // 提示 + 「重新登录」按钮。无因子分支此前只有文案没有按钮，而 pending 未清、
@@ -84,7 +92,7 @@ export function FactorOrchestrator({
       {active === 'totp' ? (
         <TotpStep pending={pending} setup={totpSetup} busy={busy} onSetup={setTotpSetup} onComplete={onComplete} onBusy={onBusy} onMessage={onMessage} onTicketInvalid={() => setInvalidated(true)} />
       ) : (
-        <PasskeyStep pending={pending} register={setupRequired} busy={busy} onComplete={onComplete} onBusy={onBusy} onMessage={onMessage} onTicketInvalid={() => setInvalidated(true)} />
+        <PasskeyStep pending={pending} register={setupRequired} busy={busy} onComplete={onComplete} onPending={handlePending} onBusy={onBusy} onMessage={onMessage} onTicketInvalid={() => setInvalidated(true)} />
       )}
       {methods.length > 1 ? (
         <button

@@ -22,7 +22,6 @@ use std::{fmt, net::SocketAddr};
 struct LinkedIdentity {
     provider: String,
     provider_name: String,
-    subject: String,
     email: String,
     #[serde(with = "time::serde::rfc3339")]
     linked_at: time::OffsetDateTime,
@@ -46,7 +45,6 @@ pub async fn list_linked_identities(
                     .map(|item| LinkedIdentity {
                         provider: item.provider_slug,
                         provider_name: item.provider_name,
-                        subject: item.subject,
                         email: item.email,
                         linked_at: item.created_at,
                     })

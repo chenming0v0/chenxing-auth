@@ -56,6 +56,7 @@ const PRE_SESSION_MUTATION_PATHS = new Set([
   '/api/v1/auth/passkeys/authentication/finish',
   '/api/v1/auth/passkeys/discoverable/start',
   '/api/v1/auth/passkeys/discoverable/finish',
+  '/api/v1/auth/security/factor/enrollment/cancel',
 ])
 
 /** 安全错误码文案映射，使用 Map 避免原型链污染（Object 字面量索引可访问 constructor 等原型属性）。 */

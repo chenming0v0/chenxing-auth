@@ -316,6 +316,23 @@
 .chenxing-topbar-status[data-hidden] {
   opacity: 0;
 }
+@media (max-width: 480px) {
+  .chenxing-topbar-status {
+    left: 44%;
+    max-width: calc(100% - 11rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .chenxing-topbar-actions {
+    gap: 0.25rem;
+  }
+  .chenxing-topbar-cta {
+    max-width: 4.5rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
 /* 解码动画的字符槽：乱码符号（半角）和目标中文（全角）宽度不同，
    固定 1em 让绝对居中的标签在滚动解码过程中不左右抖动 */
 .cx-scramble-char {

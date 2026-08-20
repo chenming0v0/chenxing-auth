@@ -589,6 +589,36 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/security/factor/enrollment/cancel:
+    post:
+      tags: [User Auth/Security]
+      summary: 取消当前 Session 的认证因素注册
+      operationId: cancelCurrentUserFactorEnrollment
+      description: 仅允许取消与当前用户、Session ID、session_epoch 和 enrollment_id 绑定的待确认注册。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelFactorEnrollmentInput' }
+      responses:
+        '200':
+          description: 注册已取消
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cancelled]
+                properties:
+                  cancelled: { type: boolean, const: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/security/totp/enrollment/confirm:
     post:
       tags: [User Auth/Security]
@@ -2601,7 +2631,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/EmailPolicySetting' }
+            schema: { $ref: '#/components/schemas/UpdateEmailPolicySetting' }
       responses:
         '200':
           description: 已更新的邮箱域名策略
@@ -3086,12 +3116,11 @@ components:
           items: { $ref: '#/components/schemas/ExternalIdentity' }
     ExternalIdentity:
       type: object
-      required: [provider, provider_name, subject, email, linked_at]
+      required: [provider, provider_name, email, linked_at]
       additionalProperties: false
       properties:
         provider: { type: string, description: Provider slug }
         provider_name: { type: string }
-        subject: { type: string, description: External OAuth UserInfo subject }
         email: { type: string, format: email, description: Email snapshot received when the identity was linked }
         linked_at: { type: string, format: date-time }
     ExternalIdentityBindingStartResponse:
@@ -3190,6 +3219,13 @@ components:
         enrollment_id: { type: string, format: uuid }
         secret_base32: { type: string, description: 仅在 start 响应返回一次，按凭据材料处理且不得记录日志。 }
         otpauth_url: { type: string, format: uri, description: 仅在 start 响应返回一次，客户端应本地生成二维码。 }
+    CancelFactorEnrollmentInput:
+      type: object
+      required: [enrollment_id, method]
+      additionalProperties: false
+      properties:
+        enrollment_id: { type: string, format: uuid }
+        method: { type: string, enum: [totp, passkey] }
     SessionTotpConfirmInput:
       type: object
       required: [enrollment_id, code]
@@ -3821,7 +3857,7 @@ components:
           items: { type: string, format: uri }
     EmailPolicySetting:
       type: object
-      required: [whitelist_enabled, alias_restriction_enabled, allowed_domains]
+      required: [whitelist_enabled, alias_restriction_enabled, allowed_domains, generation]
       properties:
         whitelist_enabled: { type: boolean }
         alias_restriction_enabled: { type: boolean }
@@ -3829,6 +3865,18 @@ components:
           type: array
           maxItems: 128
           items: { type: string, maxLength: 253 }
+        generation: { type: integer, format: int64, minimum: 0 }
+    UpdateEmailPolicySetting:
+      type: object
+      required: [whitelist_enabled, alias_restriction_enabled, allowed_domains, expected_generation]
+      properties:
+        whitelist_enabled: { type: boolean }
+        alias_restriction_enabled: { type: boolean }
+        allowed_domains:
+          type: array
+          maxItems: 128
+          items: { type: string, maxLength: 253 }
+        expected_generation: { type: integer, format: int64, minimum: 0 }
     RegistrationSetting:
       type: object
       description: >-

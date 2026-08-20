@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
 import { apiFetch, type SecurityEnrollmentResult, type SecurityFactorSummary, type SecurityPasskeyStart, type SecurityRemovalResult, type SecurityTotpStart } from '../../api'
 import { assertPublicKeyCredential, decodeCreationOptions, serializeAttestation, supportsWebAuthnCreate, type PasskeyChallenge } from '../../passkey'
+import { useDrawerFocus } from '../../components/drawer'
 import { Badge, Button, HudPanel, Icon, Notice, PasswordField } from '../../components/ui'
 import { ExternalIdentities } from './external-identities'
 import type { MessageTone } from './profile-avatar'
@@ -76,6 +77,27 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     }
   }
 
+  function cancelTotp(): void {
+    if (totp.phase !== 'ready' || busy) {
+      if (totp.phase === 'idle') return
+      setTotp({ phase: 'idle' })
+      setCode('')
+      return
+    }
+    const enrollmentId = totp.data.enrollment_id
+    setBusy('totp-cancel')
+    void apiFetch<{ cancelled: true }>('/api/v1/auth/security/factor/enrollment/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ enrollment_id: enrollmentId, method: 'totp' }),
+    }).then(() => {
+      setTotp({ phase: 'idle' })
+      setCode('')
+    }).catch((error) => {
+      show(error instanceof Error ? error.message : '取消 TOTP 绑定失败，请重试。')
+    }).finally(() => {
+      setBusy(null)
+    })
+  }
   async function confirmTotp(event: FormEvent): Promise<void> {
     event.preventDefault()
     if (busy || !/^\d{6}$/.test(code)) {
@@ -141,6 +163,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     try {
       const result = await apiFetch<SecurityRemovalResult>(`/api/v1/auth/security/factors/${removing}`, {
         method: 'DELETE',
+        redirectOn401: false,
         body: JSON.stringify({ password }),
       })
       setRemoving(null)
@@ -197,7 +220,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
                 code={code}
                 onCode={setCode}
                 onStartTotp={() => void startTotp()}
-                onCancelTotp={() => { setTotp({ phase: 'idle' }); setCode('') }}
+                onCancelTotp={cancelTotp}
                 onConfirmTotp={(event) => void confirmTotp(event)}
                 onStartPasskey={() => void startPasskey()}
                 onRemove={setRemoving}
@@ -245,10 +268,12 @@ function AccountTabButton({ tab, activeTab, icon, label, onSelect }: {
 }
 
 function RemovalDialog({ method, password, busy, onPassword, onCancel, onConfirm }: { method: 'totp' | 'passkey'; password: string; busy: boolean; onPassword: (value: string) => void; onCancel: () => void; onConfirm: () => void }) {
+  const containerRef = useDrawerFocus(onCancel, busy)
+
   return (
-    <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-black/70 p-4" role="presentation">
-      <HudPanel as="section" role="dialog" aria-modal="true" aria-labelledby="remove-factor-title" className="relative z-[var(--chenxing-z-dialog)] w-full max-w-md">
-        <div className="flex items-start justify-between gap-4"><div><p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-error)]">// Re-authentication</p><h2 id="remove-factor-title" className="chenxing-h2 mt-2">移除{method === 'totp' ? ' TOTP' : '全部 Passkey'}</h2></div><button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel}><Icon name="x" size={17} /></button></div>
+    <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-black/70 p-4" role="presentation" onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onCancel() }}>
+      <HudPanel ref={containerRef} as="section" role="dialog" aria-modal="true" aria-labelledby="remove-factor-title" aria-busy={busy || undefined} tabIndex={-1} className="relative z-[var(--chenxing-z-dialog)] w-full max-w-md">
+        <div className="flex items-start justify-between gap-4"><div><p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-error)]">// Re-authentication</p><h2 id="remove-factor-title" className="chenxing-h2 mt-2">移除{method === 'totp' ? ' TOTP' : '全部 Passkey'}</h2></div><button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel} disabled={busy}><Icon name="x" size={17} /></button></div>
         <p className="chenxing-caption mt-4">这是敏感安全操作。移除后所有活跃会话都会失效，并需要重新登录。请输入当前密码确认身份。</p>
         <div className="mt-5"><PasswordField label="当前密码" autoComplete="current-password" value={password} onChange={(event) => onPassword(event.target.value)} /></div>
         <div className="mt-5 flex flex-wrap justify-end gap-3"><Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>取消</Button><Button type="button" variant="danger" icon="trash-2" onClick={onConfirm} disabled={busy}>{busy ? '处理中…' : '确认移除'}</Button></div>

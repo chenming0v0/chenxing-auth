@@ -105,7 +105,7 @@ pub(in crate::sessions::store) async fn find_with_metadata(
     session.last_seen_at = row.last_seen_at;
     session.revoked_at = None;
     session.set_credential_generation(row.session_epoch);
-    session.set_idle_timeout(store.policy.idle_timeout);
+    session.set_idle_timeout(store.current_idle_timeout());
 
     if row.needs_renewal {
         let Some(renewed_at) = renew_session_activity(
@@ -173,7 +173,7 @@ pub(in crate::sessions::store) async fn find_with_metadata_by_token_hash(
             revoked_at: None,
             idle_timeout: None,
         }
-        .with_idle_timeout(store.policy.idle_timeout),
+        .with_idle_timeout(store.current_idle_timeout()),
     ))
 }
 

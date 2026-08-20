@@ -18,6 +18,7 @@ pub mod passkey_recovery;
 pub mod plan_handlers;
 pub mod provider_handlers;
 pub mod provider_web_handlers;
+pub mod registration_email_settings_handlers;
 pub mod registration_settings_handlers;
 pub mod settings_handlers;
 pub mod ui_handlers;

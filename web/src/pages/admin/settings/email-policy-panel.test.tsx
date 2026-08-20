@@ -28,6 +28,7 @@ beforeEach(() => {
     whitelist_enabled: true,
     alias_restriction_enabled: true,
     allowed_domains: ['corp.example'],
+    generation: 1,
   }
   vi.stubGlobal('confirm', (message: string) => {
     confirmCalls += 1

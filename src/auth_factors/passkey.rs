@@ -267,7 +267,7 @@ impl AuthFactorService {
             .hints(None);
         let (challenge, state) = core.generate_challenge_authenticate(builder)?;
         // 与注册路径使用同一个原子预留语义：同一 ticket 只能有一份已签发的
-        // authentication challenge/state，竞态败者明确返回 None，绝不覆盖胜者状态。
+        // authentication challenge/state，竞态败者复用胜者的 challenge，绝不覆盖胜者状态。
         let reserved = self
             .tickets
             .save_json_if_absent(
@@ -276,12 +276,24 @@ impl AuthFactorService {
                     user_id: ticket.user_id,
                     state,
                     settings,
+                    challenge: Some(challenge.clone()),
                     credential_row_ids,
                 },
                 LoginTicket::TTL.whole_seconds() as u64,
             )
             .await?;
-        Ok(reserved.then_some(challenge))
+        if reserved {
+            return Ok(Some(challenge));
+        }
+        // A browser may cancel the ceremony after start. Reuse the still-valid
+        // reservation rather than issuing a second state or burning a
+        // credential on an ordinary retry. Legacy reservations without the
+        // serialized options fail closed and wait for their TTL to expire.
+        Ok(self
+            .tickets
+            .find_json::<PendingPasskeyAuthentication>(&self.passkey_authentication_key(ticket_id))
+            .await?
+            .and_then(|pending| pending.challenge))
     }
 
     pub async fn finish_passkey_authentication(

@@ -129,7 +129,7 @@ export function GlobalTopbar({
                 容器淡出。字符串状态走 ScrambleText，ReactNode 状态保持原样常驻。 */}
             <div className="chenxing-topbar-status" data-topbar-status data-hidden={expanded || undefined}>
               {typeof status === 'string' ? <ScrambleText text={status} active={!expanded} /> : <span>{status}</span>}
-            </div>
+              </div>
             <div className="chenxing-topbar-actions">
               {/* 汉堡按钮：点击时打开导航菜单 */}
               <div className="inline-flex" ref={nav.containerRef}>

@@ -122,8 +122,33 @@ impl SettingsService {
     where
         F: FnOnce(&EmailPolicySetting) -> AuditEvent,
     {
+        self.set_email_policy_audited_if_generation(
+            value,
+            repository::get_generation(&self.pool, crate::settings::EMAIL_POLICY_KEY).await?,
+            audit,
+            audit_event,
+        )
+        .await
+    }
+
+    pub async fn set_email_policy_audited_if_generation<F>(
+        &self,
+        value: EmailPolicySetting,
+        expected_generation: i64,
+        audit: &AuditService,
+        audit_event: F,
+    ) -> Result<EmailPolicySetting, SettingsServiceError>
+    where
+        F: FnOnce(&EmailPolicySetting) -> AuditEvent,
+    {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
+        let actual =
+            repository::get_generation(&mut *transaction, crate::settings::EMAIL_POLICY_KEY)
+                .await?;
+        if actual != expected_generation {
+            return Err(SettingsServiceError::Conflict);
+        }
         repository::set_email_policy(&mut *transaction, &value).await?;
         audit
             .record_in_transaction(&mut transaction, audit_event(&value))
@@ -211,14 +236,17 @@ impl SettingsService {
     pub async fn session_lifetime(
         &self,
     ) -> Result<crate::settings::SessionLifetimeSetting, SettingsServiceError> {
-        self.decode_stored::<crate::settings::SessionLifetimeSetting>()
+        let value = self
+            .decode_stored::<crate::settings::SessionLifetimeSetting>()
             .await?
             .require(
                 crate::settings::SessionLifetimeSetting::default(),
                 |value| value,
                 crate::settings::SessionLifetimeSetting::validate,
             )
-            .map_err(Self::persist_error::<crate::settings::SessionLifetimeSetting>)
+            .map_err(Self::persist_error::<crate::settings::SessionLifetimeSetting>)?;
+        self.apply_session_lifetime_runtime(value.clone());
+        Ok(value)
     }
 
     pub async fn inspect_session_lifetime(
@@ -241,6 +269,7 @@ impl SettingsService {
     ) -> Result<crate::settings::SessionLifetimeSetting, SettingsServiceError> {
         let value = value.validate()?;
         repository::set_session_lifetime(&self.pool, &value).await?;
+        self.apply_session_lifetime_runtime(value.clone());
         Ok(value)
     }
 
@@ -260,6 +289,7 @@ impl SettingsService {
             .record_in_transaction(&mut transaction, audit_event(&value))
             .await?;
         transaction.commit().await?;
+        self.apply_session_lifetime_runtime(value.clone());
         Ok(value)
     }
 

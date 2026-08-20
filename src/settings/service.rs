@@ -1,10 +1,11 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::{
     IssuerRuntime, SecurityLimitsSetting,
     domain::{PasskeySetting, SettingsValidationError},
     repository,
     security_limits_cache::{CachedSecurityLimits, SecurityLimitsCache, SecurityLimitsSource},
+    session_lifetime::SessionLifetimeSetting,
     smtp::{SmtpPasswordAction, SmtpSetting, SmtpSettingUpdate, StoredSmtpSetting},
     smtp_sender::parse_smtp_sender,
 };
@@ -30,6 +31,7 @@ pub struct SettingsService {
     /// 因此管理接口写入后的主动刷新对同进程内所有读取路径立即生效。
     security_limits_cache: Arc<SecurityLimitsCache>,
     issuer_runtime: Option<IssuerRuntime>,
+    session_lifetime_runtime: Arc<RwLock<SessionLifetimeSetting>>,
 }
 
 #[derive(Debug, Error)]
@@ -38,6 +40,8 @@ pub enum SettingsServiceError {
     InvalidEmail,
     #[error("setting validation failed: {0}")]
     Validation(#[from] SettingsValidationError),
+    #[error("setting was modified concurrently")]
+    Conflict,
     #[error("stored setting {key} is unreadable")]
     Corrupt { key: &'static str },
     #[error("secret operation failed: {0}")]
@@ -81,12 +85,23 @@ impl SettingsService {
             )),
             default_security_limits,
             issuer_runtime: None,
+            session_lifetime_runtime: Arc::new(RwLock::new(SessionLifetimeSetting::default())),
         }
     }
 
     pub fn with_issuer_runtime(mut self, issuer_runtime: IssuerRuntime) -> Self {
         self.issuer_runtime = Some(issuer_runtime);
         self
+    }
+
+    pub fn session_lifetime_runtime(&self) -> Arc<RwLock<SessionLifetimeSetting>> {
+        self.session_lifetime_runtime.clone()
+    }
+
+    pub fn apply_session_lifetime_runtime(&self, value: SessionLifetimeSetting) {
+        if let Ok(mut current) = self.session_lifetime_runtime.write() {
+            *current = value;
+        }
     }
 
     /// 用自定义 TTL / 退避的缓存替换默认缓存。仅用于测试缓存与降级路径。

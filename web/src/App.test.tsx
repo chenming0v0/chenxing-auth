@@ -14,6 +14,7 @@ vi.mock('./auth-state', () => ({
     refresh: () => Promise.resolve(null),
     clear: () => {},
     logout: () => Promise.resolve({ revoked: true }),
+    generation: 0,
   }),
 }))
 

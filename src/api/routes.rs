@@ -44,10 +44,10 @@ use crate::{
         start_passkey_registration, start_totp_setup,
     },
     auth_factors::security_handlers::{
-        confirm_security_totp_enrollment, current_security_factors,
-        finish_security_passkey_registration, remove_security_passkey_factor,
-        remove_security_totp_factor, start_security_passkey_registration,
-        start_security_totp_enrollment,
+        cancel_security_factor_enrollment, confirm_security_totp_enrollment,
+        current_security_factors, finish_security_passkey_registration,
+        remove_security_passkey_factor, remove_security_totp_factor,
+        start_security_passkey_registration, start_security_totp_enrollment,
     },
     oauth::handlers::{authorize, authorize_post, token},
     oauth::providers::handlers::{
@@ -170,6 +170,10 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
         .route(
             "/api/v1/auth/security/totp/enrollment/start",
             post(start_security_totp_enrollment),
+        )
+        .route(
+            "/api/v1/auth/security/factor/enrollment/cancel",
+            post(cancel_security_factor_enrollment),
         )
         .route(
             "/api/v1/auth/security/totp/enrollment/confirm",
