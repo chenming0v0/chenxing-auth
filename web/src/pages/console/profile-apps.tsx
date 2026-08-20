@@ -282,6 +282,7 @@ export function ConsoleProfile() {
             password={emailPassword}
             code={emailCode}
             stage={emailChallengeId ? 'verify' : 'details'}
+            busy={busy}
             onNewEmail={(value) => setNewEmail(value.slice(0, 254))}
             onPassword={setEmailPassword}
             onCode={setEmailCode}

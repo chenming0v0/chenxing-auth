@@ -150,6 +150,7 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
         </div>
       ) : null}
 
+      {!loading && !loadError && bindings.length === 0 ? (
         <div className="mt-4 flex items-start gap-2 border-t border-[var(--chenxing-border)] pt-4">
           <Icon name="info" size={16} className="mt-0.5 shrink-0 text-[var(--chenxing-muted-foreground)]" />
           <p className="chenxing-caption">管理员尚未启用其他登录身份。启用新的 OAuth/OIDC 提供方后，本列表会自动扩展。</p>
