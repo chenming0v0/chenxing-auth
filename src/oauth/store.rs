@@ -109,35 +109,28 @@ impl AuthorizationCodeStore {
         }
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let code_key = self.key(&code.value);
-        let (refund_key, reservation_id, refund_score) = quota_cancel
+        let (refund_key, record_key, reservation_id, refund_score) = quota_cancel
             .as_ref()
             .map(|cancel| {
                 (
                     cancel.zset_key.clone(),
+                    cancel.record_key.clone(),
                     cancel.member.clone(),
                     refund_due_unix_millis(code.expires_at) as f64,
                 )
             })
-            .unwrap_or_else(|| (code_key.clone(), String::new(), 0.0));
+            .unwrap_or_else(|| (code_key.clone(), code_key.clone(), String::new(), 0.0));
         let ttl_ms = i64::try_from(remaining_ttl_ms).unwrap_or(i64::MAX);
-        let _: i64 = Script::new(
-            r#"local ttl_ms = tonumber(ARGV[2])
-               if ttl_ms and ttl_ms > 0 then
-                   redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl_ms, 'NX')
-               end
-               if ARGV[3] ~= '' then
-                   redis.call('ZADD', KEYS[2], tonumber(ARGV[4]), ARGV[3])
-               end
-               return 1"#,
-        )
-        .key(code_key)
-        .key(refund_key)
-        .arg(payload)
-        .arg(ttl_ms)
-        .arg(reservation_id)
-        .arg(refund_score)
-        .invoke_async(&mut connection)
-        .await?;
+        let _: i64 = Script::new(super::quota_scripts::RESTORE_CODE_AND_QUOTA_SCRIPT)
+            .key(code_key)
+            .key(refund_key)
+            .key(record_key)
+            .arg(payload)
+            .arg(ttl_ms)
+            .arg(reservation_id)
+            .arg(refund_score)
+            .invoke_async(&mut connection)
+            .await?;
         Ok(())
     }
 
@@ -187,14 +180,14 @@ impl AuthorizationCodeStore {
             .await
     }
 
-    /// 原子消费授权码（CAS），并在同一个 Lua 事务里取消关联的待退配额条目。
+    /// 原子消费授权码（CAS），并在同一个 Lua 事务里占用关联的配额 reservation。
     ///
     /// CAS 身份是 `value` + `cas_revision`，不比较完整 JSON。未来字段和
     /// 已知协议字段的序列化布局变化都不会让有效授权码消费失败。
     ///
-    /// 兑换成功时配额必须保留（计数保留是正确行为），因此取消待退条目必须与
-    /// 授权码的删除原子完成：分成两步会让后台退款 worker 有机会在两步之间
-    /// 看到条目，把「已兑换」的配额退掉（Issue #341）。
+    /// 兑换成功时配额必须保留。周期 hash 是这次 INCR 的一次性 claim：CAS
+    /// 先 HDEL 且不 DECR，退款脚本随后 HDEL 只能空操作。待退 ZSET 成员也在
+    /// 同一事务里 ZREM，避免 worker 把已兑换的配额退掉（Issue #341 / #657）。
     ///
     /// `quota_cancel = None`（授权码没有计量配额，或兑换旧格式在途授权码）时
     /// 行为与 [`Self::take_if_matches`] 完全一致。
@@ -206,12 +199,16 @@ impl AuthorizationCodeStore {
     ) -> Result<bool, AuthorizationCodeStoreError> {
         let expected = serde_json::to_string(code)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        // 没有待退条目时 KEYS[2] 用授权码键占位（脚本在 ARGV[2] 为空时不会
-        // 引用它），member 传空串即退化为纯 CAS。
+        // 没有待退条目时 KEYS[2]/KEYS[3] 用授权码键占位（脚本在 ARGV[2] 为空
+        // 时不会引用它们），member 传空串即退化为纯 CAS。
         let code_key = self.key(value);
         let zset_key: &str = quota_cancel
             .as_ref()
             .map(|cancel| cancel.zset_key.as_str())
+            .unwrap_or(&code_key);
+        let record_key: &str = quota_cancel
+            .as_ref()
+            .map(|cancel| cancel.record_key.as_str())
             .unwrap_or(&code_key);
         let member = quota_cancel
             .as_ref()
@@ -219,21 +216,11 @@ impl AuthorizationCodeStore {
             .unwrap_or("");
         let deleted: i32 = Script::new(concat!(
             super::cas::cas_identity_lua!(),
-            r#"local current_json = redis.call('GET', KEYS[1])
-               if not current_json then
-                    return 0
-               end
-               if not same_cas_identity(current_json, ARGV[1], 'value') then
-                    return 0
-               end
-               redis.call('DEL', KEYS[1])
-               if ARGV[2] ~= '' then
-                    redis.call('ZREM', KEYS[2], ARGV[2])
-               end
-               return 1"#,
+            super::quota_scripts::take_code_and_claim_quota_lua!(),
         ))
         .key(code_key.as_str())
         .key(zset_key)
+        .key(record_key)
         .arg(expected)
         .arg(member)
         .invoke_async(&mut connection)
