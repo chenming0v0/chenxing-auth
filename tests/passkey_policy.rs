@@ -696,7 +696,9 @@ async fn issuer_update_without_runtime_snapshot_rejects_passkey_incompatible_cha
         runtime.current().is_none(),
         "persisting issuer must not create a snapshot on this replica"
     );
-    let (user_id, _) = create_user(&router, &database).await;
+    // Admin user creation goes through the issuer gate, which would converge the
+    // persisted row onto this replica and destroy the no-snapshot fixture.
+    let user_id = insert_user(&database).await;
     insert_passkey(&database, user_id).await;
 
     let response = put_issuer(&router, "https://other.example.com", 1).await;
@@ -806,7 +808,9 @@ async fn issuer_update_without_snapshot_rechecks_passkeys_after_policy_lock() {
     issuer::initialize(&database, "https://auth.example.com")
         .await
         .expect("persist issuer without loading a snapshot");
-    let (user_id, _) = create_user(&router, &database).await;
+    // Same as the snapshot-free rejection test: do not create the user through
+    // a gated admin route or this replica would load the persisted issuer.
+    let user_id = insert_user(&database).await;
     let mut gate = database.begin().await.expect("policy gate transaction");
     sqlx::query("SELECT pg_advisory_xact_lock(0, 7341931)")
         .execute(&mut *gate)

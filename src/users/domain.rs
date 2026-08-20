@@ -34,7 +34,8 @@ pub const RESERVED_USERNAMES: &[&str] = &[
     "system",
 ];
 pub type UserId = i64;
-/// The first-owner bootstrap transaction resets the users sequence so this identity is stable.
+/// First identity on a fresh `users` sequence. Bootstrap no longer rewinds the
+/// sequence to force this value; an empty database still yields `id = 1`.
 pub const INITIAL_OWNER_ID: UserId = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
