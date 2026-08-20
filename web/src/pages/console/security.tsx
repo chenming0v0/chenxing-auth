@@ -162,6 +162,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     try {
       const result = await apiFetch<SecurityRemovalResult>(`/api/v1/auth/security/factors/${removing}`, {
         method: 'DELETE',
+        redirectOn401: false,
         body: JSON.stringify({ password }),
       })
       setRemoving(null)

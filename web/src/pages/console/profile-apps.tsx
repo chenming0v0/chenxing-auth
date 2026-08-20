@@ -95,6 +95,7 @@ export function ConsoleProfile() {
     try {
       const updated = await apiFetch<UserMe>('/api/v1/auth/me', {
         method: 'PATCH',
+        redirectOn401: false,
         body: JSON.stringify({
           display_name: displayName.trim() || null,
           username: normalizedUsername,
@@ -129,7 +130,7 @@ export function ConsoleProfile() {
     if (newPassword !== confirmPassword) { warn('两次输入的新密码不一致。'); return }
     setBusy(true)
     try {
-      await apiFetch<void>('/api/v1/auth/password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) })
+      await apiFetch<void>('/api/v1/auth/password', { method: 'POST', redirectOn401: false, body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) })
       clear()
       navigate('/login?returnTo=%2Fconsole%2Fprofile')
     } catch (error) {
@@ -207,7 +208,7 @@ export function ConsoleProfile() {
     setBusy(true)
     try {
       if (!emailChallengeId) {
-        const result = await apiFetch<{ challenge_id: string }>('/api/v1/auth/email-change/start', { method: 'POST', body: JSON.stringify({ new_email: newEmail.trim(), current_password: emailPassword }) })
+        const result = await apiFetch<{ challenge_id: string }>('/api/v1/auth/email-change/start', { method: 'POST', redirectOn401: false, body: JSON.stringify({ new_email: newEmail.trim(), current_password: emailPassword }) })
         setEmailChallengeId(result.challenge_id)
         notify('验证码已发送到新邮箱。', 'success')
       } else {

@@ -77,7 +77,8 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
     onNotice(null)
     try {
       await apiFetch<void>(`/api/v1/auth/external-identities/${encodeURIComponent(identity.provider)}`, {
-        method: 'DELETE', body: JSON.stringify({ password }),
+        method: 'DELETE',
+        redirectOn401: false, body: JSON.stringify({ password }),
       })
       setIdentities((current) => current.filter((item) => item.provider !== identity.provider))
       setUnlinking(null)

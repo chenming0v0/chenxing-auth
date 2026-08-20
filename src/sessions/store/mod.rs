@@ -426,6 +426,14 @@ impl SessionStore {
         )
     }
 
+    pub(super) fn redis_only_token_renewal_key(&self, hash: &[u8]) -> String {
+        format!(
+            "{}renewed-token:{}",
+            self.key_prefix,
+            URL_SAFE_NO_PAD.encode(hash)
+        )
+    }
+
     pub(super) fn idle_timeout_interval(&self) -> time::Duration {
         time::Duration::seconds(
             i64::try_from(self.policy.idle_timeout.as_secs())
