@@ -189,8 +189,11 @@ impl MigrationPlan {
 
 /// Web 服务启动期的审计边界姿态。
 ///
-/// Web 进程只使用 `DATABASE_URL`，因此这里只解析运行时角色和审计隔离策略；
-/// 真实权限仍由 `verify_audit_append_only_boundary` 在启动时查询数据库。
+/// Web 进程只使用 `DATABASE_URL`，因此这里只解析 URL **声称的**运行时角色和
+/// 审计隔离策略。`runtime_role` 不能直接交给 `has_table_privilege`：代理或
+/// `SET ROLE` 会让有效主体变成 owner，而 URL 用户名仍是受限角色（Issue #649）。
+/// 真实权限由 `verify_audit_append_only_boundary` 在实际连接上读取
+/// `current_user` / `session_user` 再判定。
 #[derive(Clone, Debug)]
 pub struct RuntimeAuditPosture {
     runtime_role: String,

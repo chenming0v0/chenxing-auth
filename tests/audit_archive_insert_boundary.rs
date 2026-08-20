@@ -122,7 +122,7 @@ async fn runtime_cannot_forge_or_preempt_archive_rows() {
     let runtime = connect_runtime(&owner).await;
 
     let privileges = chenxing_auth::db::verify_audit_append_only_boundary(
-        &owner,
+        &runtime,
         chenxing_auth::db::RUNTIME_DATABASE_ROLE,
         chenxing_auth::db::AuditRoleSeparation::Require,
     )
@@ -167,7 +167,7 @@ async fn runtime_cannot_forge_or_preempt_archive_rows() {
         .expect("reproduce the 0019 leftover INSERT grant");
 
     let error = chenxing_auth::db::verify_audit_append_only_boundary(
-        &owner,
+        &runtime,
         chenxing_auth::db::RUNTIME_DATABASE_ROLE,
         chenxing_auth::db::AuditRoleSeparation::Require,
     )
@@ -207,7 +207,7 @@ async fn runtime_cannot_forge_or_preempt_archive_rows() {
         .expect("restore the 0036 revoke");
 
     chenxing_auth::db::verify_audit_append_only_boundary(
-        &owner,
+        &runtime,
         chenxing_auth::db::RUNTIME_DATABASE_ROLE,
         chenxing_auth::db::AuditRoleSeparation::Require,
     )
