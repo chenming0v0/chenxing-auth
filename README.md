@@ -167,7 +167,7 @@ src/
 
 审计事件由 `audit_events` 和 `audit_events_archive` 两张表保存。迁移创建的数据库触发器拒绝两张表的 `UPDATE`、`DELETE` 和 `TRUNCATE`；migration/owner role 与 `chenxing_runtime` 分离后，runtime role 对两张审计表没有任何修改权限，归档只通过固定 `search_path` 的最小权限 `SECURITY DEFINER` 函数完成。触发器保留为纵深防御，不再作为唯一边界。归档先复制后删除，且只删除已成功复制的行；归档表本身永久保留并拒绝修改。审计查询会合并两张表。
 
-角色分离必须真的配置出来才成立：PostgreSQL 里表 owner 隐含全部表权限，因此当 `MIGRATION_DATABASE_URL` 缺失、迁移与运行时共用同一角色时，基线里的 `REVOKE` 一行都不生效，审计 append-only 退回只剩触发器一层，而触发器的归档旁路标记是会话级 GUC，任何持有该角色的会话都能设置。`cargo run -- migrate` 因此在连库前先校验角色配置，迁移后再用 `has_table_privilege` 实测运行时角色此刻能不能 `UPDATE`/`DELETE`/`TRUNCATE` 审计表——这个函数把 owner 隐含权限、角色继承和 superuser 旁路都算在内，问的是实际权限而不是迁移文件写了什么。默认策略 `AUDIT_ROLE_SEPARATION=require` 下不满足即拒绝；只有显式设置 `AUDIT_ROLE_SEPARATION=allow-single-role` 才允许单角色部署，且每次 migrate 都会打出强告警。生产环境不得使用该开关。
+角色分离必须真的配置出来才成立：PostgreSQL 里表 owner 隐含全部表权限，因此当 `MIGRATION_DATABASE_URL` 缺失、迁移与运行时共用同一角色时，基线里的 `REVOKE` 一行都不生效，审计 append-only 退回只剩触发器一层，而触发器的归档旁路标记是会话级 GUC，任何持有该角色的会话都能设置。`cargo run -- migrate` 因此在连库前先校验角色配置，迁移后再用 `has_table_privilege` 实测运行时角色此刻能不能 `UPDATE`/`DELETE`/`TRUNCATE` 审计表，以及能不能 `INSERT` 归档表——这个函数把 owner 隐含权限、角色继承和 superuser 旁路都算在内，问的是实际权限而不是迁移文件写了什么。默认策略 `AUDIT_ROLE_SEPARATION=require` 下不满足即拒绝；只有显式设置 `AUDIT_ROLE_SEPARATION=allow-single-role` 才允许单角色部署，且每次 migrate 都会打出强告警。生产环境不得使用该开关。
 
 运行时角色对序列的权限只放开一个对象：`users.id` 的 identity 序列。Owner 初始化要求第一个 Owner 的 `id` 为 1，`bootstrap_owner` 因此在插入前调 `setval`，而 `setval` 在 PostgreSQL 里要求序列的 `UPDATE` 权限；完整基线只授这一个序列。审计表的序列保持只读，append-only 边界不受影响。
 
