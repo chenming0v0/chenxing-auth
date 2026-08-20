@@ -139,7 +139,7 @@ impl AuthFactorService {
         let key = self.session_enrollment_key(user_id, method);
         Ok(self
             .tickets
-            .take_session_enrollment_if_owner(
+            .take_session_enrollment_if_owner::<PendingSessionEnrollment<serde_json::Value>>(
                 &key,
                 user_id,
                 session_id,

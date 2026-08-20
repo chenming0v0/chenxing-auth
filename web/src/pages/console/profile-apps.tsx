@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
 import { apiFetch, ApiError, type SessionItem, type UserMe } from '../../api'

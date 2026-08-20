@@ -249,7 +249,7 @@ pub async fn get_email_policy_setting(State(state): State<AppState>, admin: Admi
 }
 
 #[derive(Debug, Deserialize)]
-struct UpdateEmailPolicySetting {
+pub struct UpdateEmailPolicySetting {
     #[serde(flatten)]
     setting: EmailPolicySetting,
     expected_generation: i64,

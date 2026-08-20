@@ -6,6 +6,8 @@ type EmailChangeDialogProps = {
   currentEmail: string
   newEmail: string
   password: string
+  code: string
+  stage: 'details' | 'verify'
   busy: boolean
   onNewEmail: (value: string) => void
   onPassword: (value: string) => void
