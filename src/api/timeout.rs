@@ -1,5 +1,5 @@
 use axum::{
-    extract::Request as AxumRequest, http::StatusCode, middleware::Next, response::Response,
+    Router, extract::Request as AxumRequest, http::StatusCode, middleware::Next, response::Response,
 };
 use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
@@ -12,6 +12,21 @@ use tower_http::timeout::TimeoutLayer;
 /// 两者都不能套这一层。
 pub(super) fn request_timeout_layer(request_timeout: Duration) -> TimeoutLayer {
     TimeoutLayer::with_status_code(StatusCode::GATEWAY_TIMEOUT, request_timeout)
+}
+
+/// 把请求超时套在已注册路由及其内侧中间件外面。
+///
+/// `route_layer` 后添加的层是外层。Issuer 门禁在 `AwaitingIssuer` 时会在
+/// `next.run()` 之前 await `load_raw`；超时必须成为那层的外层，否则卡住的
+/// 设置查询会绕过请求超时预算，任务和连接在收敛里堆积。
+pub(super) fn wrap_with_request_timeout<S>(
+    router: Router<S>,
+    request_timeout: Duration,
+) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    router.route_layer(request_timeout_layer(request_timeout))
 }
 
 /// 超时响应按请求路径分流到正确的协议错误格式。
@@ -37,12 +52,13 @@ pub(super) async fn map_request_timeout_by_path(request: AxumRequest, next: Next
 
 #[cfg(test)]
 mod tests {
-    use super::{map_request_timeout_by_path, request_timeout_layer};
+    use super::{map_request_timeout_by_path, request_timeout_layer, wrap_with_request_timeout};
     use axum::{
         Router,
         body::{Body, to_bytes},
+        extract::{Request as AxumRequest, State},
         http::{Method, Request, StatusCode, header::CONTENT_TYPE},
-        middleware::from_fn,
+        middleware::{Next, from_fn, from_fn_with_state},
         response::Response,
         routing::{get, post},
     };
@@ -80,6 +96,10 @@ mod tests {
             }
         }
 
+        fn release(&self) {
+            self.released.store(true, Ordering::SeqCst);
+        }
+
         async fn wait(&self) {
             if self.released.load(Ordering::SeqCst) {
                 return;
@@ -94,33 +114,35 @@ mod tests {
     }
 
     fn system_api(switch: HangSwitch) -> Router {
-        Router::new()
-            .route(
-                BOOTSTRAP_STATUS,
-                get({
-                    let switch = switch.clone();
-                    move || system_handler(switch.clone())
-                }),
-            )
-            .route(
-                BOOTSTRAP,
-                post({
-                    let switch = switch.clone();
-                    move || system_handler(switch.clone())
-                }),
-            )
-            .route(
-                ISSUER,
-                get({
-                    let switch = switch.clone();
-                    move || system_handler(switch.clone())
-                })
-                .put({
-                    let switch = switch.clone();
-                    move || system_handler(switch.clone())
-                }),
-            )
-            .route_layer(request_timeout_layer(SYSTEM_TIMEOUT))
+        wrap_with_request_timeout(
+            Router::new()
+                .route(
+                    BOOTSTRAP_STATUS,
+                    get({
+                        let switch = switch.clone();
+                        move || system_handler(switch.clone())
+                    }),
+                )
+                .route(
+                    BOOTSTRAP,
+                    post({
+                        let switch = switch.clone();
+                        move || system_handler(switch.clone())
+                    }),
+                )
+                .route(
+                    ISSUER,
+                    get({
+                        let switch = switch.clone();
+                        move || system_handler(switch.clone())
+                    })
+                    .put({
+                        let switch = switch.clone();
+                        move || system_handler(switch.clone())
+                    }),
+                ),
+            SYSTEM_TIMEOUT,
+        )
     }
 
     fn stacked(system: Router, health: Router) -> Router {
@@ -264,6 +286,97 @@ mod tests {
             run_through_middleware_with_status("/oauth/token", StatusCode::INTERNAL_SERVER_ERROR)
                 .await;
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// AwaitingIssuer 门禁：在 next.run 之前卡住，模拟 stalled load_raw。
+    async fn await_issuer_convergence(
+        State(switch): State<HangSwitch>,
+        request: AxumRequest,
+        next: Next,
+    ) -> Response {
+        switch.wait().await;
+        next.run(request).await
+    }
+
+    fn ok_if_reached(
+        reached: &Arc<AtomicBool>,
+    ) -> impl Fn() -> future::Ready<StatusCode> + Clone + Send + 'static {
+        let reached = reached.clone();
+        move || {
+            reached.store(true, Ordering::SeqCst);
+            future::ready(StatusCode::OK)
+        }
+    }
+
+    /// 与 `api::router` 的 application 堆叠一致：门禁在内侧，超时在外侧。
+    fn application_with_issuer_gate(switch: HangSwitch, reached: Arc<AtomicBool>) -> Router {
+        wrap_with_request_timeout(
+            Router::new()
+                .route("/oauth/token", post(ok_if_reached(&reached)))
+                .route("/api/v1/auth/login", post(ok_if_reached(&reached)))
+                .route_layer(from_fn_with_state(switch, await_issuer_convergence)),
+            SYSTEM_TIMEOUT,
+        )
+        .layer(from_fn(map_request_timeout_by_path))
+    }
+
+    #[tokio::test]
+    async fn stalled_awaiting_issuer_convergence_times_out_then_recovers() {
+        let switch = HangSwitch::hanging();
+        let reached = Arc::new(AtomicBool::new(false));
+        let app = application_with_issuer_gate(switch.clone(), reached.clone());
+
+        let oauth = send(app.clone(), Method::POST, "/oauth/token").await;
+        assert_eq!(oauth.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = json_body(oauth).await;
+        assert_eq!(body["error"], "temporarily_unavailable");
+        assert!(
+            body.get("code").is_none(),
+            "OAuth timeout must not leak API code"
+        );
+        assert!(
+            !reached.load(Ordering::SeqCst),
+            "handler must not run while issuer convergence is stalled"
+        );
+
+        assert_timeout_envelope(send(app.clone(), Method::POST, "/api/v1/auth/login").await).await;
+        assert!(
+            !reached.load(Ordering::SeqCst),
+            "handler must not run while issuer convergence is stalled"
+        );
+
+        switch.release();
+        let recovered = send(app, Method::POST, "/api/v1/auth/login").await;
+        assert_eq!(recovered.status(), StatusCode::OK);
+        assert!(
+            reached.load(Ordering::SeqCst),
+            "a subsequent request must reach the handler after convergence unblocks"
+        );
+    }
+
+    #[tokio::test]
+    async fn issuer_gate_outside_timeout_hangs_on_stalled_convergence() {
+        // 失败场景：门禁作为更外层 route_layer，load_raw 在超时开始前就卡住。
+        let app = Router::new()
+            .route("/oauth/token", post(|| async { StatusCode::OK }))
+            .route_layer(request_timeout_layer(SYSTEM_TIMEOUT))
+            .route_layer(from_fn(await_stalled_issuer_convergence))
+            .layer(from_fn(map_request_timeout_by_path));
+
+        let hung = tokio::time::timeout(
+            SYSTEM_TIMEOUT + Duration::from_millis(30),
+            send(app, Method::POST, "/oauth/token"),
+        )
+        .await;
+        assert!(
+            hung.is_err(),
+            "AwaitingIssuer load_raw outside TimeoutLayer never returns the timeout response"
+        );
+    }
+
+    async fn await_stalled_issuer_convergence(request: AxumRequest, next: Next) -> Response {
+        future::pending::<()>().await;
+        next.run(request).await
     }
 
     /// 构造一个返回 504 的下游服务，套上超时映射中间件，验证路径分流。

@@ -8,6 +8,8 @@ use axum::{
 
 use crate::{settings::IssuerRuntimeState, state::AppState};
 
+/// Issuer 收敛发生在 `next.run()` 之前，必须由外层请求超时包住。
+/// 卡住的 `load_raw` 只能返回超时，不能让请求在门禁里无限等待。
 pub(super) async fn require_issuer(
     State(state): State<AppState>,
     mut request: AxumRequest,
@@ -34,6 +36,8 @@ pub(super) async fn require_issuer(
     response
 }
 
+/// AwaitingIssuer 时向 settings 库做一次收敛。这段 await 必须落在请求超时层
+/// 内侧：外层 TimeoutLayer 取消 stalled `load_raw`，而不是让请求在门禁里堆积。
 async fn converge_awaiting(state: &AppState) -> Result<Arc<IssuerRuntimeState>, ()> {
     let runtime = state.issuer.state();
     if !matches!(runtime.as_ref(), IssuerRuntimeState::AwaitingIssuer) {
