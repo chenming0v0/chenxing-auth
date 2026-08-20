@@ -1,4 +1,5 @@
-import { useEffect, useRef, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
+import { useDrawerFocus } from '../../components/drawer'
 import { Button, Field, HudPanel, Icon, Notice, PasswordField } from '../../components/ui'
 
 type EmailChangeDialogProps = {
@@ -26,23 +27,7 @@ export function EmailChangeDialog({
   onCancel,
   onSubmit,
 }: EmailChangeDialogProps) {
-  const cancelRef = useRef(onCancel)
-
-  useEffect(() => { cancelRef.current = onCancel }, [onCancel])
-  useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    document.getElementById(stage === 'details' ? 'new-email-address' : 'email-change-code')?.focus()
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      cancelRef.current()
-    }
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-      previousFocus?.focus()
-    }
-  }, [stage])
+  const containerRef = useDrawerFocus(onCancel)
 
   return (
     <div
@@ -50,7 +35,8 @@ export function EmailChangeDialog({
       role="presentation"
       onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}
     >
-      <HudPanel as="form" role="dialog" aria-modal="true" aria-labelledby="email-change-title" className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-lg" onSubmit={onSubmit}>
+      <div ref={containerRef} className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-lg" role="dialog" aria-modal="true" aria-labelledby="email-change-title" tabIndex={-1}>
+        <HudPanel as="form" className="w-full" onSubmit={onSubmit}>
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-cyan)]">// Email Security</p>
@@ -84,7 +70,8 @@ export function EmailChangeDialog({
           <Button type="button" variant="ghost" onClick={onCancel}>取消</Button>
           <Button type="submit" icon={stage === 'details' ? 'mail' : 'shield-check'}>{stage === 'details' ? '发送验证码' : '确认变更'}</Button>
         </div>
-      </HudPanel>
+        </HudPanel>
+      </div>
     </div>
   )
 }

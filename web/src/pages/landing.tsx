@@ -137,7 +137,7 @@ export function LandingPage() {
       )}
     >
       {showIntro ? <IntroGate onDone={handleIntroDone} /> : null}
-      <div className="relative z-[var(--chenxing-z-content)]">
+      <div className="relative z-[var(--chenxing-z-content)]" inert={showIntro ? true : undefined} aria-hidden={showIntro || undefined}>
         {/* 参考站式两栏 hero：左侧文案 + 特性清单 + CTA，右侧终端示例卡。
             替代旧版贴底竖排巨字 + 大号轨道 logo 的破格布局。 */}
         <section className="relative flex min-h-screen flex-col justify-center overflow-hidden px-6 pb-24 pt-32 sm:px-10">

@@ -15,6 +15,7 @@ export function PlaygroundPage() {
   const [scope, setScope] = useState('openid')
   const [result, setResult] = useState<{ url: string; verifier: string; challenge: string; state: string } | null>(null)
   const [message, setMessage] = useState('')
+  const [loadError, setLoadError] = useState(false)
 
   useEffect(() => {
     void listAllOwnedOAuthClients()
@@ -27,7 +28,10 @@ export function PlaygroundPage() {
           setScope(first.scopes.join(' '))
         }
       })
-      .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。'))
+      .catch((reason: unknown) => {
+        setLoadError(true)
+        setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。')
+      })
       .finally(() => setLoading(false))
   }, [])
 
@@ -85,7 +89,8 @@ export function PlaygroundPage() {
   return (
     <ConsoleLayout>
       <PageIntro eyebrow="// Playground" title="授权测试" description="用真实的授权码 + PKCE 流程验证你的接入配置。" />
-      {message ? <div className="mb-4"><Notice tone="warning">{message}</Notice></div> : null}
+      {loadError ? <div className="mb-4"><Notice tone="warning">应用列表不可用，无法生成授权请求。{message} <button type="button" className="chenxing-link ml-2" onClick={() => window.location.reload()}>重试</button></Notice></div> : null}
+      {!loadError && message ? <div className="mb-4"><Notice tone="warning">{message}</Notice></div> : null}
 
       {loading ? (
         <HudPanel className="flex min-h-[20rem] flex-col items-center justify-center text-center">

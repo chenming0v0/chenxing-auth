@@ -23,11 +23,13 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
   const [identities, setIdentities] = useState<ExternalIdentity[]>([])
   const [providers, setProviders] = useState<PublicExternalProvider[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [unlinking, setUnlinking] = useState<ExternalIdentity | null>(null)
   const [password, setPassword] = useState('')
 
   async function load(): Promise<void> {
     setLoading(true)
+    setLoadError(null)
     try {
       const [identityResponse, providerResponse] = await Promise.all([
         apiFetch<ExternalIdentityListResponse>('/api/v1/auth/external-identities'),
@@ -36,6 +38,7 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
       setIdentities(Array.isArray(identityResponse.items) ? identityResponse.items : [])
       setProviders(providerResponse.filter(isProvider))
     } catch (error) {
+      setLoadError(error instanceof Error ? error.message : '外部账户状态加载失败。')
       onNotice({ text: error instanceof Error ? error.message : '外部账户状态加载失败。', tone: 'warning' })
     } finally {
       setLoading(false)
@@ -140,7 +143,13 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
         ))}
       </div>
 
-      {!loading && bindings.length === 0 ? (
+      {loadError ? (
+        <div className="mt-4 flex items-start gap-2 border-t border-[var(--chenxing-border)] pt-4">
+          <Icon name="circle-alert" size={16} className="mt-0.5 shrink-0 text-[var(--chenxing-warning)]" />
+          <p className="chenxing-caption">登录身份暂时不可用。{loadError} <button type="button" className="chenxing-link ml-2" onClick={() => void load()}>重试</button></p>
+        </div>
+      ) : null}
+
         <div className="mt-4 flex items-start gap-2 border-t border-[var(--chenxing-border)] pt-4">
           <Icon name="info" size={16} className="mt-0.5 shrink-0 text-[var(--chenxing-muted-foreground)]" />
           <p className="chenxing-caption">管理员尚未启用其他登录身份。启用新的 OAuth/OIDC 提供方后，本列表会自动扩展。</p>

@@ -1,4 +1,5 @@
-import { useEffect, useRef, type FormEvent } from 'react'
+import { type FormEvent } from 'react'
+import { useDrawerFocus } from '../../components/drawer'
 import { Button, HudPanel, Icon, PasswordField } from '../../components/ui'
 
 type PasswordChangeDialogProps = {
@@ -32,23 +33,7 @@ export function PasswordChangeDialog({
   onCancel,
   onSubmit,
 }: PasswordChangeDialogProps) {
-  const cancelRef = useRef(onCancel)
-
-  useEffect(() => { cancelRef.current = onCancel }, [onCancel])
-  useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    document.getElementById('password-change-current')?.focus()
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      cancelRef.current()
-    }
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-      previousFocus?.focus()
-    }
-  }, [])
+  const containerRef = useDrawerFocus(onCancel, busy)
 
   return (
     <div
@@ -56,14 +41,8 @@ export function PasswordChangeDialog({
       role="presentation"
       onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}
     >
-      <HudPanel
-        as="form"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="password-change-title"
-        className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-lg"
-        onSubmit={onSubmit}
-      >
+      <div ref={containerRef} className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-lg" role="dialog" aria-modal="true" aria-labelledby="password-change-title" tabIndex={-1}>
+        <HudPanel as="form" className="w-full" onSubmit={onSubmit}>
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-cyan)]">// Password Security</p>
@@ -85,7 +64,8 @@ export function PasswordChangeDialog({
           <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>取消</Button>
           <Button type="submit" icon="key-round" disabled={busy}>{busy ? '修改中…' : '确认修改'}</Button>
         </div>
-      </HudPanel>
+        </HudPanel>
+      </div>
     </div>
   )
 }

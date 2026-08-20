@@ -1,5 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react'
-import type { OAuthProviderInput, OAuthProviderSummary } from '../../../api'
+import { useDrawerFocus } from '../../../components/drawer'
 import { Button, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '../../../components/ui'
 import { SelectField } from '../../../components/select'
 import { useDirtyReport } from './panel'
@@ -138,6 +137,7 @@ type DialogProps = {
  */
 export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMessage, onDirtyChange }: DialogProps) {
   const [template, setTemplate] = useState('custom')
+  const containerRef = useDrawerFocus(onClose, busy)
   const [form, setForm] = useState<ProviderForm>(() => toForm(editing))
   /* 挂载时的表单快照即基线：弹层由 key 驱动每次打开都重新挂载，因此基线天然按次刷新。 */
   const [initialForm] = useState<ProviderForm>(() => toForm(editing))
@@ -181,10 +181,11 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
 
   return (
     <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-[rgba(2,4,10,0.72)] px-4 py-8 backdrop-blur-md">
-      <HudPanel as="form" className="w-full max-w-lg max-h-[90vh] overflow-y-auto" onSubmit={submit}>
+      <div ref={containerRef} className="relative z-[var(--chenxing-z-dialog)] w-full max-w-lg max-h-[90vh] overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="oauth-provider-dialog-title" tabIndex={-1}>
+        <HudPanel as="form" className="w-full" onSubmit={submit}>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="chenxing-h2 flex items-center gap-2">
+            <h2 id="oauth-provider-dialog-title" className="chenxing-h2 flex items-center gap-2">
               <Icon name="link" className="text-[var(--chenxing-cyan)]" size={18} />
               {title}
             </h2>
@@ -275,7 +276,8 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
             <Button type="submit" icon="save" disabled={busy}>保存</Button>
           </div>
         </div>
-      </HudPanel>
+        </HudPanel>
+      </div>
     </div>
   )
 }
