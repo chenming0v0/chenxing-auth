@@ -246,12 +246,14 @@ impl LoginTicketStore {
         let Some(ticket) = Self::parse_ticket_payload(payload)? else {
             return Ok(None);
         };
-        super::persistence::accept_or_restore_taken_ticket(
-            ticket,
-            |ticket| self.ticket_matches_current_epoch(ticket),
-            |ticket| self.restore(ticket_id, ticket),
-        )
-        .await
+        match self.ticket_matches_current_epoch(&ticket).await {
+            Ok(true) => Ok(Some(ticket)),
+            Ok(false) => Ok(None),
+            Err(error) => {
+                self.restore(ticket_id, ticket).await?;
+                Err(error)
+            }
+        }
     }
 
     async fn decode_ticket_payload(
