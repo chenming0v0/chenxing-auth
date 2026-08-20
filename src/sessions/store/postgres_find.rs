@@ -1,19 +1,35 @@
-//! Metadata-enabled session lookup (Issue #432).
+//! Metadata-enabled session lookup (Issues #432 / #646).
 //!
 //! Hot path is an unlocked PostgreSQL read. Redis is only a legacy payload
 //! fallback and must never run under a session row lock. `FOR UPDATE` is taken
 //! only for the short renewal write that bumps `last_seen_at` and backfills the
 //! encrypted payload.
+//!
+//! Session liveness and user role/status are selected in one JOIN so a role
+//! transition that revokes the Cookie cannot be observed as (live session,
+//! new Owner/Admin role).
 
 use redis::AsyncCommands;
 use time::OffsetDateTime;
 
 use crate::{
     sessions::domain::{Session, SessionLookup, SessionPayload, session_token_hash_bytes},
-    users::domain::UserId,
+    users::domain::{UserId, UserRole, UserStatus},
 };
 
 use super::super::{SessionStore, SessionStoreError};
+
+/// Session plus the user role/status observed in the same authority statement.
+///
+/// Role transitions revoke sessions and assign the new role in one commit
+/// (Issue #493). Reading those facts separately lets a Cookie that was live
+/// before the commit inherit Owner/Admin afterwards (Issue #646).
+#[derive(Debug, Clone)]
+pub struct AuthenticatedSession {
+    pub session: Session,
+    pub role: UserRole,
+    pub status: UserStatus,
+}
 
 /// Columns returned by the unlocked active-session lookup.
 type ActiveSessionSqlRow = (
@@ -25,6 +41,8 @@ type ActiveSessionSqlRow = (
     i64,
     bool,
     Option<Vec<u8>>,
+    String,
+    String,
 );
 
 impl From<ActiveSessionSqlRow> for ActiveSessionRow {
@@ -38,6 +56,8 @@ impl From<ActiveSessionSqlRow> for ActiveSessionRow {
             session_epoch,
             needs_renewal,
             payload,
+            role,
+            status,
         ): ActiveSessionSqlRow,
     ) -> Self {
         Self {
@@ -49,6 +69,8 @@ impl From<ActiveSessionSqlRow> for ActiveSessionRow {
             session_epoch,
             needs_renewal,
             payload,
+            role,
+            status,
         }
     }
 }
@@ -62,12 +84,34 @@ struct ActiveSessionRow {
     session_epoch: i64,
     needs_renewal: bool,
     payload: Option<Vec<u8>>,
+    role: String,
+    status: String,
 }
 
-pub(in crate::sessions::store) async fn find_with_metadata(
+impl SessionStore {
+    /// Look up a session together with the user role/status from one statement.
+    ///
+    /// Role transitions revoke sessions and assign the new role in one commit
+    /// (Issue #493). Authentication must not read those facts in two unlocked
+    /// queries: a Cookie that was live before promotion could otherwise inherit
+    /// Owner/Admin afterwards (Issue #646). Redis-only stores cannot bind a
+    /// user row and fail closed.
+    pub async fn find_authenticated(
+        &self,
+        token: &str,
+    ) -> Result<Option<AuthenticatedSession>, SessionStoreError> {
+        if self.metadata.is_some() {
+            find_authenticated_with_metadata(self, token).await
+        } else {
+            Err(SessionStoreError::MetadataUnavailable)
+        }
+    }
+}
+
+pub(in crate::sessions::store) async fn find_authenticated_with_metadata(
     store: &SessionStore,
     token: &str,
-) -> Result<Option<Session>, SessionStoreError> {
+) -> Result<Option<AuthenticatedSession>, SessionStoreError> {
     let pool = store
         .metadata
         .as_ref()
@@ -77,6 +121,9 @@ pub(in crate::sessions::store) async fn find_with_metadata(
     // Unlocked authority check. Holding FOR UPDATE here would pin the row for
     // the entire find — including Redis fallback I/O on migration rows.
     let Some(row) = load_active_by_token_hash(pool, store, &token_hash).await? else {
+        return Ok(None);
+    };
+    let Some((role, status)) = UserRole::from_authenticated_row(&row.role, &row.status) else {
         return Ok(None);
     };
 
@@ -126,7 +173,11 @@ pub(in crate::sessions::store) async fn find_with_metadata(
         session.last_seen_at = renewed_at;
     }
 
-    Ok(Some(session))
+    Ok(Some(AuthenticatedSession {
+        session,
+        role,
+        status,
+    }))
 }
 
 pub(in crate::sessions::store) async fn find_with_metadata_by_token_hash(
@@ -182,11 +233,16 @@ async fn load_active_by_token_hash(
     store: &SessionStore,
     token_hash: &[u8],
 ) -> Result<Option<ActiveSessionRow>, SessionStoreError> {
+    // `users.role` / `users.status` are selected here, not in a later query.
+    // A promotion that sets role=owner and revoked_at in one commit cannot be
+    // observed as a live Cookie plus the new privileged role (Issue #646).
     let row = crate::sqlx::query_as::<_, ActiveSessionSqlRow>(
         "SELECT sessions.id, sessions.user_id, sessions.created_at,
                 sessions.expires_at, sessions.last_seen_at, sessions.session_epoch,
                 sessions.last_seen_at <= NOW() - $3 AS needs_renewal,
-                sessions.session_payload
+                sessions.session_payload,
+                users.role,
+                users.status
          FROM user_sessions AS sessions
          JOIN users ON users.id = sessions.user_id
          WHERE sessions.token_hash = $1

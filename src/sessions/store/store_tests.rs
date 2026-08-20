@@ -40,6 +40,22 @@ async fn authenticated_save_is_refused_without_metadata() {
     );
 }
 
+/// Issue #646: binding session authentication to a user role requires the
+/// Postgres user row. Missing metadata must not invent a role or reopen a
+/// later `find_profile` TOCTOU.
+#[tokio::test]
+async fn authenticated_lookup_is_refused_without_metadata() {
+    let store = unreachable_store();
+    let error = store
+        .find_authenticated("any-token")
+        .await
+        .expect_err("role binding requires metadata");
+    assert!(
+        matches!(error, SessionStoreError::MetadataUnavailable),
+        "expected the metadata requirement to reject the lookup, got {error}"
+    );
+}
+
 /// 绑定语义是两类登录来源，不是同一件事的强弱版本：`Current` 不携带任何期望值。
 #[test]
 fn epoch_binding_distinguishes_current_from_authenticated() {

@@ -18,7 +18,8 @@ mod lookup;
 #[path = "postgres_save.rs"]
 mod save;
 
-pub(super) use find::{find_with_metadata, find_with_metadata_by_token_hash};
+pub use find::AuthenticatedSession;
+pub(super) use find::{find_authenticated_with_metadata, find_with_metadata_by_token_hash};
 pub(super) use lookup::{list_for_user, revoke_for_user};
 pub(super) use save::save_with_metadata;
 

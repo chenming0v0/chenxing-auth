@@ -261,6 +261,8 @@ impl AdminCaller {
         match self {
             Self::SystemToken => Ok(AdminActor::SystemToken),
             Self::Session(context) => {
+                // Role is the snapshot bound to this Session row (Issue #646).
+                // Write transactions still re-lock that exact row (Issue #647).
                 if !context.role.allows(permission) {
                     // 已认证但权限不足：留痕以便发现低权限账号的探测行为。
                     record_authz_denial(state, context.user_id, permission, "insufficient_role")

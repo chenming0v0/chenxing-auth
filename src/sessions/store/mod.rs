@@ -35,6 +35,7 @@ mod tests;
 // `users::repository` 通过 `crate::sessions::store::...` 调用，路径不变。
 // 这里必须用 `pub(crate) use` 而非 `pub use`——`pub use` 重导出 `pub(crate)` 条目
 // 会触发 E0365。
+pub use postgres::AuthenticatedSession;
 pub(crate) use postgres::{
     SessionIssuanceGuard, lock_user_session_scope, revoke_all_for_user_in_transaction,
 };
@@ -297,7 +298,9 @@ impl SessionStore {
 
     pub async fn find(&self, token: &str) -> Result<Option<Session>, SessionStoreError> {
         if self.metadata.is_some() {
-            postgres::find_with_metadata(self, token).await
+            Ok(postgres::find_authenticated_with_metadata(self, token)
+                .await?
+                .map(|bound| bound.session))
         } else {
             redis_only::find_redis_only(self, token).await
         }

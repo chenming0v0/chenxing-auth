@@ -163,6 +163,15 @@ impl UserRole {
             (Self::Owner, _) | (Self::Admin, Self::Admin | Self::User) | (Self::User, Self::User)
         )
     }
+
+    /// Bind role and status from one user-row snapshot read with a live session.
+    ///
+    /// A non-active status cannot authenticate, even if `role` is already Owner
+    /// (Issue #646). Unknown roles degrade to User so they cannot gain privileges.
+    pub fn from_authenticated_row(role: &str, status: &str) -> Option<(Self, UserStatus)> {
+        let status = UserStatus::parse(status)?;
+        (status == UserStatus::Active).then_some((Self::parse(role).unwrap_or(Self::User), status))
+    }
 }
 
 pub use super::registration_input::RegistrationInput;

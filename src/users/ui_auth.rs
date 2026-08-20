@@ -7,6 +7,11 @@ use crate::{
     users::domain::{UserId, UserStatus},
 };
 
+/// Browser session bound to the user role observed in the same authority read.
+///
+/// `role` comes from the session lookup JOIN (Issue #646), never from a later
+/// `find_profile`. A session revoked by a role transition must not authenticate,
+/// even if the user is now Owner.
 #[derive(Debug)]
 pub struct UserContext {
     pub user_id: UserId,
@@ -31,39 +36,32 @@ pub(crate) async fn current_user(
         }
         Err(_) => return Err(invalid_session_response(state, "invalid_session")),
     };
-    let Some(session) = state
+    let Some(authenticated) = state
         .sessions
-        .find(&session_token)
+        .find_authenticated(&session_token)
         .await
         .map_err(|_| error::internal())?
     else {
         return Err(invalid_session_response(state, "invalid_session"));
     };
-    if !session.is_active_at(state.clock.now()) {
+    if !authenticated.session.is_active_at(state.clock.now()) {
         return Err(invalid_session_response(state, "invalid_session"));
     }
-    let user_id = session
+    let user_id = authenticated
+        .session
         .user_id
         .parse::<UserId>()
         .map_err(|_| invalid_session_response(state, "invalid_session"))?;
     if !state.issuer.local_login_allowed(user_id) {
         return Err(invalid_session_response(state, "invalid_session"));
     }
-    let Some(profile) = state
-        .users
-        .find_profile(user_id)
-        .await
-        .map_err(|_| error::internal())?
-    else {
-        return Err(invalid_session_response(state, "invalid_session"));
-    };
-    if UserStatus::parse(&profile.status) != Some(UserStatus::Active) {
+    if authenticated.status != UserStatus::Active {
         return Err(invalid_session_response(state, "user_disabled"));
     }
     Ok(UserContext {
         user_id,
-        session,
-        role: profile.role,
+        session: authenticated.session,
+        role: authenticated.role,
     })
 }
 
