@@ -24,7 +24,7 @@ const AUTH_SYNC_CHANNEL = 'chenxing-auth-sync'
 const AUTH_SYNC_STORAGE_KEY = 'chenxing-auth-sync-event'
 const REVALIDATE_THROTTLE_MS = 5_000
 
-type AuthSyncEvent = { type: 'logout'; nonce: string }
+type AuthSyncEvent = { type: 'logout' | 'login'; nonce: string; occurredAt: number }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserMe | null>(null)
@@ -45,6 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const generationRef = useRef<number>(0)
   const refreshSeqRef = useRef<number>(0)
   const userIdRef = useRef<UserMe['id'] | null>(null)
+  const authChangedAtRef = useRef(0)
 
   const clearLocal = useCallback(() => {
     // 递增代数——所有正在进行的 refresh() await 返回后会发现代数不匹配，自动丢弃结果
@@ -55,8 +56,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearApiCache()
   }, [])
 
-  const broadcastLogout = useCallback(() => {
-    const event: AuthSyncEvent = { type: 'logout', nonce: `${Date.now()}-${Math.random()}` }
+  const broadcastAuthEvent = useCallback((type: AuthSyncEvent['type'], occurredAt = Date.now()) => {
+    const event: AuthSyncEvent = { type, nonce: `${Date.now()}-${Math.random()}`, occurredAt }
+    authChangedAtRef.current = Math.max(authChangedAtRef.current, occurredAt)
     try {
       channelRef.current?.postMessage(event)
     } catch {
@@ -69,10 +71,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const clear = useCallback(() => {
+  const clear = useCallback((occurredAt?: number) => {
     clearLocal()
-    if (typeof window !== 'undefined') broadcastLogout()
-  }, [broadcastLogout, clearLocal])
+    if (typeof window !== 'undefined') broadcastAuthEvent('logout', occurredAt)
+  }, [broadcastAuthEvent, clearLocal])
 
   const completeBootstrap = useCallback(() => {
     setBootstrap('ready')
@@ -83,6 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // 任一不匹配都说明自己过期，不得覆盖当前 user/status。
     const generation = generationRef.current
     const requestId = ++refreshSeqRef.current
+    const requestStartedAt = Date.now()
     const isCurrentRequest = () =>
       generation === generationRef.current && requestId === refreshSeqRef.current
     // 已认证页面刷新资料时保持现有内容；初次加载、登录完成和错误重试则进入 loading。
@@ -104,6 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       userIdRef.current = profile.id
       setUser(profile)
       setStatus('authenticated')
+      broadcastAuthEvent('login')
       return profile
     } catch (error) {
       // 过期请求不得写状态。尤其是旧 401：再调 clear() 会把登录后的新状态清掉（#473）。
@@ -113,7 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // 网络错误（ApiError.status === 0）和服务端错误（5xx）不等于已登出：
       // 在网络抖动时误调 clear() 会把仍有效的会话踢出，属于错误行为。
       if (error instanceof ApiError && error.status === 401) {
-        clear()
+        clear(requestStartedAt)
       } else {
         // 非 401 故障不代表会话失效。已认证页面继续保留当前用户；初次加载则
         // 进入显式可恢复状态，由受保护路由提供重试动作，避免永久停在 loading。
@@ -121,13 +125,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       return null
     }
-  }, [clear])
+  }, [broadcastAuthEvent, clear])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
 
     const onRemoteLogout = (event: AuthSyncEvent | null) => {
-      if (event?.type === 'logout') clearLocal()
+      if (!event || !Number.isFinite(event.occurredAt) || event.occurredAt < authChangedAtRef.current) return
+      authChangedAtRef.current = event.occurredAt
+      if (event.type === 'logout') clearLocal()
     }
     const onStorage = (event: StorageEvent) => {
       if (event.key !== AUTH_SYNC_STORAGE_KEY || !event.newValue) return

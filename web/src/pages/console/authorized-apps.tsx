@@ -11,6 +11,7 @@ export function AuthorizedApps() {
   const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
   const [busyClientId, setBusyClientId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [hasData, setHasData] = useState(false)
   const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
   const warn = (text: string) => notify(text, 'warning')
 
@@ -20,6 +21,7 @@ export function AuthorizedApps() {
     try {
       const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
       setApps(response.items)
+      setHasData(true)
     } catch (reason) {
       warn(reason instanceof Error ? reason.message : '应用列表加载失败。')
     } finally {
@@ -31,6 +33,7 @@ export function AuthorizedApps() {
     try {
       const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
       setApps(response.items)
+      setHasData(true)
     } catch {
       // 撤销已经生效时保留旧列表与成功提示，不用刷新错误覆盖成功事实。
     }
@@ -65,8 +68,8 @@ export function AuthorizedApps() {
       />
       {notice ? <div className="mb-4"><Notice tone={notice.tone}>{notice.text}</Notice></div> : null}
       <div className="mb-6 grid grid-cols-3 gap-3 sm:gap-4">
-        <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">已授权应用</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading ? '—' : apps.length}</p></HudPanel>
-        <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">开放权限域</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading ? '—' : openScopes}</p></HudPanel>
+        <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">已授权应用</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading || !hasData ? '—' : apps.length}</p></HudPanel>
+        <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">开放权限域</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading || !hasData ? '—' : openScopes}</p></HudPanel>
         <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">服务端记录</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">LIVE</p></HudPanel>
       </div>
       <div className="space-y-4">
@@ -98,7 +101,7 @@ export function AuthorizedApps() {
             </div>
           </HudPanel>
         ))}
-        {!loading && !apps.length ? (
+        {!loading && hasData && !apps.length ? (
           <HudPanel>
             <EmptyState icon="shield-check" title="暂无已授权应用" description="完成 OAuth 授权后，应用会显示在这里。" action={<Link className="chenxing-btn-primary mt-2" to="/console/playground">去授权测试</Link>} />
           </HudPanel>

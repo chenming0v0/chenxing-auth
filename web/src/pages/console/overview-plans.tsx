@@ -16,8 +16,9 @@ export function ConsoleOverview() {
   const { error: entitlementError, retry: retryEntitlements } = entitlementQuery
   const plans = entitlementState(entitlementQuery)
   const summary = useAccountSummary()
-  const { error, loading, retry: retrySummary } = summary
+  const { error, loading, hasData, retry: retrySummary } = summary
   const { clients, sessions, apps } = summary.data
+  const summaryUnavailable = loading || !hasData
 
   /**
    * 摘要与权益是两个独立请求，共用同一个 Notice。按当前错误来源重试，
@@ -58,17 +59,17 @@ export function ConsoleOverview() {
       <div className="mt-7 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <HudPanel>
           <div className="flex items-center justify-between"><span className="chenxing-caption">已授权应用</span><Icon name="shield-check" className="text-[var(--chenxing-cyan)]" size={16} /></div>
-          <p className="chenxing-display mt-3 text-3xl font-bold">{loading ? '—' : apps.length}</p>
-          <p className="chenxing-mono mt-2 text-xs text-[var(--chenxing-muted-foreground)]">开放权限域 · {loading ? '—' : openScopes}</p>
+          <p className="chenxing-display mt-3 text-3xl font-bold">{summaryUnavailable ? '—' : apps.length}</p>
+          <p className="chenxing-mono mt-2 text-xs text-[var(--chenxing-muted-foreground)]">开放权限域 · {summaryUnavailable ? '—' : openScopes}</p>
         </HudPanel>
         <HudPanel>
           <div className="flex items-center justify-between"><span className="chenxing-caption">接入应用</span><Icon name="code-2" className="text-[var(--chenxing-cyan)]" size={16} /></div>
-          <p className="chenxing-display mt-3 text-3xl font-bold">{loading ? '—' : clients.length}</p>
+          <p className="chenxing-display mt-3 text-3xl font-bold">{summaryUnavailable ? '—' : clients.length}</p>
           <p className="chenxing-mono mt-2 text-xs text-[var(--chenxing-muted-foreground)]">当前账号拥有</p>
         </HudPanel>
         <HudPanel>
           <div className="flex items-center justify-between"><span className="chenxing-caption">活跃会话</span><Icon name="activity" className="text-[var(--chenxing-cyan)]" size={16} /></div>
-          <p className="chenxing-display mt-3 text-3xl font-bold">{loading ? '—' : sessions.length}</p>
+          <p className="chenxing-display mt-3 text-3xl font-bold">{summaryUnavailable ? '—' : sessions.length}</p>
           <p className="chenxing-mono mt-2 text-xs text-[var(--chenxing-muted-foreground)]">服务端当前列表</p>
         </HudPanel>
         <HudPanel>
@@ -155,7 +156,7 @@ export function ConsoleOverview() {
         <DataTable
           minWidth={720}
           columns={['时间', '应用', '事件', '状态']}
-          empty={loading ? '正在加载最近活动。' : apps.length ? null : '暂无最近授权活动'}
+          empty={loading ? '正在加载最近活动。' : !hasData ? '最近授权活动不可用。' : apps.length ? null : '暂无最近授权活动'}
         >
           {apps.slice(0, 4).map((app) => (
             <tr key={app.client_id}>
