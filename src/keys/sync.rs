@@ -14,9 +14,14 @@
 //! 时钟偏差围栏，因此同步间隔必须短于基础激活等待，也必须远小于
 //! `key_rotation_grace_seconds`（旧公钥保留窗口）。吊销同理：非本实例执行的
 //! 吊销，最长在一个同步周期后才在本实例生效。
+//!
+//! 到期激活也由本 worker 完成：每次同步走 `load_materials` → `activation::recover`，
+//! 窗口已到就把签发权切到 published key。没有这条路径，落盘轮换会永远停在
+//! pending，直到有人手动调用 `activate_published_at`（Issue #655）。
 
 use std::time::Duration;
 
+use time::OffsetDateTime;
 use tokio::time::sleep;
 
 use crate::clock::{Clock, SystemClock};
@@ -65,6 +70,18 @@ impl KeyManager {
     /// 目录锁必须持有到内存写入完成：轮换在同一把锁内先写文件再写内存，
     /// 提前释放会让本函数用锁外读到的旧快照覆盖掉刚完成的轮换结果。
     pub fn sync_from_disk_blocking(&self) -> Result<KeySyncOutcome, KeyManagerError> {
+        self.sync_from_disk_blocking_at(SystemClock.now())
+    }
+
+    /// 在给定时刻对齐磁盘快照，并激活已到期的 published key。
+    ///
+    /// `load_materials` 会走 `activation::recover`：窗口已到就把签发权切过去。
+    /// 后台同步必须走这条路径，轮换才能在正常运行中完成，而不是只靠测试里的
+    /// `activate_published_at`（Issue #655）。
+    pub(super) fn sync_from_disk_blocking_at(
+        &self,
+        now: OffsetDateTime,
+    ) -> Result<KeySyncOutcome, KeyManagerError> {
         let (directory, retention, skew_allowance, activation_delay) = {
             let state = self.read_state();
             (
@@ -83,7 +100,6 @@ impl KeyManager {
             Err(error) if is_lock_contention(&error) => return Ok(KeySyncOutcome::Contended),
             Err(error) => return Err(KeyManagerError::Io(error)),
         };
-        let now = SystemClock.now();
         let (active_key_id, key_files) =
             persistence::load_materials(&directory, retention, skew_allowance, now, false)?;
         let generation = super::journal::revocation_generation(&directory)?;
@@ -134,6 +150,8 @@ impl KeyManager {
         let hint = self.resync_hint.clone();
         loop {
             worker.reporter().heartbeat();
+            // 同步同时承担到期激活：`load_materials` 在目录锁内按 `activate_at`
+            // 提升 published key，所以正常运行不需要第二条激活任务。
             match self.sync_from_disk().await {
                 Ok(KeySyncOutcome::Updated) => {
                     self.mark_sync_healthy(true);
@@ -193,3 +211,7 @@ fn is_lock_contention(error: &std::io::Error) -> bool {
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::AlreadyExists
     )
 }
+
+#[cfg(test)]
+#[path = "sync_tests.rs"]
+mod tests;
