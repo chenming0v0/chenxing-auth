@@ -33,7 +33,7 @@ impl UserService {
         let dimensions =
             self.password_change_dimensions(&credentials.canonical_email, source_ip)?;
         let reservation = self.limiter.reserve(dimensions.clone()).await?;
-        if reservation.is_empty() {
+        if reservation.is_denied() {
             return Err(UserServiceError::RateLimited);
         }
         if UserStatus::parse(&credentials.status) != Some(UserStatus::Active)
@@ -172,7 +172,7 @@ impl UserService {
         let dimensions =
             self.password_change_dimensions(&credentials.canonical_email, source_ip)?;
         let reservation = self.limiter.reserve(dimensions.clone()).await?;
-        if reservation.is_empty() {
+        if reservation.is_denied() {
             return Err(UserServiceError::RateLimited);
         }
 

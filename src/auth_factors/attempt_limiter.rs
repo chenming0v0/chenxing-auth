@@ -55,14 +55,14 @@ impl AuthFactorService {
         Ok(dimensions)
     }
 
-    /// 预留一次尝试。返回 true 表示已达上限、调用方必须直接拒绝；此时没有任何
-    /// pending 计数需要归还。
+    /// 预留一次尝试。`None` 表示已达上限、调用方必须直接拒绝；此时没有任何
+    /// pending 计数需要归还。空维度是放行（Skip 且无源 IP），不是拒绝。
     pub(super) async fn ensure_dimensions_allowed(
         &self,
         dimensions: Vec<LimiterDimension>,
     ) -> Result<Option<AuthReservation>, AuthFactorServiceError> {
         let reservation = self.limiter.reserve(dimensions).await?;
-        Ok((!reservation.is_empty()).then_some(reservation))
+        Ok((!reservation.is_denied()).then_some(reservation))
     }
 
     /// 把已预留的尝试提交为一次失败。限流后端出错时预留额度会被尽力归还，

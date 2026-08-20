@@ -217,6 +217,9 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
     ) -> LimiterFuture<'a, AuthReservation> {
         Box::pin(async move {
             if dimensions.is_empty() {
+                // Vacuous allow: Skip + missing source IP has nothing to count.
+                // Must not be represented as a denial — that mapping 401s every
+                // ConnectInfo-less login (oneshot tests and Skip deployments).
                 return Ok(AuthReservation::single(
                     dimensions,
                     AuthReservation::token(),
@@ -248,7 +251,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                 Err(_) => return self.policy.unavailable_reservation("reserve", &dimensions),
             };
             if log_blocked_dimension(blocked, &dimensions, limits.window()) {
-                return Ok(AuthReservation::single(Vec::new(), token));
+                return Ok(AuthReservation::denied());
             }
             Ok(AuthReservation::single(dimensions, token))
         })
