@@ -74,6 +74,7 @@ describe('safeErrorMessage', () => {
   it('prefers the mapped message for known codes', () => {
     expect(safeErrorMessage(401, 'invalid_credentials')).toBe('账号或密码不正确。')
     expect(safeErrorMessage(400, 'passkey_disabled')).toBe('Passkey 登录尚未启用。')
+    expect(safeErrorMessage(404, 'invitation_code_not_found')).toBe('邀请码不存在或已失效。')
     expect(safeErrorMessage(500, 'csrf_invalid')).toBe('请求校验失败，请刷新页面后重试。')
   })
 
