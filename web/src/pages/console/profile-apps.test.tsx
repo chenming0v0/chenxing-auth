@@ -31,10 +31,12 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 let requests: Array<{ path: string; init?: RequestInit }> = []
+let emailChallengeSequence = 0
 
 beforeEach(() => {
   window.history.replaceState({}, '', '/console/profile')
   requests = []
+  emailChallengeSequence = 0
   document.cookie = 'chenxing_csrf=test-token'
   vi.stubGlobal('fetch', vi.fn((path: string, init?: RequestInit) => {
     requests.push({ path, init })
@@ -43,7 +45,7 @@ beforeEach(() => {
     if (path === '/api/v1/auth/external-identities') return Promise.resolve(jsonResponse({ items: [] }))
     if (path === '/api/v1/auth/external-providers') return Promise.resolve(jsonResponse([]))
     if (path === '/api/v1/auth/me') return Promise.resolve(jsonResponse({ ...USER, display_name: '更新后的用户', username: 'updated-user' }))
-    if (path === '/api/v1/auth/email-change/start') return Promise.resolve(jsonResponse({ challenge_id: 'challenge-1', expires_at: '2099-01-01T01:00:00Z' }, 202))
+    if (path === '/api/v1/auth/email-change/start') return Promise.resolve(jsonResponse({ challenge_id: `challenge-${++emailChallengeSequence}`, expires_at: '2099-01-01T01:00:00Z' }, 202))
     if (path === '/api/v1/auth/email-change/confirm') return Promise.resolve(jsonResponse(null, 204))
     return Promise.reject(new Error(`unexpected request: ${path}`))
   }))
@@ -113,6 +115,76 @@ describe('ConsoleProfile 账户设置布局', () => {
     fireEvent.change(screen.getByLabelText('邮箱验证码'), { target: { value: '123456' } })
     fireEvent.click(screen.getByRole('button', { name: '确认变更' }))
     await waitFor(() => expect(requests.some(({ path }) => path === '/api/v1/auth/email-change/confirm')).toBe(true))
+  })
+
+  it('关闭并重新打开邮箱编辑器会重置旧 challenge 和验证码', async () => {
+    render(<ConsoleProfile />)
+    fireEvent.click(screen.getByRole('tab', { name: '安全设置' }))
+    fireEvent.click(screen.getByRole('button', { name: '更改邮箱' }))
+    fireEvent.change(screen.getByLabelText('新邮箱地址'), { target: { value: 'first@example.com' } })
+    fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'correct-password' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
+    await waitFor(() => expect(screen.getByLabelText('邮箱验证码')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('邮箱验证码'), { target: { value: '123456' } })
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    expect(screen.queryByRole('dialog', { name: '更改邮箱' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '更改邮箱' }))
+    expect(screen.getByLabelText('新邮箱地址')).toHaveProperty('value', '')
+    expect(screen.getByLabelText('当前密码')).toHaveProperty('value', '')
+    expect(screen.queryByLabelText('邮箱验证码')).toBeNull()
+    expect(screen.queryByText('验证码已发送到新邮箱。')).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('新邮箱地址'), { target: { value: 'second@example.com' } })
+    fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'correct-password' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
+    await waitFor(() => expect(screen.getByLabelText('邮箱验证码')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('邮箱验证码'), { target: { value: '654321' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认变更' }))
+
+    await waitFor(() => expect(requests.filter(({ path }) => path === '/api/v1/auth/email-change/confirm')).toHaveLength(1))
+    const confirmRequest = requests.find(({ path }) => path === '/api/v1/auth/email-change/confirm')
+    expect(JSON.parse(String(confirmRequest?.init?.body))).toEqual({ challenge_id: 'challenge-2', code: '654321' })
+  })
+
+  it('关闭并重新打开时忽略仍在途的旧 start 响应', async () => {
+    const startResponses: Array<(value: Response) => void> = []
+    vi.stubGlobal('fetch', vi.fn((path: string, init?: RequestInit) => {
+      requests.push({ path, init })
+      if (path === '/api/v1/auth/sessions') return Promise.resolve(jsonResponse({ items: [] }))
+      if (path === '/api/v1/auth/security/factors') return Promise.resolve(jsonResponse({ totp_enabled: false, passkey_count: 0, available_methods: ['totp', 'passkey'] }))
+      if (path === '/api/v1/auth/external-identities') return Promise.resolve(jsonResponse({ items: [] }))
+      if (path === '/api/v1/auth/external-providers') return Promise.resolve(jsonResponse([]))
+      if (path === '/api/v1/auth/email-change/start') return new Promise<Response>((resolve) => startResponses.push(resolve))
+      return Promise.reject(new Error(`unexpected request: ${path}`))
+    }))
+
+    render(<ConsoleProfile />)
+    fireEvent.click(screen.getByRole('tab', { name: '安全设置' }))
+    fireEvent.click(screen.getByRole('button', { name: '更改邮箱' }))
+    fireEvent.change(screen.getByLabelText('新邮箱地址'), { target: { value: 'old@example.com' } })
+    fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'correct-password' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
+    await waitFor(() => expect(startResponses).toHaveLength(1))
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    fireEvent.click(screen.getByRole('button', { name: '更改邮箱' }))
+    expect(screen.getByRole('button', { name: '发送中…' })).toHaveProperty('disabled', true)
+    expect(screen.queryByLabelText('邮箱验证码')).toBeNull()
+
+    startResponses.shift()?.(jsonResponse({ challenge_id: 'stale-challenge', expires_at: '2099-01-01T01:00:00Z' }, 202))
+    await waitFor(() => expect(screen.getByRole('button', { name: '发送验证码' })).toBeTruthy())
+    expect(screen.queryByLabelText('邮箱验证码')).toBeNull()
+    expect(screen.queryByText('验证码已发送到新邮箱。')).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('新邮箱地址'), { target: { value: 'new@example.com' } })
+    fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'correct-password' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
+    await waitFor(() => expect(startResponses).toHaveLength(1))
+    startResponses.shift()?.(jsonResponse({ challenge_id: 'new-challenge', expires_at: '2099-01-01T01:00:00Z' }, 202))
+    await waitFor(() => expect(screen.getByLabelText('邮箱验证码')).toBeTruthy())
+    expect(screen.getByRole('button', { name: '确认变更' })).toBeTruthy()
   })
 
   it('ignores an older session reload after a newer revoke reload', async () => {
