@@ -49,6 +49,7 @@ export function ConsoleProfile() {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const emailChangeGeneration = useRef(0)
   /* 提示语连同语气一起存。早先的实现用 message.includes('已保存') 反推语气，
      每加一条成功提示都得记得让文案命中那个子串，是等着出错的写法。 */
   const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
@@ -177,15 +178,22 @@ export function ConsoleProfile() {
     setShowProfileEditor(false)
   }
 
-  function openEmailEditor() {
+  function resetEmailEditor() {
+    emailChangeGeneration.current += 1
     setNewEmail('')
     setEmailPassword('')
+    setEmailCode('')
+    setEmailChallengeId(null)
+    setNotice(null)
+  }
+
+  function openEmailEditor() {
+    resetEmailEditor()
     setShowEmailEditor(true)
   }
 
   function closeEmailEditor() {
-    setNewEmail('')
-    setEmailPassword('')
+    resetEmailEditor()
     setShowEmailEditor(false)
   }
 
@@ -206,18 +214,22 @@ export function ConsoleProfile() {
   async function requestEmailChange(event: FormEvent) {
     event.preventDefault()
     setNotice(null)
+    const generation = emailChangeGeneration.current
     await run(async () => {
       try {
         if (!emailChallengeId) {
           const result = await apiFetch<{ challenge_id: string }>('/api/v1/auth/email-change/start', { method: 'POST', body: JSON.stringify({ new_email: newEmail.trim(), current_password: emailPassword }) })
+          if (generation !== emailChangeGeneration.current) return
           setEmailChallengeId(result.challenge_id)
           notify('验证码已发送到新邮箱。', 'success')
         } else {
           await apiFetch<void>('/api/v1/auth/email-change/confirm', { method: 'POST', body: JSON.stringify({ challenge_id: emailChallengeId, code: emailCode }) })
+          if (generation !== emailChangeGeneration.current) return
           clear()
           navigate('/login?returnTo=%2Fconsole%2Fprofile')
         }
       } catch (error) {
+        if (generation !== emailChangeGeneration.current) return
         warn(error instanceof Error ? error.message : '邮箱变更失败。')
       }
     })
