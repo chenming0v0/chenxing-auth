@@ -1122,11 +1122,16 @@ fn database_uses_forward_only_transactional_migration_history() {
         DB_MODULE
             .contains("include_str!(\"../../migrations/0041_email_change_attempt_budget.sql\")")
     );
+    assert!(
+        DB_MODULE.contains(
+            "include_str!(\"../../migrations/0042_email_change_attempt_budget_fix.sql\")"
+        )
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        41
+        42
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1170,14 +1175,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 41);
+    assert_eq!(migrations.len(), 42);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0041_email_change_attempt_budget.sql")
+        Some("0042_email_change_attempt_budget_fix.sql")
     );
     let versions = migrations
         .iter()
@@ -1188,7 +1193,7 @@ fn database_uses_forward_only_transactional_migration_history() {
                 .expect("migration filename starts with a version prefix")
         })
         .collect::<Vec<_>>();
-    assert_eq!(versions, (1..=41).collect::<Vec<_>>());
+    assert_eq!(versions, (1..=42).collect::<Vec<_>>());
 
     assert_eq!(
         DATABASE_BASELINE.matches("CREATE TABLE ").count(),
@@ -1288,6 +1293,8 @@ fn migration_history_declares_final_security_and_consistency_invariants() {
         "CONSTRAINT user_email_change_attempts_nonnegative",
         "CONSTRAINT user_email_change_attempts_bounded",
         "failed_attempts + in_flight_attempts <= 5",
+        "DROP CONSTRAINT user_email_change_attempts_bounded",
+        "0042_email_change_attempt_budget_fix.sql",
         "active_attempt_ids UUID[]",
         "cardinality(active_attempt_ids)",
         "GRANT SELECT, INSERT, UPDATE ON TABLE user_email_change_challenges TO chenxing_runtime",

@@ -35,7 +35,8 @@ pub async fn reserve_email_change_attempt(
              active_attempt_ids = array_append(active_attempt_ids, $4)
          WHERE id = $1 AND user_id = $2 AND consumed_at IS NULL
            AND expires_at > NOW()
-           AND failed_attempts + in_flight_attempts < $3
+           AND failed_attempts < $3
+           AND in_flight_attempts < $3
            AND in_flight_attempts = cardinality(active_attempt_ids)
          RETURNING new_email, new_canonical_email, code_hash, security_epoch",
     )
@@ -71,12 +72,31 @@ pub async fn record_email_change_failure(
     attempt_id: Uuid,
     max_failed_attempts: i64,
 ) -> Result<Option<RecordedEmailChangeFailure>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (bool, bool)>(
+    let mut transaction = pool.begin().await?;
+    let previous = crate::sqlx::query_as::<_, (bool, i64, i64)>(
+        "SELECT consumed_at IS NOT NULL, failed_attempts, in_flight_attempts
+         FROM user_email_change_challenges
+         WHERE id = $1 AND user_id = $2
+           AND in_flight_attempts > 0
+           AND $3 = ANY(active_attempt_ids)
+         FOR UPDATE",
+    )
+    .bind(challenge_id)
+    .bind(user_id)
+    .bind(attempt_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some((was_consumed, previous_failed_attempts, previous_in_flight_attempts)) = previous
+    else {
+        return Ok(None);
+    };
+
+    let challenge_consumed = crate::sqlx::query_scalar::<_, bool>(
         "UPDATE user_email_change_challenges
          SET in_flight_attempts = in_flight_attempts - 1,
              active_attempt_ids = array_remove(active_attempt_ids, $3),
              failed_attempts = CASE
-                 WHEN consumed_at IS NULL THEN failed_attempts + 1
+                 WHEN consumed_at IS NULL THEN LEAST(failed_attempts + 1, $4)
                  ELSE failed_attempts
              END,
              consumed_at = CASE
@@ -89,22 +109,23 @@ pub async fn record_email_change_failure(
          WHERE id = $1 AND user_id = $2
            AND in_flight_attempts > 0
            AND $3 = ANY(active_attempt_ids)
-         RETURNING consumed_at IS NOT NULL, failed_attempts >= $4",
+         RETURNING consumed_at IS NOT NULL",
     )
     .bind(challenge_id)
     .bind(user_id)
     .bind(attempt_id)
     .bind(max_failed_attempts)
-    .fetch_optional(pool)
-    .await
-    .map(|row| {
-        row.map(
-            |(challenge_consumed, threshold_reached)| RecordedEmailChangeFailure {
-                challenge_consumed,
-                threshold_reached,
-            },
-        )
-    })
+    .fetch_one(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+
+    Ok(Some(RecordedEmailChangeFailure {
+        challenge_consumed,
+        threshold_reached: !was_consumed
+            && previous_failed_attempts < max_failed_attempts
+            && previous_failed_attempts + 1 >= max_failed_attempts
+            && previous_in_flight_attempts == 1,
+    }))
 }
 
 /// Release a reserved slot after the account transaction definitely rolled
