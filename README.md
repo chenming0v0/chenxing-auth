@@ -206,7 +206,7 @@ bash install.sh
 
 安装器会生成独立部署目录和权限为 `0600` 的 `.env`，并依次拉取辰星认证中枢、
 PostgreSQL 和 Redis 镜像。三个 `docker pull` 的分层下载与解压进度不会隐藏；随后会
-显示数据库迁移、容器启动和就绪检查过程。安装器只以应用容器内的 `GET /health/ready` 返回 200 为准；该端点同时确认数据库、Redis、四个关键后台 worker 和签名密钥同步均就绪，只有 liveness 成功而依赖尚未就绪时不会误报成功。若就绪端点持续失败，超时诊断会输出 Compose 服务状态、应用容器 health 状态和应用日志。默认使用
+显示数据库迁移、容器启动和就绪检查过程。安装器只以应用容器内的 `GET /health/ready` 返回 200 为准；该端点同时确认数据库、Redis、五个关键后台 worker 和签名密钥同步均就绪，只有 liveness 成功而依赖尚未就绪时不会误报成功。若就绪端点持续失败，超时诊断会输出 Compose 服务状态、应用容器 health 状态和应用日志。默认使用
 `ghcr.io/chenming0v0/chenxing-auth:latest`，可通过 `CHENXING_IMAGE` 覆盖。
 
 新实例不要求安装时已经拥有域名，安装器生成的 `.env` 也不包含 `APP_ISSUER`。数据库
