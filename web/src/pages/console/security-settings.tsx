@@ -1,13 +1,16 @@
 import type { FormEvent, ReactNode } from 'react'
-import type { SecurityTotpStart } from '../../api'
+import type { SecurityFactorSummary, SecurityTotpStart } from '../../api'
 import { Badge, Button, Icon } from '../../components/ui'
 import { TotpEnrollmentDialog } from './totp-enrollment-dialog'
 
+export type SecurityFactorState =
+  | { status: 'loading' }
+  | { status: 'failed' }
+  | { status: 'ready'; summary: SecurityFactorSummary }
+
 type SecuritySettingsProps = {
-  loading: boolean
+  factors: SecurityFactorState
   busy: string | null
-  totpEnabled: boolean
-  passkeyCount: number
   totpData: SecurityTotpStart | null
   code: string
   onCode: (value: string) => void
@@ -24,10 +27,8 @@ type SecuritySettingsProps = {
 }
 
 export function SecuritySettings({
-  loading,
+  factors,
   busy,
-  totpEnabled,
-  passkeyCount,
   totpData,
   code,
   onCode,
@@ -42,7 +43,12 @@ export function SecuritySettings({
   emailAction,
   passwordAction,
 }: SecuritySettingsProps) {
-  const protectedAccount = totpEnabled || passkeyCount > 0
+  const summary = factors.status === 'ready' ? factors.summary : null
+  const loading = factors.status === 'loading'
+  const failed = factors.status === 'failed'
+  const totpEnabled = summary?.totp_enabled ?? false
+  const passkeyCount = summary?.passkey_count ?? 0
+  const protectedAccount = summary !== null && (totpEnabled || passkeyCount > 0)
 
   return (
     <div aria-labelledby="security-settings-heading">
@@ -51,10 +57,10 @@ export function SecuritySettings({
           <h3 id="security-settings-heading" className="chenxing-h3">登录与身份验证</h3>
           <p className="chenxing-caption mt-1 max-w-2xl">管理密码、设备凭据和动态验证码。敏感操作会要求重新确认当前密码。</p>
         </div>
-        <Badge tone={protectedAccount ? 'success' : 'neutral'}>{loading ? '读取中' : protectedAccount ? '多重保护' : '仅密码'}</Badge>
+        <Badge tone={failed ? 'warning' : protectedAccount ? 'success' : 'neutral'}>{loading ? '读取中' : failed ? '状态未知' : protectedAccount ? '多重保护' : '仅密码'}</Badge>
       </div>
 
-      {!loading && !protectedAccount ? (
+      {summary && !protectedAccount ? (
         <div className="mb-4 flex items-start gap-3 rounded-[var(--chenxing-radius-md)] border border-[rgba(245,199,106,0.28)] bg-[rgba(245,199,106,0.06)] px-4 py-3">
           <Icon name="shield-alert" size={18} className="mt-0.5 shrink-0 text-[var(--chenxing-gold)]" />
           <div>
@@ -94,10 +100,10 @@ export function SecuritySettings({
           accent="gold"
           title="Passkey 登录"
           description="使用设备生物识别或安全密钥完成无密码验证，可同时保留多个设备凭据。"
-          status={<Badge tone={passkeyCount > 0 ? 'success' : 'neutral'}>{loading ? '读取中' : passkeyCount > 0 ? `${passkeyCount} 个凭据` : '未启用'}</Badge>}
-          actions={(
+          status={<Badge tone={failed ? 'warning' : passkeyCount > 0 ? 'success' : 'neutral'}>{loading ? '读取中' : failed ? '状态未知' : passkeyCount > 0 ? `${passkeyCount} 个凭据` : '未启用'}</Badge>}
+          actions={summary ? (
             <>
-              <Button className="min-h-11" icon="key-round" disabled={busy !== null || loading} onClick={onStartPasskey}>
+              <Button className="min-h-11" icon="key-round" disabled={busy !== null} onClick={onStartPasskey}>
                 {busy === 'passkey' ? '等待设备确认…' : passkeyCount > 0 ? '添加 Passkey' : '注册 Passkey'}
               </Button>
               {passkeyCount > 0 ? (
@@ -106,20 +112,20 @@ export function SecuritySettings({
                 </Button>
               ) : null}
             </>
-          )}
+          ) : undefined}
         />
 
         <SecurityActionRow
           icon="shield-check"
           title="验证器应用"
           description="扫描二维码绑定 TOTP 动态验证码，为密码登录增加独立的第二步验证。"
-          status={<Badge tone={totpEnabled ? 'success' : 'neutral'}>{loading ? '读取中' : totpEnabled ? '已启用' : '未启用'}</Badge>}
-          actions={totpEnabled ? (
+          status={<Badge tone={failed ? 'warning' : totpEnabled ? 'success' : 'neutral'}>{loading ? '读取中' : failed ? '状态未知' : totpEnabled ? '已启用' : '未启用'}</Badge>}
+          actions={!summary ? undefined : totpEnabled ? (
             <Button className="min-h-11" variant="danger" icon="trash-2" disabled={busy !== null} onClick={() => onRemove('totp')}>
               移除验证器
             </Button>
           ) : (
-            <Button className="min-h-11" icon="plus" disabled={busy !== null || loading} onClick={onStartTotp}>
+            <Button className="min-h-11" icon="plus" disabled={busy !== null} onClick={onStartTotp}>
               {busy === 'totp-start' ? '准备中…' : '绑定验证器'}
             </Button>
           )}

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { StrictMode, type ReactNode } from 'react'
 import { AccountManagement } from './security'
 import { installCsrfCookie } from '../../test/csrf-cookie'
 
@@ -34,6 +34,7 @@ vi.mock('../../components/shells', () => ({
 }))
 
 type CapturedRequest = { path: string; method: string; body: Record<string, unknown> | null; headers: Headers }
+type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void }
 
 const NONE = { totp_enabled: false, passkey_count: 0, available_methods: ['totp', 'passkey'] }
 const TOTP_ON = { totp_enabled: true, passkey_count: 0, available_methods: ['totp'] }
@@ -52,6 +53,7 @@ const TOTP_START = {
 let requests: CapturedRequest[] = []
 let bindingResponse: { authorization_url: string } | null = null
 let factorSummary = NONE
+let loadFactorSummary: () => Promise<Response>
 let identities = { items: [] as typeof IDENTITIES.items }
 
 
@@ -69,26 +71,35 @@ function capture(path: string, init?: RequestInit): CapturedRequest {
   }
 }
 
-async function openSecurityTab(): Promise<void> {
-  fireEvent.click(await screen.findByRole('tab', { name: '安全设置' }))
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise })
+  return { promise, resolve }
 }
 
-function renderAccountManagement() {
-  return render(
+async function openSecurityTab(): Promise<void> {
+  fireEvent.click(await screen.findByRole('tab', { name: '安全设置' }))
+  await waitFor(() => expect(screen.queryAllByText('读取中')).toHaveLength(0))
+}
+
+function renderAccountManagement(strict = false) {
+  const accountManagement = (
     <AccountManagement
       userEmail="user@chenxing.star"
       profileSummary="显示名称：辰星 · 用户名：@chenxing"
       profileAction={<button type="button">修改账户资料</button>}
       emailAction={<button type="button">更改邮箱</button>}
       passwordAction={<a href="#password">修改密码</a>}
-    />,
+    />
   )
+  return render(strict ? <StrictMode>{accountManagement}</StrictMode> : accountManagement)
 }
 
 beforeEach(() => {
   requests = []
   bindingResponse = null
   factorSummary = NONE
+  loadFactorSummary = () => Promise.resolve(jsonResponse(factorSummary))
   identities = { items: [] }
   clearMock.mockReset()
 
@@ -113,7 +124,7 @@ beforeEach(() => {
       return Promise.resolve({ ok: true, status: 204, json: async () => undefined } as Response)
     }
     if (path === '/api/v1/auth/security/factors' && request.method === 'GET') {
-      return Promise.resolve(jsonResponse(factorSummary))
+      return loadFactorSummary()
     }
     if (path === '/api/v1/auth/security/totp/enrollment/start' && request.method === 'POST') {
       return Promise.resolve(jsonResponse(TOTP_START))
@@ -234,5 +245,53 @@ describe('AccountManagement 可选因子（#470）', () => {
        expect(binding?.headers.get('X-CSRF-Token')).toBe('test-csrf-token')
        expect(bindingResponse).toEqual({ authorization_url: 'https://provider.example/authorize' })
     })
+  })
+})
+
+describe('AccountManagement 安全因子加载状态（#681）', () => {
+  it('初始加载失败时显示未知状态，不把未知因子声明为未启用或零凭据', async () => {
+    loadFactorSummary = () => Promise.resolve(jsonResponse({ code: 'temporarily_unavailable' }, 503))
+    renderAccountManagement()
+
+    expect(await screen.findByText('服务暂时不可用，请稍后重试。')).toBeTruthy()
+    await openSecurityTab()
+
+    expect(screen.getAllByText('状态未知')).toHaveLength(4)
+    expect(screen.queryByText('基础保护')).toBeNull()
+    expect(screen.queryByText('仅密码')).toBeNull()
+    expect(screen.queryByText('未启用')).toBeNull()
+    expect(screen.queryByText('当前使用密码登录')).toBeNull()
+    expect(screen.queryByRole('button', { name: '注册 Passkey' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '绑定验证器' })).toBeNull()
+  })
+
+  it('旧加载在 enrollment 刷新后才返回时，不覆盖新因子状态', async () => {
+    const staleLoad = deferred<Response>()
+    let factorLoadCount = 0
+    loadFactorSummary = () => {
+      factorLoadCount += 1
+      return factorLoadCount === 1 ? staleLoad.promise : Promise.resolve(jsonResponse(factorSummary))
+    }
+    renderAccountManagement(true)
+
+    await waitFor(() => expect(factorLoadCount).toBe(2))
+    await openSecurityTab()
+    fireEvent.click(await screen.findByRole('button', { name: '绑定验证器' }))
+    const totpDialog = await screen.findByRole('dialog', { name: '绑定验证器应用' })
+    fireEvent.change(within(totpDialog).getByLabelText('确认验证码'), { target: { value: '123456' } })
+    fireEvent.click(within(totpDialog).getByRole('button', { name: '确认并启用' }))
+
+    expect(await screen.findByRole('button', { name: '移除验证器' })).toBeTruthy()
+    expect(factorLoadCount).toBe(3)
+
+    await act(async () => {
+      staleLoad.resolve(jsonResponse(NONE))
+      await staleLoad.promise
+    })
+
+    expect(screen.getByRole('button', { name: '移除验证器' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '绑定验证器' })).toBeNull()
+    expect(screen.getByText('安全增强已启用')).toBeTruthy()
+    expect(screen.queryByText('当前使用密码登录')).toBeNull()
   })
 })
