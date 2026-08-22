@@ -20,7 +20,7 @@ export function AdminClients() {
   )
 }
 
-function ClientsTable({ access }: { access: AdminAccess }) {
+export function ClientsTable({ access }: { access: AdminAccess }) {
   const location = useLocation()
   const navigate = useNavigate()
   const params = new URLSearchParams(location.search)
@@ -54,7 +54,17 @@ function ClientsTable({ access }: { access: AdminAccess }) {
     if (current.get('search')) query.set('search', current.get('search') as string)
     let active = true
     void apiFetch<Paged<ClientSummary>>(`/api/v1/admin/clients/query?${query}`)
-      .then((value) => { if (active) { setResult(value); setError('') } })
+      .then((value) => {
+        if (!active) return
+        const totalPages = Math.max(1, Math.ceil(value.total / value.page_size))
+        if (page > totalPages) {
+          current.set('page', String(totalPages))
+          navigate(`/admin/clients?${current.toString()}`, { replace: true })
+          return
+        }
+        setResult(value)
+        setError('')
+      })
       .catch((reason: unknown) => { if (active) { setResult(null); setError(reason instanceof Error ? reason.message : 'Client 查询失败。') } })
     return () => { active = false }
   }, [location.search, page, refreshKey])
