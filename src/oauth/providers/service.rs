@@ -37,6 +37,10 @@ pub enum ExternalOAuthError {
     Secret(#[from] SecretError),
     #[error("database operation failed: {0}")]
     Database(#[from] crate::sqlx::Error),
+    #[error("audit operation failed: {0}")]
+    Audit(#[from] AuditError),
+    #[error(transparent)]
+    ManagementActor(#[from] crate::users::ManagementActorValidationError),
     #[error("provider state was modified concurrently")]
     Conflict,
     #[error("provider was not found")]
@@ -226,6 +230,8 @@ impl ExternalOAuthService {
         slug: &str,
         input: ProviderInput,
         expected_version: i64,
+        credential: crate::users::ManagementActorCredential,
+        audit_event: AuditEvent,
     ) -> Result<ProviderSummary, ExternalOAuthError> {
         let validated = input.validate(self.policy)?;
         let mut transaction = self.pool.begin().await?;
@@ -245,20 +251,21 @@ impl ExternalOAuthService {
             Some(secret) => self.encrypt_secret(provider.id, Some(secret))?,
             None => provider.client_secret_ciphertext,
         };
-        let updated = repository::update_provider(
+        if !repository::update_provider(
             &mut transaction,
             slug,
             &validated,
             ciphertext,
             expected_version,
         )
-        .await?;
-        if !updated {
+        .await?
+        {
             return Err(ExternalOAuthError::Conflict);
         }
         let provider = repository::lock_by_slug(&mut transaction, slug)
             .await?
             .ok_or(ExternalOAuthError::NotFound)?;
+        crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
         transaction.commit().await?;
         Ok(provider.summary())
     }
@@ -273,21 +280,16 @@ impl ExternalOAuthService {
     ///   发起请求（Issue #291）。这里拒绝比等到运行时 500 更容易让管理员定位。
     ///
     /// 停用永远允许，否则坏配置会卡在启用状态无法关掉。
-    pub async fn set_status(
+    pub async fn set_status_with_audit(
         &self,
         slug: &str,
         status: &str,
         expected_version: i64,
+        credential: crate::users::ManagementActorCredential,
+        audit_event: AuditEvent,
     ) -> Result<i64, ExternalOAuthError> {
         if !matches!(status, "active" | "disabled") {
             return Err(ExternalOAuthError::NotFound);
-        }
-        let mut transaction = self.pool.begin().await?;
-        let provider = repository::lock_by_slug(&mut transaction, slug)
-            .await?
-            .ok_or(ExternalOAuthError::NotFound)?;
-        if provider.state_version != expected_version {
-            return Err(ExternalOAuthError::Conflict);
         }
         let mut transaction = self.pool.begin().await?;
         crate::users::repository::management_actor::validate_management_actor_in_transaction(
@@ -299,6 +301,9 @@ impl ExternalOAuthService {
         let provider = repository::lock_by_slug(&mut transaction, slug)
             .await?
             .ok_or(ExternalOAuthError::NotFound)?;
+        if provider.state_version != expected_version {
+            return Err(ExternalOAuthError::Conflict);
+        }
         if status == "active" {
             provider.claim_mapping()?;
             validate_endpoint_url(&provider.authorization_endpoint, self.policy)?;
@@ -308,6 +313,7 @@ impl ExternalOAuthService {
         let version = repository::set_status(&mut transaction, slug, status, expected_version)
             .await?
             .ok_or(ExternalOAuthError::Conflict)?;
+        crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
         transaction.commit().await?;
         Ok(version)
     }

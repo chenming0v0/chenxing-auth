@@ -28,10 +28,7 @@ use crate::{
     plans::service::PlanService,
     redis_client::RedisClient,
     sessions::store::SessionStore,
-    settings::{
-        IssuerRuntime, SecurityLimitsSetting, SessionLifetimeSetting, SettingsService,
-        issuer::IssuerRecord,
-    },
+    settings::{IssuerRuntime, SecurityLimitsSetting, SettingsService, issuer::IssuerRecord},
     users::service::UserService,
     web_dist::{WebDistError, WebDistRoot},
     workers::{WorkerContext, WorkerHealth},

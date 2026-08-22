@@ -225,7 +225,7 @@ impl AuthReservation {
         self.leases.is_empty()
     }
 
-    pub(crate) fn is_denied(&self) -> bool {
+    pub fn is_denied(&self) -> bool {
         self.denied
     }
 }

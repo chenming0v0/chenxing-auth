@@ -65,9 +65,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearApiCache()
   }, [])
 
-  const broadcastAuthEvent = useCallback((type: AuthSyncEvent['type']) => {
-    const event: AuthSyncEvent = { type, nonce: `${Date.now()}-${Math.random()}`, occurredAt: Date.now() }
-    authChangedAtRef.current = event.occurredAt
+  const broadcastAuthEvent = useCallback((type: AuthSyncEvent['type'], occurredAt = Date.now()) => {
+    const event: AuthSyncEvent = { type, nonce: `${Date.now()}-${Math.random()}`, occurredAt }
+    authChangedAtRef.current = Math.max(authChangedAtRef.current, occurredAt)
     try {
       channelRef.current?.postMessage(event)
     } catch {
@@ -82,7 +82,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const broadcastLogout = useCallback(() => broadcastAuthEvent('logout'), [broadcastAuthEvent])
 
-  const clear = useCallback(() => {
+  const clear = useCallback((occurredAt?: number) => {
     clearLocal()
     if (typeof window !== 'undefined') broadcastAuthEvent('logout', occurredAt)
   }, [broadcastAuthEvent, clearLocal])

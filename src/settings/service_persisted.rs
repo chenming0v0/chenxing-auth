@@ -148,6 +148,7 @@ impl SettingsService {
                 repository::get_generation(&self.pool, crate::settings::EMAIL_POLICY_KEY).await?,
                 false,
                 audit,
+                credential,
                 audit_event,
             )
             .await?;
@@ -160,6 +161,7 @@ impl SettingsService {
         expected_generation: i64,
         confirm_repair: bool,
         audit: &AuditService,
+        credential: ManagementActorCredential,
         audit_event: F,
     ) -> Result<(EmailPolicySetting, i64), SettingsServiceError>
     where
@@ -167,6 +169,7 @@ impl SettingsService {
     {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
+        validate_settings_actor(&mut transaction, credential).await?;
         let raw =
             repository::lock_text(&mut *transaction, crate::settings::EMAIL_POLICY_KEY).await?;
         if raw.as_deref().is_some_and(|raw| {
@@ -185,7 +188,7 @@ impl SettingsService {
             return Err(SettingsServiceError::Conflict);
         }
         let generation = repository::set_email_policy_with_generation(
-            &mut *transaction,
+            &mut transaction,
             &value,
             expected_generation,
         )

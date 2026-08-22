@@ -85,10 +85,10 @@ pub(super) fn rotate_blocking_at(
         let published_key_count = next_state.jwks.keys.len();
         let key_id = pending.key_id.clone();
         *manager.write_state() = next_state;
-        if let Some(directory) = directory.as_ref() {
-            if let Ok(generation) = journal::revocation_generation(directory) {
-                manager.observe_revocation_generation(generation);
-            }
+        if let Some(directory) = directory.as_ref()
+            && let Ok(generation) = journal::revocation_generation(directory)
+        {
+            manager.observe_revocation_generation(generation);
         }
         return Ok(KeyRotation {
             key_id,

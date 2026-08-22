@@ -69,13 +69,17 @@ pub async fn update_registration_email(
     admin: AdminWrite,
     ApiJson(input): ApiJson<UpdateRegistrationEmail>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageSettings)
-        .await
+    let authorization = match crate::admin::authorization::authorize_admin_write(
+        &state,
+        &admin,
+        AdminPermission::ManageSettings,
+    )
+    .await
     {
-        Ok(admin_id) => admin_id,
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
+    let actor = authorization.actor();
     let Some(registration_email_from) = input.registration_email_from else {
         return error::bad_request(
             "invalid_request",
@@ -84,14 +88,19 @@ pub async fn update_registration_email(
     };
     let registration_email_from = match state
         .settings
-        .set_registration_email_from_audited(registration_email_from, &state.audit, move |value| {
-            setting_event(
-                actor,
-                crate::audit::AuditAction::RegistrationEmailUpdate,
-                REGISTRATION_EMAIL_FROM_KEY,
-                serde_json::json!({"configured": value.is_some()}),
-            )
-        })
+        .set_registration_email_from_audited(
+            registration_email_from,
+            &state.audit,
+            authorization.credential(),
+            move |value| {
+                setting_event(
+                    actor,
+                    crate::audit::AuditAction::RegistrationEmailUpdate,
+                    REGISTRATION_EMAIL_FROM_KEY,
+                    serde_json::json!({"configured": value.is_some()}),
+                )
+            },
+        )
         .await
     {
         Ok(value) => value,

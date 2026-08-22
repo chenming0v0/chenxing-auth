@@ -152,7 +152,7 @@ describe('SecurityLogDetail（经 ?id= 进入）', () => {
       window.history.replaceState({}, '', `/console/logs?id=${encodeURIComponent(id)}`)
       apiFetchMock.mockResolvedValue(sampleEvents)
       render(<SecurityLogsPage />)
-      await screen.findByText('共 3 条')
+      await screen.findByText('共 4 条')
       expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events?page=1&page_size=20')
       cleanup()
       apiFetchMock.mockReset()
@@ -160,6 +160,7 @@ describe('SecurityLogDetail（经 ?id= 进入）', () => {
   })
 
 
+  it('详情页提供返回列表的链接', async () => {
     window.history.replaceState({}, '', '/console/logs?id=11045978')
     apiFetchMock.mockRejectedValue(new ApiError('请求的资源不存在或已失效。', 404))
     render(<SecurityLogsPage />)

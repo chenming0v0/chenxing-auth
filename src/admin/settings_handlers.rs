@@ -206,6 +206,7 @@ pub async fn update_email_policy_setting(
             input.expected_generation,
             input.confirm_repair,
             &state.audit,
+            authorization.credential(),
             move |setting| {
                 setting_event(
                     actor,

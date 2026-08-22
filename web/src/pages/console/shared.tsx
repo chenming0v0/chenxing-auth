@@ -75,28 +75,15 @@ export async function listAllOwnedOAuthClients(): Promise<OwnedOAuthClient[]> {
   let previousPageKey: string | undefined
   let unboundedPages = 0
 
-  const seenPageFingerprints = new Set<string>()
-  const maxCompatibilityPages = 100
-  let compatibilityPages = 0
-
-  while (true) {
+  for (;;) {
     const path = offset === 0
       ? '/api/v1/auth/oauth-clients'
       : `/api/v1/auth/oauth-clients?limit=${OWNED_CLIENT_PAGE_SIZE}&offset=${offset}`
     const response = await apiFetch<OwnedOAuthClientList>(path)
+    const items = response.items
     const total = response.total
-    if (typeof total !== 'number' && response.items.length === limit) {
-      const fingerprint = response.items.map((client) => client.client_id).join('|')
-      compatibilityPages += 1
-      if (seenPageFingerprints.has(fingerprint) || compatibilityPages > maxCompatibilityPages) {
-        throw new Error('服务端返回了不兼容的分页结果，无法安全读取完整应用列表。')
-      }
-      seenPageFingerprints.add(fingerprint)
-    }
-    clients.push(...response.items)
-    offset += response.items.length
-    if (response.items.length < limit || (typeof total === 'number' && offset >= total)) break
-  }
+    const hasTotal = typeof total === 'number'
+    const fullPage = items.length === OWNED_CLIENT_PAGE_SIZE
 
     if (fullPage && !hasTotal) {
       const pageKey = ownedClientPageKey(items)

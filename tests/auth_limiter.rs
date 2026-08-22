@@ -18,9 +18,9 @@ async fn redis_reservation_script_caps_concurrent_failures_at_the_account_limit(
         tasks.push(tokio::spawn(async move {
             let dimensions = vec![(FailureDimension::Account, account)];
             let reserved = limiter.reserve(dimensions.clone()).await.expect("reserve");
-            if reserved {
+            if !reserved.is_denied() {
                 limiter
-                    .record_reserved_failures(dimensions)
+                    .record_reserved_failures(reserved.clone())
                     .await
                     .expect("record reserved failure");
             }
@@ -29,7 +29,7 @@ async fn redis_reservation_script_caps_concurrent_failures_at_the_account_limit(
     }
     let mut accepted = 0;
     for task in tasks {
-        accepted += u8::from(task.await.expect("join"));
+        accepted += u8::from(!task.await.expect("join").is_denied());
     }
     assert_eq!(accepted, FailureDimension::Account.limit() as u8);
 }

@@ -234,7 +234,7 @@ pub(in crate::sessions::store) async fn find_with_metadata_by_token_hash(
             revoked_at: None,
             idle_timeout: None,
         }
-        .with_idle_timeout(store.current_idle_timeout()),
+        .with_idle_timeout(row.idle_timeout),
     ))
 }
 

@@ -95,7 +95,7 @@ pub async fn inspect_authorization_request(
         .remaining_ttl_ms(&pending.request_id)
         .await
     {
-        Ok(Some(remaining)) => remaining.div_ceil(1000) as u64,
+        Ok(Some(remaining)) => remaining.div_ceil(1000),
         Ok(None) => return pending_expired(),
         Err(store_error) => {
             tracing::error!(error = %store_error, "failed to read OAuth authorization request TTL");

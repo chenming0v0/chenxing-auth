@@ -9,9 +9,11 @@ use axum::{
 
 use chenxing_auth::{
     api,
+    audit::{AuditAction, AuditEvent},
     config::Config,
     oauth::providers::domain::{ClientAuthMethod, ProviderInput},
     state::AppState,
+    users::ManagementActorCredential,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -128,32 +130,53 @@ async fn create_provider(state: &AppState, suffix: &str, mock: SocketAddr) -> i6
     let slug = format!("provider-{suffix}");
     let provider = state
         .external_oauth
-        .create(ProviderInput {
-            name: format!("Provider {suffix}"),
-            slug: slug.clone(),
-            authorization_endpoint: format!("http://{mock}/authorize"),
-            token_endpoint: format!("http://{mock}/token"),
-            userinfo_endpoint: format!("http://{mock}/userinfo"),
-            client_id: "client".to_owned(),
-            client_secret: Some("mock-secret".to_owned()),
-            scopes: vec!["openid".to_owned(), "email".to_owned()],
-            subject_claim: "sub".to_owned(),
-            email_claim: "email".to_owned(),
-            name_claim: Some("name".to_owned()),
-            email_verified_claim: Some("email_verified".to_owned()),
-            client_auth_method: ClientAuthMethod::RequestBody,
-            pkce_enabled: true,
-        })
+        .create_with_audit(
+            ProviderInput {
+                name: format!("Provider {suffix}"),
+                slug: slug.clone(),
+                authorization_endpoint: format!("http://{mock}/authorize"),
+                token_endpoint: format!("http://{mock}/token"),
+                userinfo_endpoint: format!("http://{mock}/userinfo"),
+                client_id: "client".to_owned(),
+                client_secret: Some("mock-secret".to_owned()),
+                scopes: vec!["openid".to_owned(), "email".to_owned()],
+                subject_claim: "sub".to_owned(),
+                email_claim: "email".to_owned(),
+                name_claim: Some("name".to_owned()),
+                email_verified_claim: Some("email_verified".to_owned()),
+                client_auth_method: ClientAuthMethod::RequestBody,
+                pkce_enabled: true,
+            },
+            ManagementActorCredential::SystemToken,
+            AuditEvent::new(
+                "system_token".to_owned(),
+                None,
+                AuditAction::OauthProviderCreate,
+                "oauth_provider".to_owned(),
+                Some(slug.clone()),
+                serde_json::json!({"test": "external_identity_binding"}),
+            ),
+        )
         .await
         .expect("create provider");
-    assert!(
-        state
-            .external_oauth
-            .set_status(&slug, "active")
-            .await
-            .expect("enable provider"),
-        "created provider must be enabled"
-    );
+    state
+        .external_oauth
+        .set_status_with_audit(
+            &slug,
+            "active",
+            provider.state_version,
+            ManagementActorCredential::SystemToken,
+            AuditEvent::new(
+                "system_token".to_owned(),
+                None,
+                AuditAction::OauthProviderActive,
+                "oauth_provider".to_owned(),
+                Some(slug.clone()),
+                serde_json::json!({"test": "external_identity_binding"}),
+            ),
+        )
+        .await
+        .expect("enable provider");
     provider.id
 }
 

@@ -68,7 +68,8 @@ fn shell_function_body<'a>(script: &'a str, name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("installer function is not terminated: {name}"))
 }
 
-fn workflow_job<'a>(workflow: &'a str, name: &str) -> &'a str {
+fn workflow_job(workflow: &str, name: &str) -> String {
+    let workflow = workflow.replace("\r\n", "\n");
     let marker = format!("\n  {name}:\n");
     let start = workflow
         .find(&marker)
@@ -83,14 +84,15 @@ fn workflow_job<'a>(workflow: &'a str, name: &str) -> &'a str {
             (!line.starts_with("    ") && line.ends_with(':')).then_some(offset)
         })
         .unwrap_or(rest.len());
-    &rest[..end]
+    rest[..end].to_owned()
 }
 
-fn workflow_top_level_permissions(workflow: &str) -> &str {
+fn workflow_top_level_permissions(workflow: &str) -> String {
+    let workflow = workflow.replace("\r\n", "\n");
     workflow
         .split_once("\npermissions:\n")
         .and_then(|(_, rest)| rest.split_once("\njobs:\n"))
-        .map(|(permissions, _)| permissions)
+        .map(|(permissions, _)| permissions.to_owned())
         .expect("workflow must declare top-level permissions before jobs")
 }
 
@@ -347,6 +349,7 @@ fn native_release_archives_ship_and_verify_the_matching_web_bundle() {
 #[test]
 fn production_redis_has_durable_credential_state_and_crash_coverage() {
     for compose in [PRODUCTION_COMPOSE, REMOTE_INSTALL_SCRIPT] {
+        let compose = compose.replace("\r\n", "\n");
         for marker in [
             "      - --appendonly\n      - \"yes\"",
             "      - --appendfsync\n      - always",
@@ -1118,11 +1121,15 @@ fn database_uses_forward_only_transactional_migration_history() {
             "include_str!(\"../../migrations/0040_oauth_client_auth_method_secret.sql\")"
         )
     );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0041_oauth_provider_state_version.sql\")")
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        40
+        41
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1166,14 +1173,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 40);
+    assert_eq!(migrations.len(), 41);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0040_oauth_client_auth_method_secret.sql")
+        Some("0041_oauth_provider_state_version.sql")
     );
     let versions = migrations
         .iter()
@@ -1184,7 +1191,7 @@ fn database_uses_forward_only_transactional_migration_history() {
                 .expect("migration filename starts with a version prefix")
         })
         .collect::<Vec<_>>();
-    assert_eq!(versions, (1..=40).collect::<Vec<_>>());
+    assert_eq!(versions, (1..=41).collect::<Vec<_>>());
 
     assert_eq!(
         DATABASE_BASELINE.matches("CREATE TABLE ").count(),
@@ -1446,8 +1453,8 @@ fn request_path_pool_enforces_statement_timeout_and_maintenance_pool_does_not() 
     assert!(!main.contains("db::connect_with_url("));
     assert_eq!(
         main.matches("db::connect_maintenance(").count(),
-        2,
-        "both `migrate` and `audit-archive` must use the maintenance pool"
+        3,
+        "migration owner/runtime verification and `audit-archive` must use the maintenance pool"
     );
 
     assert!(
@@ -1472,7 +1479,8 @@ fn installer_runs_migrations_before_starting_the_application() {
 
 #[test]
 fn production_app_requires_the_migration_job_to_finish_successfully() {
-    let app = PRODUCTION_COMPOSE
+    let production_compose = PRODUCTION_COMPOSE.replace("\r\n", "\n");
+    let app = production_compose
         .split_once("  app:\n")
         .map(|(_, rest)| rest)
         .and_then(|rest| rest.split_once("\n  migrate:\n").map(|(app, _)| app))
@@ -1482,7 +1490,7 @@ fn production_app_requires_the_migration_job_to_finish_successfully() {
         "app must not start before the migration job succeeds"
     );
 
-    let migrate = PRODUCTION_COMPOSE
+    let migrate = production_compose
         .split_once("\n  migrate:\n")
         .map(|(_, rest)| rest)
         .and_then(|rest| {

@@ -12,6 +12,7 @@ export function AuthorizedApps() {
   const [busyClientId, setBusyClientId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [hasData, setHasData] = useState(false)
   const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
   const warn = (text: string) => notify(text, 'warning')
 

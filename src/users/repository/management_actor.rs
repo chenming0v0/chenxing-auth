@@ -274,13 +274,13 @@ mod tests {
             validate_management_actor(admin_credential(), &locked),
             Ok(OwnerTargetAccess::ManageUsers)
         );
-        assert_eq!(
+        assert!(
             validate_locked_management_actor_permission(
                 admin_credential(),
                 &locked,
                 UserPermission::ManageUsers,
-            ),
-            Ok(())
+            )
+            .is_ok()
         );
     }
 

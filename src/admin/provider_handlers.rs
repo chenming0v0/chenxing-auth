@@ -136,40 +136,48 @@ pub async fn update_provider(
     Path(slug): Path<String>,
     ApiJson(input): ApiJson<UpdateProviderInput>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageIdentityProviders)
-        .await
-    {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageIdentityProviders).await
+        {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
     if input.provider.slug != slug {
         return error::bad_request("invalid_oauth_provider", "provider slug cannot be changed");
     }
+    let (actor_type, actor_id) = authorization.actor().audit_fields();
+    let event = AuditEvent::new(
+        actor_type.to_owned(),
+        actor_id,
+        crate::audit::AuditAction::OauthProviderUpdate,
+        "oauth_provider".to_owned(),
+        Some(slug.clone()),
+        serde_json::json!({
+            "authorization_endpoint": input.provider.authorization_endpoint,
+            "token_endpoint": input.provider.token_endpoint,
+            "userinfo_endpoint": input.provider.userinfo_endpoint,
+        }),
+    );
     match state
         .external_oauth
-        .update(&slug, input.provider.clone(), input.expected_version)
+        .update_with_audit(
+            &slug,
+            input.provider,
+            input.expected_version,
+            authorization.credential(),
+            event,
+        )
         .await
     {
         Ok(provider) => {
-            record_provider_event(
-                &state,
-                actor,
-                crate::audit::AuditAction::OauthProviderUpdate,
-                &slug,
-                serde_json::json!({
-                    "authorization_endpoint": input.provider.authorization_endpoint,
-                    "token_endpoint": input.provider.token_endpoint,
-                    "userinfo_endpoint": input.provider.userinfo_endpoint,
-                }),
-            )
-            .await;
             (StatusCode::OK, Json(provider_response(&issuer, provider))).into_response()
+        }
+        Err(ExternalOAuthError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(&state, authorization, error_value).await
         }
         Err(error_value) => provider_error_response(error_value, "update_provider"),
     }
 }
-
 pub async fn enable_provider(
     State(state): State<AppState>,
     admin: AdminWrite,
@@ -202,13 +210,12 @@ async fn set_provider_status(
             Ok(authorization) => authorization,
             Err(response) => return response,
         };
-    let actor = authorization.actor();
     let action = match status {
         "active" => crate::audit::AuditAction::OauthProviderActive,
         "disabled" => crate::audit::AuditAction::OauthProviderDisabled,
         _ => unreachable!("provider status is validated by the service"),
     };
-    let (actor_type, actor_id) = actor.audit_fields();
+    let (actor_type, actor_id) = authorization.actor().audit_fields();
     let event = AuditEvent::new(
         actor_type.to_owned(),
         actor_id,
@@ -219,40 +226,26 @@ async fn set_provider_status(
     );
     match state
         .external_oauth
-        .set_status_with_audit(slug, status, authorization.credential(), event)
+        .set_status_with_audit(
+            slug,
+            status,
+            expected_version,
+            authorization.credential(),
+            event,
+        )
         .await
     {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
-    match state
-        .external_oauth
-        .set_status(slug, status, expected_version)
-        .await
-    {
-        Ok(version) => {
-            record_provider_event(
-                state,
-                actor,
-                match status {
-                    "active" => crate::audit::AuditAction::OauthProviderActive,
-                    "disabled" => crate::audit::AuditAction::OauthProviderDisabled,
-                    _ => unreachable!("provider status is validated by the service"),
-                },
-                slug,
-                serde_json::json!({"result": "success"}),
-            )
-            .await;
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({ "state_version": version })),
-            )
-                .into_response()
+        Ok(version) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "state_version": version })),
+        )
+            .into_response(),
+        Err(ExternalOAuthError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(state, authorization, error_value).await
         }
         Err(error_value) => provider_error_response(error_value, "set_provider_status"),
     }
 }
-
 /// `ExternalOAuthError` → HTTP 响应的统一映射。
 ///
 /// 变体逐个显式列出、不写 `_` 兜底（与 `client_errors.rs` 同一约定）：新增错误
@@ -284,7 +277,9 @@ fn provider_error_response(error_value: ExternalOAuthError, operation: &'static 
             "oauth_provider_version_conflict",
             "provider changed; reload and retry",
         ),
-        ExternalOAuthError::Database(_)
+        ExternalOAuthError::Audit(_)
+        | ExternalOAuthError::ManagementActor(_)
+        | ExternalOAuthError::Database(_)
         | ExternalOAuthError::Secret(_)
         | ExternalOAuthError::MissingSecret
         | ExternalOAuthError::RemoteRequest
