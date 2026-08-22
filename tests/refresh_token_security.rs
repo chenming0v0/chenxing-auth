@@ -28,6 +28,14 @@ fn family_index_key(family_id: &str) -> String {
     format!("cx:refresh:family_idx:{family_id}")
 }
 
+fn grant_index_key(user_id: &str, client_id: &str) -> String {
+    format!("cx:refresh:grant_idx:{user_id}:{client_id}")
+}
+
+fn token_family_key(value: &str) -> String {
+    format!("cx:refresh:token_family:{}", token_hash(value))
+}
+
 fn tombstone_key(value: &str) -> String {
     format!("cx:refresh:tombstone:{}", token_hash(value))
 }
@@ -76,6 +84,116 @@ async fn final_fence_failure_revokes_a_successor_refresh_token_from_the_grant() 
             .is_none(),
         "a consent or epoch fence failure must not leave a usable successor"
     );
+}
+
+/// Issue #671：grant 撤销不能把过期主键误当成 legacy token，必须清理真实
+/// family 索引，否则该索引会残留不可消费的 hash。
+#[tokio::test]
+async fn grant_revoke_cleans_real_family_index_when_token_payload_expired() {
+    let store = RefreshTokenStore::new(redis_client());
+    let client_id = format!("cx_grant_expired_payload_{}", Uuid::new_v4().simple());
+    let user_id = format!("user-grant-expired-{}", Uuid::new_v4().simple());
+    let expired = RefreshToken::new(
+        client_id.clone(),
+        user_id.clone(),
+        vec!["openid".to_owned()],
+    );
+    let live = expired.rotate(vec!["openid".to_owned()]);
+    let family_id = expired.family_id.clone();
+
+    // Save both members directly to preserve an expired grant member alongside
+    // a live member, matching a primary-key TTL expiry in Redis.
+    store.save(&expired).await.expect("save expired member");
+    store.save(&live).await.expect("save live member");
+
+    let client = redis_client();
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let _: i64 = redis::cmd("EXPIRE")
+        .arg(token_key(&expired.value))
+        .arg(0)
+        .query_async(&mut conn)
+        .await
+        .expect("expire the token payload");
+    // The mapping is absent for tokens written before this repair. This forces
+    // the revoke script to locate the hash in the real family index.
+    let _: i64 = redis::cmd("DEL")
+        .arg(token_family_key(&expired.value))
+        .query_async(&mut conn)
+        .await
+        .expect("remove the pre-repair family mapping");
+
+    let family_member: bool = redis::cmd("SISMEMBER")
+        .arg(family_index_key(&family_id))
+        .arg(token_hash(&expired.value))
+        .query_async(&mut conn)
+        .await
+        .expect("check expired family member");
+    assert!(
+        family_member,
+        "fixture must retain the expired member in family index"
+    );
+
+    assert_eq!(
+        store
+            .revoke_grant_tokens(&user_id, &client_id)
+            .await
+            .expect("revoke grant with expired payload"),
+        1,
+        "only the live payload should be deleted by Redis DEL"
+    );
+
+    let remaining_family_member: bool = redis::cmd("SISMEMBER")
+        .arg(family_index_key(&family_id))
+        .arg(token_hash(&expired.value))
+        .query_async(&mut conn)
+        .await
+        .expect("check family index after revoke");
+    assert!(
+        !remaining_family_member,
+        "grant revoke must remove the expired member from its real family index"
+    );
+
+    let remaining_grant_member: bool = redis::cmd("SISMEMBER")
+        .arg(grant_index_key(&user_id, &client_id))
+        .arg(token_hash(&expired.value))
+        .query_async(&mut conn)
+        .await
+        .expect("check grant index after revoke");
+    assert!(!remaining_grant_member, "grant index must be drained");
+
+    let remaining_family_key: bool = redis::cmd("EXISTS")
+        .arg(family_index_key(&family_id))
+        .query_async(&mut conn)
+        .await
+        .expect("check family key after revoke");
+    assert!(!remaining_family_key, "empty family index must be removed");
+
+    let remaining_mapping: i64 = redis::cmd("EXISTS")
+        .arg(token_family_key(&expired.value))
+        .arg(token_family_key(&live.value))
+        .query_async(&mut conn)
+        .await
+        .expect("check family mappings after revoke");
+    assert_eq!(
+        remaining_mapping, 0,
+        "token family mappings must be consumed with revoke"
+    );
+
+    let _: () = redis::cmd("DEL")
+        .arg(client_index_key(&client_id))
+        .arg(grant_index_key(&user_id, &client_id))
+        .arg(family_index_key(&family_id))
+        .arg(family_revoked_key(&family_id))
+        .arg(token_family_key(&expired.value))
+        .arg(token_family_key(&live.value))
+        .arg(tombstone_key(&expired.value))
+        .arg(tombstone_key(&live.value))
+        .query_async(&mut conn)
+        .await
+        .expect("cleanup expired payload regression");
 }
 
 /// Issue #109：绝对生命周期限制生效，轮换不能无限延长有效期。
