@@ -132,14 +132,15 @@ export function ConsoleProfile() {
     if (newPasswordLength < PASSWORD_MIN_LENGTH) { warn(`新密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`); return }
     if (newPasswordLength > PASSWORD_MAX_LENGTH) { warn(`新密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`); return }
     if (newPassword !== confirmPassword) { warn('两次输入的新密码不一致。'); return }
-    if (!acquire()) return
-    try {
-      await apiFetch<void>('/api/v1/auth/password', { method: 'POST', redirectOn401: false, body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) })
-      clear()
-      navigate('/login?returnTo=%2Fconsole%2Fprofile')
-    } catch (error) {
-      warn(error instanceof Error ? error.message : '密码修改失败。')
-    } finally { release() }
+    await run(async () => {
+      try {
+        await apiFetch<void>('/api/v1/auth/password', { method: 'POST', redirectOn401: false, body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) })
+        clear()
+        navigate('/login?returnTo=%2Fconsole%2Fprofile')
+      } catch (error) {
+        warn(error instanceof Error ? error.message : '密码修改失败。')
+      }
+    })
   }
 
   async function revokeSession(session: SessionItem) {

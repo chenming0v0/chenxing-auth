@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { ConsoleProfile } from './profile-apps'
 
@@ -308,8 +308,17 @@ describe('ConsoleProfile 提交互斥（#586）', () => {
     expect(screen.getByRole('dialog', { name: '修改账户资料' })).toBe(dialog)
   })
 
-  it('密码修改在 busy 尚未重渲染时重复提交只发出一个 POST', async () => {
-    hangMutations()
+  it('密码修改在同一 render turn 重复提交只发出一个 POST，并在成功后释放 busy', async () => {
+    const passwordResponses: Array<(value: Response) => void> = []
+    vi.stubGlobal('fetch', vi.fn((path: string, init?: RequestInit) => {
+      requests.push({ path, init })
+      if (path === '/api/v1/auth/sessions') return Promise.resolve(jsonResponse({ items: [] }))
+      if (path === '/api/v1/auth/security/factors') return Promise.resolve(jsonResponse({ totp_enabled: false, passkey_count: 0, available_methods: ['totp', 'passkey'] }))
+      if (path === '/api/v1/auth/external-identities') return Promise.resolve(jsonResponse({ items: [] }))
+      if (path === '/api/v1/auth/external-providers') return Promise.resolve(jsonResponse([]))
+      if (path === '/api/v1/auth/password') return new Promise<Response>((resolve) => passwordResponses.push(resolve))
+      return Promise.reject(new Error(`unexpected request: ${path}`))
+    }))
     render(<ConsoleProfile />)
     await screen.findByRole('heading', { name: '账户管理' })
     fireEvent.click(screen.getByRole('tab', { name: '安全设置' }))
@@ -319,11 +328,22 @@ describe('ConsoleProfile 提交互斥（#586）', () => {
     fireEvent.change(screen.getByLabelText('确认新密码'), { target: { value: 'new-password-long' } })
 
     const form = screen.getByRole('button', { name: '确认修改' }).closest('form') as HTMLFormElement
-    fireEvent.submit(form)
-    fireEvent.submit(form)
+    act(() => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
 
+    expect(requests.filter(({ path }) => path === '/api/v1/auth/password')).toHaveLength(1)
+    expect(passwordResponses).toHaveLength(1)
+
+    const dialog = screen.getByRole('dialog', { name: '修改密码' })
+    expect(within(dialog).getByRole('button', { name: '关闭' })).toHaveProperty('disabled', true)
+    expect(within(dialog).getByRole('button', { name: '取消' })).toHaveProperty('disabled', true)
+    expect(within(dialog).getByRole('button', { name: '修改中…' })).toHaveProperty('disabled', true)
+
+    passwordResponses.shift()?.(jsonResponse(null, 204))
     await waitFor(() => {
-      expect(requests.filter(({ path }) => path === '/api/v1/auth/password')).toHaveLength(1)
+      expect(within(screen.getByRole('dialog', { name: '修改密码' })).getByRole('button', { name: '确认修改' })).toHaveProperty('disabled', false)
     })
     expect(requests.filter(({ path }) => path === '/api/v1/auth/password')).toHaveLength(1)
   })
