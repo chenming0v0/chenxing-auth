@@ -148,6 +148,14 @@ mod tests {
         .expect("email code keys")
     }
 
+    fn new_only_keys() -> AuthEncryptionKeyRing {
+        AuthEncryptionKeyRing::from_entries(
+            "new".to_owned(),
+            vec![("new".to_owned(), AuthEncryptionKey::new([2; 32]))],
+        )
+        .expect("email code keys")
+    }
+
     #[test]
     fn encrypted_code_round_trips_without_plaintext() {
         let ring = keys("new");
@@ -176,14 +184,15 @@ mod tests {
 
     #[test]
     fn malformed_or_unknown_ciphertext_fails_closed() {
-        let ring = keys("new");
+        let ring = new_only_keys();
         assert!(matches!(
             decrypt_code(&ring, b"invalid", 7, Uuid::new_v4()),
             Err(EmailCodeCryptoError::Malformed)
         ));
-        let encrypted = encrypt_code(&keys("old"), "123456", 7, Uuid::new_v4()).expect("encrypt");
+        let challenge_id = Uuid::new_v4();
+        let encrypted = encrypt_code(&keys("old"), "123456", 7, challenge_id).expect("encrypt");
         assert!(matches!(
-            decrypt_code(&ring, encrypted.as_slice(), 7, Uuid::new_v4()),
+            decrypt_code(&ring, encrypted.as_slice(), 7, challenge_id),
             Err(EmailCodeCryptoError::UnknownKeyId)
         ));
     }

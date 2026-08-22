@@ -38,7 +38,10 @@ function actionLabel(action: StatusAction): string {
 function reconcile(current: PendingStatusChange | null, list: OAuthProviderSummary[]): PendingStatusChange | null {
   if (!current) return null
   const provider = list.find((item) => item.slug === current.slug)
-  if (!provider) return null
+  /* A refresh started immediately after creation can still return the old
+     list. Missing data is inconclusive; only an observed target state may
+     consume the retry notice. */
+  if (!provider) return current
   const active = provider.status === 'active'
   return active === (current.action === 'enable') ? null : current
 }
@@ -98,10 +101,11 @@ export function OAuthProvidersPanel({ onMessage, onDirtyChange }: SettingsPanelP
   /** 写入配置本身（创建或更新），返回后续状态切换要用的 slug。失败时抛错，弹层保持打开让用户改。 */
   async function persist(form: ProviderForm, target: OAuthProviderSummary | null): Promise<OAuthProviderSummary> {
     if (target) {
-      return apiFetch<OAuthProviderSummary>(`/api/v1/admin/oauth/providers/${encodeURIComponent(target.slug)}`, {
+      const response = await apiFetch<OAuthProviderSummary>(`/api/v1/admin/oauth/providers/${encodeURIComponent(target.slug)}`, {
         method: 'PUT',
         body: JSON.stringify({ ...toInput(form), expected_version: target.state_version ?? 1 }),
       })
+      return { ...target, ...response }
     }
     return apiFetch<OAuthProviderSummary>('/api/v1/admin/oauth/providers', {
       method: 'POST',

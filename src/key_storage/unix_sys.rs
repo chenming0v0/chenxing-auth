@@ -305,9 +305,7 @@ pub(super) mod readdir_test {
     }
 
     pub(super) fn take_fault() -> Option<i32> {
-        let Some((after, errno)) = FAULT.get() else {
-            return None;
-        };
+        let (after, errno) = FAULT.get()?;
         if SUCCESSES.get() < after {
             return None;
         }

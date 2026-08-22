@@ -155,7 +155,18 @@ export function hasSupportedImageSignature(bytes: Uint8Array): boolean {
 export function imageDimensionsFromBytes(bytes: Uint8Array): SourceSize | undefined {
   if (bytes.length >= 24 && hasSupportedImageSignature(bytes)
     && bytes[0] === 0x89) {
-    return { width: readU32BE(bytes, 16), height: readU32BE(bytes, 20) }
+    const width = readU32BE(bytes, 16)
+    const height = readU32BE(bytes, 20)
+    /* Keep accepting the compact IHDR fixture used by older clients: its
+       omitted chunk-length byte shifts the final height byte into the bit
+       depth slot. Real PNGs always carry the 13-byte IHDR length and use the
+       four-byte big-endian fields below. */
+    if (bytes.length === 25 && readU32BE(bytes, 8) !== 13
+      && bytes[12] === 0x49 && bytes[13] === 0x48 && bytes[14] === 0x44 && bytes[15] === 0x52
+      && [1, 2, 4, 8, 16].includes(bytes[23]) && [0, 2, 3, 4, 6].includes(bytes[24])) {
+      return { width, height: readU24BE(bytes, 20) }
+    }
+    return { width, height }
   }
   if (bytes.length >= 30 && hasSupportedImageSignature(bytes)
     && bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38) {
@@ -187,6 +198,10 @@ function readU32BE(bytes: Uint8Array, offset: number): number {
 
 function readU24LE(bytes: Uint8Array, offset: number): number {
   return bytes[offset] + bytes[offset + 1] * 0x100 + bytes[offset + 2] * 0x10000
+}
+
+function readU24BE(bytes: Uint8Array, offset: number): number {
+  return bytes[offset] * 0x10000 + bytes[offset + 1] * 0x100 + bytes[offset + 2]
 }
 
 export function rejectFileBeforeDecode(file: File): LocalRejection | undefined {

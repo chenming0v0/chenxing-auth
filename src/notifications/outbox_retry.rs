@@ -45,9 +45,11 @@ impl EmailOutbox {
 }
 
 fn retry_delay_seconds(attempts: i32) -> i64 {
-    2_i64
-        .saturating_pow(attempts.saturating_sub(1) as u32)
-        .min(300)
+    if attempts <= 1 {
+        1
+    } else {
+        2_i64.saturating_pow((attempts - 1) as u32).min(300)
+    }
 }
 
 #[cfg(test)]

@@ -179,7 +179,7 @@ async fn concurrent_wrong_codes_stop_at_the_atomic_threshold() {
     let sender = Arc::new(CapturingSender::default());
     let state = state.with_email_sender(sender.clone());
     let (challenge_id, code) = start(&state.users, &state.email_outbox, sender, user_id).await;
-    let wrong_code = (code != "000000").then_some("000000").unwrap_or("999999");
+    let wrong_code = if code != "000000" { "000000" } else { "999999" };
     let mut tasks = Vec::new();
     for _ in 0..12 {
         let users = state.users.clone();
@@ -251,7 +251,7 @@ async fn fifth_wrong_code_invalidates_the_challenge_and_later_attempts_are_inval
     let sender = Arc::new(CapturingSender::default());
     let state = state.with_email_sender(sender.clone());
     let (challenge_id, code) = start(&state.users, &state.email_outbox, sender, user_id).await;
-    let wrong_code = (code != "000000").then_some("000000").unwrap_or("999999");
+    let wrong_code = if code != "000000" { "000000" } else { "999999" };
 
     for attempt in 0..5 {
         let result = state
@@ -300,7 +300,7 @@ async fn correct_code_wins_a_race_with_wrong_codes_without_resurrection() {
     let sender = Arc::new(CapturingSender::default());
     let state = state.with_email_sender(sender.clone());
     let (challenge_id, code) = start(&state.users, &state.email_outbox, sender, user_id).await;
-    let wrong_code = (code != "000000").then_some("000000").unwrap_or("999999");
+    let wrong_code = if code != "000000" { "000000" } else { "999999" };
     let barrier = Arc::new(tokio::sync::Barrier::new(5));
     let mut tasks = Vec::new();
 
@@ -328,7 +328,7 @@ async fn correct_code_wins_a_race_with_wrong_codes_without_resurrection() {
 
     let mut successes = 0;
     for task in tasks {
-        if matches!(task.await.expect("confirmation task"), Ok(_)) {
+        if task.await.expect("confirmation task").is_ok() {
             successes += 1;
         }
     }
@@ -356,7 +356,7 @@ async fn concurrent_losers_return_only_expected_client_errors() {
     let users = UserService::new(database.clone(), Arc::new(AllowingLimiter))
         .with_email_encryption_keys(test_email_encryption_keys());
     let (challenge_id, code) = start(&users, &state.email_outbox, sender, user_id).await;
-    let wrong_code = (code != "000000").then_some("000000").unwrap_or("999999");
+    let wrong_code = if code != "000000" { "000000" } else { "999999" };
     let barrier = Arc::new(tokio::sync::Barrier::new(6));
     let mut tasks = Vec::new();
 

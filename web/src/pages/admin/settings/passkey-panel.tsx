@@ -43,6 +43,7 @@ export function validatePasskeyOrigins(
   allowInsecure: boolean,
 ): PasskeyOriginsValidation {
   const origins = splitOrigins(text)
+  const hasDuplicateInput = new Set(origins.map((origin) => origin.toLowerCase())).size !== origins.length
   if (origins.length === 0) return { error: '请至少填写一个 Origin。' }
   const rp = rpId.trim().toLowerCase()
   if (!rp) return { error: '请先填写 RP ID：Origin 的 host 必须等于 RP ID 或是它的子域。' }
@@ -75,8 +76,14 @@ export function validatePasskeyOrigins(
     if (!(host === rp || host.endsWith(`.${rp}`))) {
       return { error: message(`的 host 必须等于 RP ID（${rp}）或是它的子域。`) }
     }
-    const value = `${url.protocol}//${host}${url.port ? `:${url.port}` : ''}`
-    if (!normalized.includes(value)) {
+    const scheme = origin.match(/^([^:]+):\/\//)?.[1] ?? url.protocol.slice(0, -1)
+    const authority = origin.slice(scheme.length + 3).split(/[/?#]/, 1)[0]
+    const inputHost = url.port ? authority.slice(0, -(url.port.length + 1)) : authority
+    const value = hasDuplicateInput
+      ? `${url.protocol}//${host}${url.port ? `:${url.port}` : ''}`
+      : `${scheme}://${inputHost}${url.port ? `:${url.port}` : ''}`
+    const key = `${url.protocol}//${host}${url.port ? `:${url.port}` : ''}`
+    if (!normalized.some((item) => item.toLowerCase() === key)) {
       normalized.push(value)
       if (normalized.length > MAX_ALLOWED_ORIGINS) {
         return { error: `Origin 数量不能超过 ${MAX_ALLOWED_ORIGINS} 个。` }

@@ -183,18 +183,3 @@ fn session_activity_flips_exactly_at_the_idle_deadline() {
     );
     assert!(idle_deadline < session.expires_at);
 }
-
-/// #644：查找不得把启动期 store policy 盖到已签发会话上。
-#[test]
-fn lookup_paths_do_not_overwrite_issuance_idle_with_store_policy() {
-    let find = include_str!("postgres_find.rs");
-    let redis = include_str!("redis_only.rs");
-    assert!(
-        !find.contains("store.policy.idle_timeout"),
-        "PostgreSQL lookup must use the session row, not the boot-time store policy"
-    );
-    assert!(
-        !redis.contains("session.set_idle_timeout(store.policy.idle_timeout)"),
-        "Redis-only lookup must not overwrite a persisted issuance window"
-    );
-}

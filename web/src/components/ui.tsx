@@ -33,7 +33,7 @@ export function Icon({ name, size = 16, className = '', strokeWidth = 1.8 }: { n
 }
 
 export function BrandMark({ className = 'h-8 w-8 rounded-[var(--chenxing-radius-md)]', decorative = false }: { className?: string; decorative?: boolean }) {
-  return <img src={logoUrl} alt={decorative ? '' : '天穹辰星'} className={className} />
+  return <img src={logoUrl} alt={decorative ? '' : '天穹辰星'} role={decorative ? 'img' : undefined} className={className} />
 }
 
 /**

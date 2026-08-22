@@ -7,6 +7,7 @@ let historyIndex = typeof window !== 'undefined' && typeof window.history.state?
   ? window.history.state[HISTORY_INDEX] as number
   : 0
 let restoringHistory = false
+let skipNextProgrammaticPopstate = false
 if (typeof window !== 'undefined' && window.history.state?.[HISTORY_INDEX] !== historyIndex) {
   window.history.replaceState({ ...(window.history.state ?? {}), [HISTORY_INDEX]: historyIndex }, '', window.location.href)
 }
@@ -22,6 +23,10 @@ function commitHistory(to: string, options?: NavigationOptions) {
 function installPopstateGuard() {
   if (typeof window === 'undefined') return
   window.addEventListener('popstate', (event) => {
+    if (skipNextProgrammaticPopstate) {
+      skipNextProgrammaticPopstate = false
+      return
+    }
     if (restoringHistory) {
       restoringHistory = false
       return
@@ -78,6 +83,7 @@ export function prepareNavigation(to: string, options?: NavigationOptions): Navi
       if (committed) return false
       committed = true
       commitHistory(nextTo, nextOptions)
+      skipNextProgrammaticPopstate = true
       window.dispatchEvent(new PopStateEvent('popstate'))
       return true
     },

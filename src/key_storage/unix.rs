@@ -386,11 +386,8 @@ fn list_dir(dir: &File) -> io::Result<Vec<SecureDirEntry>> {
     let dirp = DirStream(dirp);
     let dir_dev = dir.metadata()?.dev();
     let mut entries = Vec::new();
-    loop {
-        // readdir 失败用 ? 退出，已收集的前缀随 entries drop，不当成完整清单。
-        let Some(entry) = readdir(dirp.0)? else {
-            break;
-        };
+    // readdir 失败用 ? 退出，已收集的前缀随 entries drop，不当成完整清单。
+    while let Some(entry) = readdir(dirp.0)? {
         // SAFETY: d_name 是 dirent 内的 NUL 结尾数组；指针在下次 readdir/closedir 前有效。
         let raw = unsafe { CStr::from_ptr((*entry.as_ptr()).d_name.as_ptr()) };
         let name = OsStr::from_bytes(raw.to_bytes());
@@ -404,7 +401,7 @@ fn list_dir(dir: &File) -> io::Result<Vec<SecureDirEntry>> {
             name: name.to_owned(),
             inode: FileInode {
                 dev: dir_dev,
-                ino: unsafe { (*entry.as_ptr()).d_ino } as u64,
+                ino: unsafe { (*entry.as_ptr()).d_ino },
             },
         });
     }

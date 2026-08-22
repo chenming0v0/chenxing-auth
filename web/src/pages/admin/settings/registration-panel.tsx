@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { ApiError, apiFetch, type RegistrationSetting } from '../../../api'
+import { ApiError, apiFetch, type IssuerSettingResponse, type RegistrationSetting } from '../../../api'
 import { Button, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
@@ -17,7 +17,7 @@ export function RegistrationPanel({ onMessage, onDirtyChange }: SettingsPanelPro
   /* 上次成功加载/保存的基线：当前编辑与它不一致即视为有未保存草稿（#381）。 */
   const [savedSetting, setSavedSetting] = useState<RegistrationSetting | null>(null)
   const [busy, setBusy] = useState(false)
-  /* Issuer readiness is enforced authoritatively by the registration endpoint. */
+  const [issuer, setIssuer] = useState<IssuerSettingResponse | null>(null)
 
   const { loading } = useSettingsResource<RegistrationSetting>({
     path: '/api/v1/admin/settings/registration',
@@ -29,12 +29,29 @@ export function RegistrationPanel({ onMessage, onDirtyChange }: SettingsPanelPro
     },
   })
 
+  const { loading: issuerLoading } = useSettingsResource<IssuerSettingResponse>({
+    path: '/api/v1/admin/settings/issuer',
+    onMessage,
+    failureMessage: 'Issuer 状态加载失败。',
+    apply: setIssuer,
+  })
+
+  const issuerBlocked = issuer !== null && issuer.phase !== 'issuer_loaded'
+
   const dirty = Boolean(savedSetting && !settingsEqual(setting, savedSetting))
   useDirtyReport(dirty, onDirtyChange)
 
   function updateSetting(patch: Partial<RegistrationSetting>) {
     if (busy) return
     setSetting((current) => current ? { ...current, ...patch } : current)
+  }
+
+  function updateEnabled(enabled: boolean) {
+    if (enabled && issuerBlocked) {
+      onMessage(ISSUER_GATE_MESSAGE, 'warning')
+      return
+    }
+    updateSetting({ enabled })
   }
 
   async function save(event: FormEvent) {
@@ -71,7 +88,8 @@ export function RegistrationPanel({ onMessage, onDirtyChange }: SettingsPanelPro
           <p className="chenxing-caption mt-1.5">控制访客能否在登录页自助创建辰星通行证账号。</p>
         </div>
       </div>
-      {loading || !setting ? (
+      {issuerBlocked ? <div className="mt-5"><Notice tone="warning">{ISSUER_GATE_MESSAGE}</Notice></div> : null}
+      {loading || issuerLoading || !setting ? (
         <div className="mt-5"><Notice>正在加载公开注册设置。</Notice></div>
       ) : (
         <form className="mt-5 flex flex-col gap-4" onSubmit={save}>
@@ -81,7 +99,7 @@ export function RegistrationPanel({ onMessage, onDirtyChange }: SettingsPanelPro
               description="允许访客自助创建账号；关闭时新账号只能由管理员创建"
               checked={setting.enabled}
               disabled={busy}
-              onChange={(enabled) => updateSetting({ enabled })}
+              onChange={updateEnabled}
             />
             <ToggleRow
               title="要求邮箱所有权验证"

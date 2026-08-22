@@ -193,6 +193,10 @@ pub async fn consume_email_change_attempt<'a>(
     Ok(result.rows_affected() == 1)
 }
 
+// Arguments map directly to the persisted email-change fields: pool, challenge_id,
+// and user_id identify the scope; the remaining values store the new email,
+// code material, security epoch, and expiration.
+#[allow(clippy::too_many_arguments)]
 pub async fn replace_pending_email_change(
     pool: &PgPool,
     challenge_id: Uuid,

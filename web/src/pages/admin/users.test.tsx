@@ -187,6 +187,7 @@ describe('UsersTable 自己的角色不可修改（对齐 self_role_change_forbi
   })
 
   it('缺少 manage_roles 权限时角色下拉禁用，且自己的行仍显示说明', async () => {
+    renderTable(['manage_users'])
     await screen.findByText('星尘')
     expect(roleSelectIn('星尘').disabled).toBe(true)
     expect(within(rowOf('星尘')).queryByText('不能修改自己的角色')).toBeNull()
@@ -215,7 +216,11 @@ describe('UsersTable 保持既有行为', () => {
     expect(queries).toHaveLength(2)
     expect(new URL(queries[0].path, window.location.origin).searchParams.get('page')).toBe('4')
     expect(new URL(queries[1].path, window.location.origin).searchParams.get('page')).toBe('2')
-    expect(replaceState).toHaveBeenCalledWith({}, '', '/admin/users?search=star&status=active&page=2')
+    expect(replaceState).toHaveBeenCalledWith(
+      expect.objectContaining({ __chenxing_history_index: expect.any(Number) }),
+      '',
+      '/admin/users?search=star&status=active&page=2',
+    )
     expect(pushState).not.toHaveBeenCalled()
     expect(window.location.search).toBe('?search=star&status=active&page=2')
   })

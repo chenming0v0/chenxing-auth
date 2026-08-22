@@ -53,7 +53,7 @@ export function ConsoleProfile() {
   /* 提示语连同语气一起存。早先的实现用 message.includes('已保存') 反推语气，
      每加一条成功提示都得记得让文案命中那个子串，是等着出错的写法。 */
   const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
-  const { busy, run } = useMutationLock()
+  const { busy, acquire, release, run } = useMutationLock()
   const profileRequestIdRef = useRef(0)
   /* 撤销在途的会话 id。与 AuthorizedApps 的 busyClientId 同款约定：
      null 表示无在途请求，非 null 期间所有撤销按钮禁用，防止快速连点并发 DELETE。 */
@@ -79,8 +79,6 @@ export function ConsoleProfile() {
 
   async function updateProfile(event: FormEvent) {
     event.preventDefault()
-    if (busy) return
-    const requestId = ++profileRequestIdRef.current
     setNotice(null)
     const normalizedUsername = username.trim().toLowerCase()
     const usernameChanged = Boolean(user) && normalizedUsername !== user?.username
@@ -98,6 +96,8 @@ export function ConsoleProfile() {
       warn('修改用户名需要输入当前密码。')
       return
     }
+    if (!acquire()) return
+    const requestId = ++profileRequestIdRef.current
     try {
       const updated = await apiFetch<UserMe>('/api/v1/auth/me', {
         method: 'PATCH',
@@ -122,8 +122,7 @@ export function ConsoleProfile() {
       notify('账户资料已保存。', 'success')
     } catch (error) {
       if (requestId === profileRequestIdRef.current) warn(error instanceof Error ? error.message : '资料保存失败。')
-    } finally {
-    }
+    } finally { release() }
   }
 
   async function updatePassword(event: FormEvent) {
@@ -133,13 +132,14 @@ export function ConsoleProfile() {
     if (newPasswordLength < PASSWORD_MIN_LENGTH) { warn(`新密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`); return }
     if (newPasswordLength > PASSWORD_MAX_LENGTH) { warn(`新密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`); return }
     if (newPassword !== confirmPassword) { warn('两次输入的新密码不一致。'); return }
+    if (!acquire()) return
     try {
       await apiFetch<void>('/api/v1/auth/password', { method: 'POST', redirectOn401: false, body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) })
       clear()
       navigate('/login?returnTo=%2Fconsole%2Fprofile')
     } catch (error) {
       warn(error instanceof Error ? error.message : '密码修改失败。')
-    } finally { }
+    } finally { release() }
   }
 
   async function revokeSession(session: SessionItem) {
