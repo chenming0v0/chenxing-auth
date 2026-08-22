@@ -147,19 +147,20 @@ export function ConsoleProfile() {
     setBusySessionId(session.id)
     setNotice(null)
     try {
-      await apiFetch<void>(`/api/v1/auth/sessions/${session.id}`, { method: 'DELETE' })
-    } catch (error) {
-      // 404 表示会话已不存在（重复撤销或他处已撤销），与撤销成功等价，不算失败。
-      if (!(error instanceof ApiError && error.status === 404)) {
-        warn(error instanceof Error ? error.message : '会话撤销失败。')
-        return
+      try {
+        await apiFetch<void>(`/api/v1/auth/sessions/${session.id}`, { method: 'DELETE' })
+      } catch (error) {
+        // 404 表示会话已不存在（重复撤销或他处已撤销），与撤销成功等价，不算失败。
+        if (!(error instanceof ApiError && error.status === 404)) {
+          warn(error instanceof Error ? error.message : '会话撤销失败。')
+          return
+        }
       }
+      if (session.current) { clear(); navigate('/login?returnTo=%2Fconsole%2Fprofile'); return }
+      await loadSessions()
     } finally {
-      if (session.current) setBusySessionId(null)
+      setBusySessionId((current) => current === session.id ? null : current)
     }
-    if (session.current) { clear(); navigate('/login?returnTo=%2Fconsole%2Fprofile'); return }
-    await loadSessions()
-    setBusySessionId(null)
   }
 
   const name = user?.display_name || user?.username || '用户'
