@@ -23,6 +23,10 @@ use uuid::Uuid;
 
 const PASSWORD: &str = "correct horse battery";
 
+fn test_email_encryption_keys() -> AuthEncryptionKeyRing {
+    AuthEncryptionKeyRing::single(AuthEncryptionKey::new([0_u8; 32]))
+}
+
 #[derive(Default)]
 struct AllowingLimiter;
 
@@ -114,12 +118,17 @@ async fn setup() -> (
     .expect("test config");
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    config.auth_encryption_keys = AuthEncryptionKeyRing::single(AuthEncryptionKey::new([0_u8; 32]));
+    let email_encryption_keys = test_email_encryption_keys();
+    config.auth_encryption_keys = email_encryption_keys.clone();
     let sender = Arc::new(CapturingSender::default());
-    let state = AppState::new_with_pool(config, database.clone())
+    let mut state = AppState::new_with_pool(config, database.clone())
         .await
         .expect("test state")
         .with_email_sender(sender);
+    state.users = state
+        .users
+        .clone()
+        .with_email_encryption_keys(email_encryption_keys);
     let suffix = Uuid::new_v4().simple().to_string();
     let email_text = format!("email-change-{suffix}@example.com");
     let email = EmailAddress::parse(&email_text).expect("fixture email");
@@ -140,7 +149,12 @@ async fn setup() -> (
     (state, database, user.id, key_directory)
 }
 
-async fn start(users: &UserService, sender: Arc<CapturingSender>, user_id: i64) -> (Uuid, String) {
+async fn start(
+    users: &UserService,
+    outbox: &chenxing_auth::notifications::EmailOutbox,
+    sender: Arc<CapturingSender>,
+    user_id: i64,
+) -> (Uuid, String) {
     let source_ip = format!("test-source-{}", Uuid::new_v4().simple());
     let start = users
         .start_email_change(
@@ -152,6 +166,10 @@ async fn start(users: &UserService, sender: Arc<CapturingSender>, user_id: i64) 
         )
         .await
         .expect("start email change");
+    outbox
+        .process_pending_outbox()
+        .await
+        .expect("deliver email change code");
     (start.challenge_id, sender.code())
 }
 
@@ -160,7 +178,7 @@ async fn concurrent_wrong_codes_stop_at_the_atomic_threshold() {
     let (state, database, user_id, key_directory) = setup().await;
     let sender = Arc::new(CapturingSender::default());
     let state = state.with_email_sender(sender.clone());
-    let (challenge_id, code) = start(&state.users, sender, user_id).await;
+    let (challenge_id, code) = start(&state.users, &state.email_outbox, sender, user_id).await;
     let wrong_code = (code != "000000").then_some("000000").unwrap_or("999999");
     let mut tasks = Vec::new();
     for _ in 0..12 {
@@ -195,7 +213,7 @@ async fn challenge_attempts_are_bound_to_the_authenticated_user() {
     let (state, database, user_id, key_directory) = setup().await;
     let sender = Arc::new(CapturingSender::default());
     let state = state.with_email_sender(sender.clone());
-    let (challenge_id, code) = start(&state.users, sender, user_id).await;
+    let (challenge_id, code) = start(&state.users, &state.email_outbox, sender, user_id).await;
     let other_user_id = user_id + 1;
 
     let other_user = state
@@ -232,7 +250,7 @@ async fn fifth_wrong_code_invalidates_the_challenge_and_later_attempts_are_inval
     let (state, database, user_id, key_directory) = setup().await;
     let sender = Arc::new(CapturingSender::default());
     let state = state.with_email_sender(sender.clone());
-    let (challenge_id, code) = start(&state.users, sender, user_id).await;
+    let (challenge_id, code) = start(&state.users, &state.email_outbox, sender, user_id).await;
     let wrong_code = (code != "000000").then_some("000000").unwrap_or("999999");
 
     for attempt in 0..5 {
@@ -281,7 +299,7 @@ async fn correct_code_wins_a_race_with_wrong_codes_without_resurrection() {
     let (state, database, user_id, key_directory) = setup().await;
     let sender = Arc::new(CapturingSender::default());
     let state = state.with_email_sender(sender.clone());
-    let (challenge_id, code) = start(&state.users, sender, user_id).await;
+    let (challenge_id, code) = start(&state.users, &state.email_outbox, sender, user_id).await;
     let wrong_code = (code != "000000").then_some("000000").unwrap_or("999999");
     let barrier = Arc::new(tokio::sync::Barrier::new(5));
     let mut tasks = Vec::new();
@@ -332,10 +350,12 @@ async fn correct_code_wins_a_race_with_wrong_codes_without_resurrection() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn concurrent_losers_return_only_expected_client_errors() {
-    let (_state, database, user_id, key_directory) = setup().await;
+    let (state, database, user_id, key_directory) = setup().await;
     let sender = Arc::new(CapturingSender::default());
-    let users = UserService::new(database.clone(), Arc::new(AllowingLimiter));
-    let (challenge_id, code) = start(&users, sender, user_id).await;
+    let state = state.with_email_sender(sender.clone());
+    let users = UserService::new(database.clone(), Arc::new(AllowingLimiter))
+        .with_email_encryption_keys(test_email_encryption_keys());
+    let (challenge_id, code) = start(&users, &state.email_outbox, sender, user_id).await;
     let wrong_code = (code != "000000").then_some("000000").unwrap_or("999999");
     let barrier = Arc::new(tokio::sync::Barrier::new(6));
     let mut tasks = Vec::new();
