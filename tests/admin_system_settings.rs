@@ -101,6 +101,23 @@ async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
         .clone()
         .oneshot(
             Request::builder()
+                .uri("/api/v1/admin/settings/email-policy")
+                .header("authorization", "Bearer admin-system-settings-token")
+                .body(Body::empty())
+                .expect("email policy get"),
+        )
+        .await
+        .expect("email policy get response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let current_policy = json(response).await;
+    let expected_generation = current_policy["generation"]
+        .as_i64()
+        .expect("email policy generation");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
                 .method("PUT")
                 .uri("/api/v1/admin/settings/email-policy")
                 .header("authorization", "Bearer admin-system-settings-token")
@@ -109,7 +126,8 @@ async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
                     serde_json::json!({
                         "whitelist_enabled": true,
                         "alias_restriction_enabled": true,
-                        "allowed_domains": ["example.com", "EXAMPLE.COM"]
+                        "allowed_domains": ["example.com", "EXAMPLE.COM"],
+                        "expected_generation": expected_generation
                     })
                     .to_string(),
                 ))
@@ -119,6 +137,9 @@ async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
         .expect("email policy put response");
     assert_eq!(response.status(), StatusCode::OK);
     let policy = json(response).await;
+    let expected_generation = policy["generation"]
+        .as_i64()
+        .expect("email policy generation after update");
     assert_eq!(
         policy["allowed_domains"],
         serde_json::json!(["example.com"])
@@ -183,7 +204,8 @@ async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
                     serde_json::json!({
                         "whitelist_enabled": false,
                         "alias_restriction_enabled": false,
-                        "allowed_domains": []
+                        "allowed_domains": [],
+                        "expected_generation": expected_generation
                     })
                     .to_string(),
                 ))
