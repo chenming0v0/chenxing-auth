@@ -1127,11 +1127,12 @@ fn database_uses_forward_only_transactional_migration_history() {
             "include_str!(\"../../migrations/0042_email_change_attempt_budget_fix.sql\")"
         )
     );
+    assert!(DB_MODULE.contains("include_str!(\"../../migrations/0043_email_outbox.sql\")"));
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        42
+        43
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1175,14 +1176,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 42);
+    assert_eq!(migrations.len(), 43);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0042_email_change_attempt_budget_fix.sql")
+        Some("0043_email_outbox.sql")
     );
     let versions = migrations
         .iter()
@@ -1193,7 +1194,7 @@ fn database_uses_forward_only_transactional_migration_history() {
                 .expect("migration filename starts with a version prefix")
         })
         .collect::<Vec<_>>();
-    assert_eq!(versions, (1..=42).collect::<Vec<_>>());
+    assert_eq!(versions, (1..=43).collect::<Vec<_>>());
 
     assert_eq!(
         DATABASE_BASELINE.matches("CREATE TABLE ").count(),
@@ -1290,6 +1291,11 @@ fn migration_history_declares_final_security_and_consistency_invariants() {
         "CONSTRAINT oauth_clients_auth_method_secret_check",
         "auth_method = 'none' AND client_secret_hash IS NULL",
         "auth_method IN ('client_secret_basic', 'client_secret_post')",
+        "CREATE TABLE email_outbox",
+        "encrypted_code BYTEA NOT NULL",
+        "num_nonnulls(processed_at, cancelled_at, dead_lettered_at) <= 1",
+        "FOREIGN KEY (challenge_id, user_id)",
+        "WHERE processed_at IS NULL\n      AND cancelled_at IS NULL\n      AND dead_lettered_at IS NULL",
         "CONSTRAINT user_email_change_attempts_nonnegative",
         "CONSTRAINT user_email_change_attempts_bounded",
         "failed_attempts + in_flight_attempts <= 5",

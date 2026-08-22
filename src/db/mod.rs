@@ -349,6 +349,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "fix email change attempt budget",
             include_str!("../../migrations/0042_email_change_attempt_budget_fix.sql"),
         ),
+        (
+            43,
+            "email outbox",
+            include_str!("../../migrations/0043_email_outbox.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

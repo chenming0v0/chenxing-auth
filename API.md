@@ -34,7 +34,7 @@
 
 ### `GET /health` 与 `GET /health/ready`
 
-就绪探针。`/health` 是 `/health/ready` 的兼容别名，两者检查数据库、Redis、Issuer 收敛、四个关键后台 worker 的心跳/最近成功，以及签名密钥同步状态。数据库、Redis、worker 和签名同步正常且 Issuer 尚未设置时，保护模式同样返回 `200`，不会因为缺少 Issuer 把 readiness/health 置为 `503`。任一实际依赖超时或未就绪、worker 未成功启动/心跳过期/连续失败，或签名密钥同步异常时返回 `503`：
+就绪探针。`/health` 是 `/health/ready` 的兼容别名，两者检查数据库、Redis、Issuer 收敛、五个关键后台 worker 的心跳/最近成功，以及签名密钥同步状态。数据库、Redis、worker 和签名同步正常且 Issuer 尚未设置时，保护模式同样返回 `200`，不会因为缺少 Issuer 把 readiness/health 置为 `503`。任一实际依赖超时或未就绪、worker 未成功启动/心跳过期/连续失败，或签名密钥同步异常时返回 `503`：
 
 ```json
 {"status":"unavailable","service":"chenxing-auth"}

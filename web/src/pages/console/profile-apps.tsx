@@ -221,7 +221,7 @@ export function ConsoleProfile() {
           const result = await apiFetch<{ challenge_id: string }>('/api/v1/auth/email-change/start', { method: 'POST', body: JSON.stringify({ new_email: newEmail.trim(), current_password: emailPassword }) })
           if (generation !== emailChangeGeneration.current) return
           setEmailChallengeId(result.challenge_id)
-          notify('验证码已发送到新邮箱。', 'success')
+          notify('验证码已排队发送到新邮箱。', 'success')
         } else {
           await apiFetch<void>('/api/v1/auth/email-change/confirm', { method: 'POST', body: JSON.stringify({ challenge_id: emailChallengeId, code: emailCode }) })
           if (generation !== emailChangeGeneration.current) return

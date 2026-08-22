@@ -63,7 +63,6 @@ pub async fn start_email_change(
     match state
         .users
         .start_email_change(
-            state.email_sender.clone(),
             session.user_id,
             &input.new_email,
             &input.current_password,
@@ -95,11 +94,9 @@ pub async fn start_email_change(
                 "password reauthentication is unavailable",
             )
         }
-        Err(crate::users::service::EmailChangeError::DeliveryUnavailable) => {
-            error::service_unavailable(
-                "email_delivery_unavailable",
-                "email delivery is temporarily unavailable",
-            )
+        Err(crate::users::service::EmailChangeError::EncryptionUnavailable) => error::internal(),
+        Err(crate::users::service::EmailChangeError::AuthenticationChanged) => {
+            error::unauthorized("invalid_session", "login session is invalid")
         }
         Err(crate::users::service::EmailChangeError::RateLimited) => error::too_many_requests(
             "email_change_rate_limited",
@@ -109,8 +106,8 @@ pub async fn start_email_change(
             "email_change_rate_limited",
             "too many email change attempts; try again later",
         ),
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to start email change");
+        Err(_) => {
+            tracing::error!("failed to start email change");
             error::internal()
         }
     }

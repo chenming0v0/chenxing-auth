@@ -1,0 +1,66 @@
+use super::{EmailOutbox, EmailOutboxError, MAX_ATTEMPTS, OutboxEntry};
+
+impl EmailOutbox {
+    pub(super) async fn record_failure(
+        &self,
+        entry: &OutboxEntry,
+        error_value: &EmailOutboxError,
+    ) -> Result<(), EmailOutboxError> {
+        let error_code = error_value.failure_code();
+        if entry.attempts >= MAX_ATTEMPTS {
+            crate::sqlx::query(
+                "UPDATE email_outbox
+                 SET dead_lettered_at = NOW(), claim_token = '', last_error = $4
+                 WHERE id = $1 AND processed_at IS NULL AND cancelled_at IS NULL
+                   AND dead_lettered_at IS NULL
+                   AND claim_generation = $2 AND claim_token = $3",
+            )
+            .bind(entry.id)
+            .bind(entry.claim_generation)
+            .bind(&entry.claim_token)
+            .bind(error_code)
+            .execute(&self.pool)
+            .await
+            .map_err(EmailOutboxError::Database)?;
+        } else {
+            let delay_seconds = retry_delay_seconds(entry.attempts);
+            crate::sqlx::query(
+                "UPDATE email_outbox
+                 SET available_at = NOW() + $4, last_error = $5
+                 WHERE id = $1 AND processed_at IS NULL AND cancelled_at IS NULL
+                   AND dead_lettered_at IS NULL
+                   AND claim_generation = $2 AND claim_token = $3",
+            )
+            .bind(entry.id)
+            .bind(entry.claim_generation)
+            .bind(&entry.claim_token)
+            .bind(time::Duration::seconds(delay_seconds))
+            .bind(error_code)
+            .execute(&self.pool)
+            .await
+            .map_err(EmailOutboxError::Database)?;
+        }
+        Ok(())
+    }
+}
+
+fn retry_delay_seconds(attempts: i32) -> i64 {
+    2_i64
+        .saturating_pow(attempts.saturating_sub(1) as u32)
+        .min(300)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retry_delay_seconds;
+
+    #[test]
+    fn retry_delay_is_bounded_and_starts_at_one_second() {
+        assert_eq!(retry_delay_seconds(0), 1);
+        assert_eq!(retry_delay_seconds(1), 1);
+        assert_eq!(retry_delay_seconds(2), 2);
+        assert_eq!(retry_delay_seconds(9), 256);
+        assert_eq!(retry_delay_seconds(10), 300);
+        assert_eq!(retry_delay_seconds(i32::MAX), 300);
+    }
+}

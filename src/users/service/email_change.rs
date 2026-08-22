@@ -1,17 +1,14 @@
-use std::sync::Arc;
-
 use time::OffsetDateTime;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use super::UserService;
-use crate::{
-    notifications::{EmailMessage, EmailSender},
-    users::{
-        credentials::{hash_password, verify_password},
-        domain::UserId,
-        email::EmailAddress,
-        repository,
-    },
+use crate::notifications::crypto::encrypt_code;
+use crate::users::{
+    credentials::{hash_password, verify_password},
+    domain::UserId,
+    email::EmailAddress,
+    repository,
 };
 
 const CHALLENGE_LIFETIME_MINUTES: i64 = 10;
@@ -27,8 +24,8 @@ pub enum EmailChangeError {
     InvalidCredentials,
     #[error("password reauthentication is unavailable")]
     ReauthenticationUnavailable,
-    #[error("email delivery is unavailable")]
-    DeliveryUnavailable,
+    #[error("email change encryption is unavailable")]
+    EncryptionUnavailable,
     #[error("email change challenge is invalid")]
     InvalidChallenge,
     #[error("email change code is invalid")]
@@ -59,7 +56,6 @@ pub struct EmailChangeConfirmation {
 impl UserService {
     pub async fn start_email_change(
         &self,
-        sender: Arc<dyn EmailSender>,
         user_id: UserId,
         new_email: &str,
         current_password: &str,
@@ -80,32 +76,32 @@ impl UserService {
             .await
             .map_err(map_reauthentication_error)?
             .ok_or(EmailChangeError::ReauthenticationUnavailable)?;
-        let code = format!("{:06}", rand::random::<u32>() % 1_000_000);
-        let code_hash = hash_password(code.clone())
+        let code = Zeroizing::new(format!("{:06}", rand::random::<u32>() % 1_000_000));
+        let code_hash = hash_password(code.as_str().to_owned())
             .await
             .map_err(|_| EmailChangeError::CredentialHash)?;
         let challenge_id = Uuid::new_v4();
         let expires_at = now + time::Duration::minutes(CHALLENGE_LIFETIME_MINUTES);
-        sender
-            .send(EmailMessage {
-                to: new_email.clone(),
-                subject: "辰星通行证邮箱变更验证码".to_owned(),
-                body: format!(
-                    "你的邮箱变更验证码是：{code}\n验证码将在 {CHALLENGE_LIFETIME_MINUTES} 分钟后失效。"
-                ),
-            })
-            .await
-            .map_err(|_| EmailChangeError::DeliveryUnavailable)?;
-        repository::email_change::replace_pending_email_change(
+        let encryption_keys = self
+            .email_encryption_keys
+            .as_ref()
+            .ok_or(EmailChangeError::EncryptionUnavailable)?;
+        let encrypted_code = encrypt_code(encryption_keys, code.as_str(), user_id, challenge_id)
+            .map_err(|_| EmailChangeError::EncryptionUnavailable)?;
+        let outcome = repository::email_change::replace_pending_email_change(
             &self.pool,
             challenge_id,
             user_id,
             &new_email,
             &code_hash,
+            encrypted_code.as_slice(),
             authenticated.session_epoch,
             expires_at,
         )
         .await?;
+        if outcome != repository::email_change::EmailChangeStartOutcome::Created {
+            return Err(EmailChangeError::AuthenticationChanged);
+        }
         Ok(EmailChangeStart {
             challenge_id,
             expires_at,
