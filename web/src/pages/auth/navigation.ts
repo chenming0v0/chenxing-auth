@@ -1,3 +1,5 @@
+import { replaceUrl } from '../../router'
+
 const DEFAULT_RETURN_TO = '/console'
 
 export function safeReturnTo(value: string | null): string {
@@ -31,6 +33,5 @@ export function dropDeadRequestId(requestId: string): void {
   const search = params.toString()
   const next = `${window.location.pathname}${search ? `?${search}` : ''}${hash}`
   if (next === window.location.pathname + window.location.search + hash) return
-  window.history.replaceState({}, '', next)
-  window.dispatchEvent(new PopStateEvent('popstate'))
+  replaceUrl(next)
 }
