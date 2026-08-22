@@ -25,6 +25,7 @@ const AUTH_SYNC_STORAGE_KEY = 'chenxing-auth-sync-event'
 const REVALIDATE_THROTTLE_MS = 5_000
 
 type AuthSyncEvent = { type: 'logout' | 'login'; nonce: string; occurredAt: number }
+type RefreshOptions = { broadcast?: boolean }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserMe | null>(null)
@@ -80,7 +81,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setBootstrap('ready')
   }, [])
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async ({ broadcast = true }: RefreshOptions = {}) => {
     // 记下本轮代数和序号。logout 改代数；后续 refresh 改序号。
     // 任一不匹配都说明自己过期，不得覆盖当前 user/status。
     const generation = generationRef.current
@@ -107,7 +108,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       userIdRef.current = profile.id
       setUser(profile)
       setStatus('authenticated')
-      broadcastAuthEvent('login')
+      // A remote login event must not be echoed back to the other tabs, or every
+      // tab would revalidate each other forever.
+      if (broadcast) broadcastAuthEvent('login')
       return profile
     } catch (error) {
       // 过期请求不得写状态。尤其是旧 401：再调 clear() 会把登录后的新状态清掉（#473）。
@@ -130,15 +133,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (typeof window === 'undefined') return
 
-    const onRemoteLogout = (event: AuthSyncEvent | null) => {
+    const onRemoteAuthSync = (event: AuthSyncEvent | null) => {
       if (!event || !Number.isFinite(event.occurredAt) || event.occurredAt < authChangedAtRef.current) return
       authChangedAtRef.current = event.occurredAt
       if (event.type === 'logout') clearLocal()
+      else if (event.type === 'login') void refresh({ broadcast: false })
     }
     const onStorage = (event: StorageEvent) => {
       if (event.key !== AUTH_SYNC_STORAGE_KEY || !event.newValue) return
       try {
-        onRemoteLogout(JSON.parse(event.newValue) as AuthSyncEvent)
+        onRemoteAuthSync(JSON.parse(event.newValue) as AuthSyncEvent)
       } catch {
         // Ignore malformed values from other applications using localStorage.
       }
@@ -149,7 +153,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const channel = new BroadcastChannel(AUTH_SYNC_CHANNEL)
         channelRef.current = channel
-        channel.addEventListener('message', (event: MessageEvent<AuthSyncEvent>) => onRemoteLogout(event.data))
+        channel.addEventListener('message', (event: MessageEvent<AuthSyncEvent>) => onRemoteAuthSync(event.data))
       } catch {
         channelRef.current = null
       }
@@ -160,7 +164,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       channelRef.current?.close()
       channelRef.current = null
     }
-  }, [clearLocal])
+  }, [clearLocal, refresh])
 
   useEffect(() => {
     if (sessionExpiryTimerRef.current) clearTimeout(sessionExpiryTimerRef.current)

@@ -172,6 +172,30 @@ describe('refresh request ordering (#473)', () => {
     expect(screen.getByLabelText('当前用户').textContent).toBe('owner')
   })
 
+  it('refreshes an unauthenticated tab after a remote login event (#665)', async () => {
+    let profileCalls = 0
+    stubAuthNetwork(() => {
+      profileCalls += 1
+      return Promise.resolve(profileCalls === 1
+        ? jsonResponse({ code: 'unauthorized' }, 401)
+        : jsonResponse(ownerProfile()))
+    })
+
+    render(<AuthProvider><AuthStateProbe /></AuthProvider>)
+    await waitFor(() => expect(profileCalls).toBe(1))
+    await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('unauthenticated'))
+
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: 'chenxing-auth-sync-event',
+        newValue: JSON.stringify({ type: 'login', nonce: 'remote-login', occurredAt: Date.now() }),
+      }))
+    })
+    await waitFor(() => expect(profileCalls).toBe(2))
+    await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('authenticated'))
+    expect(screen.getByLabelText('当前用户').textContent).toBe('owner')
+  })
+
   it('drops a successful refresh that lands after logout', async () => {
     let resolveInFlight: ((response: Response) => void) | undefined
     let profileCalls = 0
