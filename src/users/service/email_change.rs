@@ -15,6 +15,7 @@ use crate::{
 };
 
 const CHALLENGE_LIFETIME_MINUTES: i64 = 10;
+pub const EMAIL_CHANGE_FAILED_ATTEMPT_LIMIT: i64 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EmailChangeError {
@@ -30,6 +31,10 @@ pub enum EmailChangeError {
     DeliveryUnavailable,
     #[error("email change challenge is invalid")]
     InvalidChallenge,
+    #[error("email change code is invalid")]
+    InvalidCode,
+    #[error("email change confirmation rate limit reached")]
+    RateLimited,
     #[error("target email is already registered")]
     EmailConflict,
     #[error("authentication state changed")]
@@ -116,18 +121,74 @@ impl UserService {
         if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(EmailChangeError::InvalidChallenge);
         }
-        let mut transaction = self.pool.begin().await?;
-        crate::sessions::store::lock_user_session_scope(&mut transaction, user_id).await?;
-        let challenge = repository::email_change::lock_email_change_challenge(
-            &mut transaction,
+        let challenge = match repository::email_change::reserve_email_change_attempt(
+            &self.pool,
             challenge_id,
             user_id,
+            EMAIL_CHANGE_FAILED_ATTEMPT_LIMIT,
         )
-        .await?
-        .ok_or(EmailChangeError::InvalidChallenge)?;
+        .await
+        {
+            Ok(Some(challenge)) => challenge,
+            Ok(None) => return Err(EmailChangeError::InvalidChallenge),
+            Err(error) => return Err(error.into()),
+        };
         if !verify_password(code.to_owned(), challenge.code_hash).await {
-            return Err(EmailChangeError::InvalidChallenge);
+            let failure = match repository::email_change::record_email_change_failure(
+                &self.pool,
+                challenge_id,
+                user_id,
+                challenge.attempt_id,
+                EMAIL_CHANGE_FAILED_ATTEMPT_LIMIT,
+            )
+            .await
+            {
+                Ok(Some(result)) => result,
+                Ok(None) => {
+                    release_email_change_attempt_after_error(
+                        self,
+                        challenge_id,
+                        user_id,
+                        challenge.attempt_id,
+                    )
+                    .await;
+                    return Err(EmailChangeError::InvalidChallenge);
+                }
+                Err(error) => {
+                    release_email_change_attempt_after_error(
+                        self,
+                        challenge_id,
+                        user_id,
+                        challenge.attempt_id,
+                    )
+                    .await;
+                    return Err(error.into());
+                }
+            };
+            if failure.threshold_reached {
+                return Err(EmailChangeError::RateLimited);
+            }
+            if failure.challenge_consumed {
+                return Err(EmailChangeError::InvalidChallenge);
+            }
+            return Err(EmailChangeError::InvalidCode);
         }
+
+        // The expensive hash check is outside the account transaction. The
+        // challenge's in-flight slot keeps the budget bounded while this runs.
+        complete_email_change(self, user_id, challenge_id, challenge).await
+    }
+}
+
+async fn complete_email_change(
+    service: &UserService,
+    user_id: UserId,
+    challenge_id: Uuid,
+    challenge: repository::email_change::LockedEmailChangeChallenge,
+) -> Result<EmailChangeConfirmation, EmailChangeError> {
+    let result = async {
+        let mut transaction = service.pool.begin().await?;
+        crate::sessions::store::lock_user_session_scope(&mut transaction, user_id).await?;
         let (old_email, current_epoch) =
             repository::email_change::current_email_and_epoch(&mut transaction, user_id)
                 .await?
@@ -144,9 +205,18 @@ impl UserService {
         {
             return Err(EmailChangeError::EmailConflict);
         }
-        repository::email_change::apply_email_change(
+        if !repository::email_change::consume_email_change_attempt(
             &mut transaction,
             challenge_id,
+            user_id,
+            challenge.attempt_id,
+        )
+        .await?
+        {
+            return Err(EmailChangeError::InvalidChallenge);
+        }
+        repository::email_change::apply_email_change(
+            &mut transaction,
             user_id,
             &challenge.new_email,
             &challenge.new_canonical_email,
@@ -155,10 +225,50 @@ impl UserService {
         crate::sessions::store::revoke_all_for_user_in_transaction(&mut transaction, user_id)
             .await?
             .ok_or(EmailChangeError::AuthenticationChanged)?;
-        transaction.commit().await?;
         let old_email =
             EmailAddress::parse(&old_email).map_err(|_| EmailChangeError::AuthenticationChanged)?;
+        transaction.commit().await?;
         Ok(EmailChangeConfirmation { old_email })
+    }
+    .await;
+
+    if result.is_err() {
+        // The attempt UUID makes this compensation idempotent and ownership
+        // bound. It is safe even when commit returned an ambiguous error: a
+        // committed transaction already removed this UUID, while a rollback
+        // leaves exactly this UUID for the compensating update.
+        release_email_change_attempt_after_error(
+            service,
+            challenge_id,
+            user_id,
+            challenge.attempt_id,
+        )
+        .await;
+    }
+    result
+}
+
+async fn release_email_change_attempt_after_error(
+    service: &UserService,
+    challenge_id: Uuid,
+    user_id: UserId,
+    attempt_id: Uuid,
+) {
+    if let Err(error) = repository::email_change::release_email_change_attempt(
+        &service.pool,
+        challenge_id,
+        user_id,
+        attempt_id,
+        EMAIL_CHANGE_FAILED_ATTEMPT_LIMIT,
+    )
+    .await
+    {
+        tracing::error!(
+            error = %error,
+            challenge_id = %challenge_id,
+            user_id,
+            "failed to release email change verification slot"
+        );
     }
 }
 

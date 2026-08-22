@@ -101,6 +101,10 @@ pub async fn start_email_change(
                 "email delivery is temporarily unavailable",
             )
         }
+        Err(crate::users::service::EmailChangeError::RateLimited) => error::too_many_requests(
+            "email_change_rate_limited",
+            "too many email change attempts; try again later",
+        ),
         Err(crate::users::service::EmailChangeError::Limiter) => error::too_many_requests(
             "email_change_rate_limited",
             "too many email change attempts; try again later",
@@ -158,6 +162,13 @@ pub async fn confirm_email_change(
         Err(crate::users::service::EmailChangeError::InvalidChallenge) => error::bad_request(
             "email_change_invalid",
             "email change challenge is invalid or expired",
+        ),
+        Err(crate::users::service::EmailChangeError::InvalidCode) => {
+            error::unauthorized("email_change_code_invalid", "email change code is invalid")
+        }
+        Err(crate::users::service::EmailChangeError::RateLimited) => error::too_many_requests(
+            "email_change_rate_limited",
+            "too many email change confirmation attempts; try again later",
         ),
         Err(crate::users::service::EmailChangeError::EmailConflict) => {
             error::conflict("email_already_registered", "email is already registered")
