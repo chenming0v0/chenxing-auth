@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiFetch, type ExternalIdentity, type ExternalIdentityListResponse, type PublicExternalProvider } from '../../api'
 import { useModalFocus } from '../../components/modal'
 import { Badge, Button, HudPanel, Icon, PasswordField } from '../../components/ui'
@@ -28,14 +28,21 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
   const [loadError, setLoadError] = useState<string | null>(null)
   const [unlinking, setUnlinking] = useState<ExternalIdentity | null>(null)
   const [password, setPassword] = useState('')
+  const loadRequestIdRef = useRef(0)
+  const loadInFlightRef = useRef(false)
+  const mountedRef = useRef(false)
 
-  async function load(): Promise<void> {
+  const load = useCallback(async (): Promise<void> => {
+    if (!mountedRef.current || loadInFlightRef.current) return
+    const requestId = ++loadRequestIdRef.current
+    loadInFlightRef.current = true
     setLoading(true)
-    setLoadError(null)
     const [identityResult, providerResult] = await Promise.allSettled([
       apiFetch<ExternalIdentityListResponse>('/api/v1/auth/external-identities'),
       apiFetch<PublicExternalProvider[]>('/api/v1/auth/external-providers', { redirectOn401: false }),
     ])
+    if (!mountedRef.current || requestId !== loadRequestIdRef.current) return
+
     const errors: string[] = []
     if (identityResult.status === 'fulfilled') {
       setIdentities(Array.isArray(identityResult.value.items) ? identityResult.value.items : [])
@@ -47,15 +54,22 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
     } else {
       errors.push(providerResult.reason instanceof Error ? providerResult.reason.message : '可用身份源加载失败。')
     }
-    if (errors.length) {
-      const message = errors.join(' ')
-      setLoadError(message)
-      onNotice({ text: message, tone: 'warning' })
-    }
+    const message = errors.length ? errors.join(' ') : null
+    setLoadError(message)
+    if (message) onNotice({ text: message, tone: 'warning' })
+    loadInFlightRef.current = false
     setLoading(false)
-  }
+  }, [onNotice])
 
-  useEffect(() => { void load() }, [])
+  useEffect(() => {
+    mountedRef.current = true
+    void load()
+    return () => {
+      mountedRef.current = false
+      loadInFlightRef.current = false
+      loadRequestIdRef.current += 1
+    }
+  }, [load])
 
   const bindings = useMemo(() => mergeProviderBindings(providers, identities), [providers, identities])
   const boundCount = bindings.filter((binding) => binding.identity).length + 1
@@ -158,7 +172,7 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
       {loadError ? (
         <div className="mt-4 flex items-start gap-2 border-t border-[var(--chenxing-border)] pt-4">
           <Icon name="circle-alert" size={16} className="mt-0.5 shrink-0 text-[var(--chenxing-warning)]" />
-          <p className="chenxing-caption">登录身份暂时不可用。{loadError} <button type="button" className="chenxing-link ml-2" onClick={() => void load()}>重试</button></p>
+          <p className="chenxing-caption">登录身份暂时不可用。{loadError} <button type="button" className="chenxing-link ml-2" disabled={loading} onClick={() => void load()}>重试</button></p>
         </div>
       ) : null}
 

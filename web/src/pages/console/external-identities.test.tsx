@@ -4,14 +4,23 @@
  * 会在应用源下执行；这里覆盖导航汇点，不依赖父页是否展示 notice。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { installCsrfCookie } from '../../test/csrf-cookie'
 import { ExternalIdentities } from './external-identities'
 
 installCsrfCookie()
 
+type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void }
+
 function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise })
+  return { promise, resolve }
 }
 
 /** jsdom 的 location.assign 会触发未实现的导航告警，测试里换成可断言的桩。 */
@@ -41,15 +50,18 @@ function stubLocationAssign(): ReturnType<typeof vi.fn> {
 
 const originalLocationDescriptor = Object.getOwnPropertyDescriptor(window, 'location')
 
-function renderBindings() {
+function renderBindings(strict = false) {
   const onNotice = vi.fn()
-  const view = render(
+  const bindings = (
     <ExternalIdentities
       userEmail="user@chenxing.star"
       busy={null}
       onBusy={vi.fn()}
       onNotice={onNotice}
-    />,
+    />
+  )
+  const view = render(
+    strict ? <StrictMode>{bindings}</StrictMode> : bindings,
   )
   return { onNotice, ...view }
 }
@@ -121,5 +133,85 @@ describe('ExternalIdentities 绑定跳转白名单（#584）', () => {
       })
     })
     expect(assign).not.toHaveBeenCalled()
+  })
+})
+
+describe('ExternalIdentities 加载顺序（#675）', () => {
+  it('retry 成功后忽略最后返回的旧加载结果和错误', async () => {
+    const staleIdentities = deferred<Response>()
+    const staleProviders = deferred<Response>()
+    const retryIdentities = deferred<Response>()
+    const retryProviders = deferred<Response>()
+    let identityCalls = 0
+    let providerCalls = 0
+    vi.stubGlobal('fetch', (path: string) => {
+      if (path === '/api/v1/auth/external-identities') {
+        identityCalls += 1
+        if (identityCalls === 1) return staleIdentities.promise
+        if (identityCalls === 2) return Promise.resolve(jsonResponse({ code: 'temporarily_unavailable' }, 503))
+        return retryIdentities.promise
+      }
+      if (path === '/api/v1/auth/external-providers') {
+        providerCalls += 1
+        if (providerCalls === 1) return staleProviders.promise
+        if (providerCalls === 2) return Promise.resolve(jsonResponse([]))
+        return retryProviders.promise
+      }
+      return Promise.reject(new Error(`unexpected request: ${path}`))
+    })
+
+    const { onNotice } = renderBindings(true)
+    const retry = await screen.findByRole('button', { name: '重试' })
+    onNotice.mockClear()
+    fireEvent.click(retry)
+
+    await waitFor(() => {
+      expect(identityCalls).toBe(3)
+      expect(providerCalls).toBe(3)
+      expect((screen.getByRole('button', { name: '重试' }) as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    await act(async () => {
+      retryIdentities.resolve(jsonResponse({ items: [{
+        provider: 'google', provider_name: 'Google', email: 'new@example.test', linked_at: '2026-08-23T00:00:00Z',
+      }] }))
+      retryProviders.resolve(jsonResponse([{ slug: 'google', name: 'Google' }]))
+      await Promise.all([retryIdentities.promise, retryProviders.promise])
+    })
+    expect(await screen.findByText('new@example.test')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '重试' })).toBeNull()
+
+    await act(async () => {
+      staleIdentities.resolve(jsonResponse({ items: [{
+        provider: 'github', provider_name: 'GitHub', email: 'old@example.test', linked_at: '2026-08-22T00:00:00Z',
+      }] }))
+      staleProviders.resolve(jsonResponse({ code: 'stale_failure' }, 503))
+      await Promise.all([staleIdentities.promise, staleProviders.promise])
+    })
+
+    expect(screen.getByText('new@example.test')).toBeTruthy()
+    expect(screen.queryByText('old@example.test')).toBeNull()
+    expect(screen.queryByText(/服务暂时不可用/)).toBeNull()
+    expect(onNotice).not.toHaveBeenCalled()
+  })
+
+  it('卸载后废弃在途加载，不再写入父级 notice', async () => {
+    const identities = deferred<Response>()
+    const providers = deferred<Response>()
+    vi.stubGlobal('fetch', (path: string) => {
+      if (path === '/api/v1/auth/external-identities') return identities.promise
+      if (path === '/api/v1/auth/external-providers') return providers.promise
+      return Promise.reject(new Error(`unexpected request: ${path}`))
+    })
+
+    const { onNotice, unmount } = renderBindings()
+    unmount()
+    await act(async () => {
+      identities.resolve(jsonResponse({ code: 'stale_identity_failure' }, 503))
+      providers.resolve(jsonResponse({ code: 'stale_provider_failure' }, 503))
+      await Promise.all([identities.promise, providers.promise])
+    })
+
+    expect(onNotice).not.toHaveBeenCalled()
   })
 })
