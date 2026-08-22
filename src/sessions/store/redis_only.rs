@@ -206,8 +206,8 @@ pub(super) async fn find_redis_only(
         return Ok(None);
     };
     // Redis 键由令牌哈希派生，能读到这条记录就说明调用方持有该令牌。
-    let mut session = stored_payload.into_session(token.to_owned());
-    session.set_idle_timeout(store.current_idle_timeout());
+    let mut session = stored_payload
+        .into_session_with_legacy_idle_fallback(token.to_owned(), store.policy.idle_timeout);
     let now = store.clock.now();
     if !session.is_active_at(now) {
         return Ok(None);
@@ -252,8 +252,10 @@ pub(super) async fn find_redis_only(
             if let Some(latest) = latest
                 && let Some(payload) = store.decode_payload(&latest)?
             {
-                session = payload.into_session(session.token.clone());
-                session.set_idle_timeout(store.policy.idle_timeout);
+                session = payload.into_session_with_legacy_idle_fallback(
+                    session.token.clone(),
+                    store.policy.idle_timeout,
+                );
             }
         }
     }
@@ -272,8 +274,8 @@ pub(super) async fn find_redis_only_by_token_hash(
     let Some(stored_payload) = store.decode_payload(&payload)? else {
         return Ok(None);
     };
-    let mut session = stored_payload.into_session(String::new());
-    session.set_idle_timeout(store.current_idle_timeout());
+    let mut session = stored_payload
+        .into_session_with_legacy_idle_fallback(String::new(), store.policy.idle_timeout);
     let now = store.clock.now();
     if !session.is_active_at(now) {
         return Ok(None);
@@ -316,16 +318,14 @@ pub(super) async fn find_redis_only_by_token_hash(
             if let Some(latest) = latest
                 && let Some(payload) = store.decode_payload(&latest)?
             {
-                session = payload.into_session(String::new());
-                session.set_idle_timeout(store.policy.idle_timeout);
+                session = payload.into_session_with_legacy_idle_fallback(
+                    String::new(),
+                    store.policy.idle_timeout,
+                );
             }
         }
     }
-    Ok(Some(
-        SessionPayload::from(&session)
-            .into_lookup()
-            .with_idle_timeout(store.current_idle_timeout()),
-    ))
+    Ok(Some(SessionPayload::from(&session).into_lookup()))
 }
 
 pub(super) async fn revoke_redis_only(

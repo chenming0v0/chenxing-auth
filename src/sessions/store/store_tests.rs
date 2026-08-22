@@ -190,11 +190,22 @@ fn lookup_paths_do_not_overwrite_issuance_idle_with_store_policy() {
     let find = include_str!("postgres_find.rs");
     let redis = include_str!("redis_only.rs");
     assert!(
-        !find.contains("store.policy.idle_timeout"),
+        find.contains("row.idle_timeout"),
         "PostgreSQL lookup must use the session row, not the boot-time store policy"
     );
     assert!(
-        !redis.contains("session.set_idle_timeout(store.policy.idle_timeout)"),
-        "Redis-only lookup must not overwrite a persisted issuance window"
+        redis.contains("into_session_with_legacy_idle_fallback"),
+        "Redis-only lookup must use the payload and an explicit legacy fallback"
+    );
+    assert_eq!(
+        redis
+            .matches("into_session_with_legacy_idle_fallback")
+            .count(),
+        4,
+        "token/hash lookup and both concurrent rereads must share the fallback rule"
+    );
+    assert!(
+        !find.contains("current_idle_timeout") && !redis.contains("current_idle_timeout"),
+        "lookup paths must not apply the current runtime policy to persisted sessions"
     );
 }

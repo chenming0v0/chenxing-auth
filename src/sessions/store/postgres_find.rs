@@ -94,6 +94,20 @@ struct ActiveSessionRow {
     status: String,
 }
 
+impl ActiveSessionRow {
+    fn lookup(&self, last_seen_at: OffsetDateTime) -> SessionLookup {
+        SessionLookup {
+            id: self.id,
+            user_id: self.user_id.to_string(),
+            created_at: self.created_at,
+            expires_at: self.expires_at,
+            last_seen_at,
+            revoked_at: None,
+            idle_timeout: Some(self.idle_timeout),
+        }
+    }
+}
+
 fn idle_timeout_from_seconds(seconds: i64) -> Duration {
     Duration::from_secs(u64::try_from(seconds).unwrap_or(1).max(1))
 }
@@ -153,16 +167,15 @@ pub(in crate::sessions::store) async fn find_authenticated_with_metadata(
         return Ok(None);
     }
 
-    // Token only comes from the request, never from storage.
-    let mut session = stored_payload.into_session(token.to_owned());
-    session.id = row.id;
-    session.user_id = row.user_id.to_string();
-    session.created_at = row.created_at;
-    session.expires_at = row.expires_at;
-    session.last_seen_at = row.last_seen_at;
-    session.revoked_at = None;
-    session.set_credential_generation(row.session_epoch);
-    session.set_idle_timeout(store.current_idle_timeout());
+    // PostgreSQL is authoritative for every session field except the CSRF
+    // material, which is stored in the encrypted payload. The request token is
+    // the only token source; the payload is never allowed to override row data.
+    let mut session = Session::from_authoritative_lookup(
+        row.lookup(row.last_seen_at),
+        token.to_owned(),
+        stored_payload.csrf_token,
+        row.session_epoch,
+    );
 
     if row.needs_renewal {
         let Some(renewed_at) = renew_session_activity(
@@ -224,18 +237,7 @@ pub(in crate::sessions::store) async fn find_with_metadata_by_token_hash(
         row.last_seen_at
     };
 
-    Ok(Some(
-        SessionLookup {
-            id: row.id,
-            user_id: row.user_id.to_string(),
-            created_at: row.created_at,
-            expires_at: row.expires_at,
-            last_seen_at,
-            revoked_at: None,
-            idle_timeout: None,
-        }
-        .with_idle_timeout(row.idle_timeout),
-    ))
+    Ok(Some(row.lookup(last_seen_at)))
 }
 
 async fn load_active_by_token_hash(

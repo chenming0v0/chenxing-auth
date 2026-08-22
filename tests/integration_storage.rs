@@ -1,7 +1,11 @@
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
 
-use std::{env, sync::Arc, time::Duration};
+use std::{
+    env,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use base64::Engine;
 use chenxing_auth::{
@@ -20,6 +24,7 @@ use chenxing_auth::{
         domain::{Session, session_token_hash_bytes},
         store::SessionStore,
     },
+    settings::SessionLifetimeSetting,
     users::{
         credentials::hash_password,
         domain::{UserRole, UserStatus, ValidatedRegistration},
@@ -949,6 +954,85 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
         ])
         .await
         .expect("cleanup Redis keys");
+}
+
+/// Issue #673: Redis must keep the issuance-time idle field in its payload.
+/// Both token and hash-only lookup must survive a later runtime policy change
+/// for old sessions, while sessions issued after the change use the new value.
+#[tokio::test]
+async fn redis_session_lookup_preserves_issuance_idle_after_runtime_change() {
+    let runtime_policy = Arc::new(RwLock::new(SessionLifetimeSetting {
+        session_ttl_seconds: 3_600,
+        session_idle_timeout_seconds: 1_800,
+    }));
+    let store = SessionStore::with_redis_key(redis_client(), [0x65; 32])
+        .with_session_policy(Duration::from_secs(1_800), 5)
+        .with_runtime_policy(runtime_policy.clone());
+    let now = OffsetDateTime::now_utc();
+
+    let mut old_session = Session::new_at_with_idle_timeout(
+        "redis-issue-673-old".to_owned(),
+        Duration::from_secs(3_600),
+        Duration::from_secs(1_800),
+        now - time::Duration::seconds(90),
+    )
+    .expect("old Redis session");
+    store
+        .save(&mut old_session, Duration::from_secs(3_600))
+        .await
+        .expect("save old Redis session");
+
+    runtime_policy
+        .write()
+        .expect("runtime policy lock")
+        .session_idle_timeout_seconds = 60;
+
+    let found_old = store
+        .find(&old_session.token)
+        .await
+        .expect("find old Redis session")
+        .expect("old Redis session remains active");
+    assert!(found_old.is_active_at(now));
+    let old_hash = session_token_hash_bytes(&old_session.token);
+    let found_old_hash = store
+        .find_by_token_hash(&old_hash)
+        .await
+        .expect("hash-only lookup for old Redis session")
+        .expect("old Redis hash-only session remains active");
+    assert!(found_old_hash.is_active_at(now));
+
+    let new_idle = Duration::from_secs(
+        runtime_policy
+            .read()
+            .expect("runtime policy read")
+            .session_idle_timeout_seconds,
+    );
+    let mut new_session = Session::new_at_with_idle_timeout(
+        "redis-issue-673-new".to_owned(),
+        Duration::from_secs(3_600),
+        new_idle,
+        now - time::Duration::seconds(90),
+    )
+    .expect("new Redis session");
+    store
+        .save(&mut new_session, Duration::from_secs(3_600))
+        .await
+        .expect("save new Redis session");
+    assert!(
+        store
+            .find(&new_session.token)
+            .await
+            .expect("find new Redis session")
+            .is_none()
+    );
+    let new_hash = session_token_hash_bytes(&new_session.token);
+    assert!(
+        store
+            .find_by_token_hash(&new_hash)
+            .await
+            .expect("hash-only lookup for new Redis session")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -2578,7 +2662,7 @@ async fn session_save_revokes_the_oldest_active_session_at_the_user_cap() {
 /// under the old window, expire an already-issued session early, or ignore
 /// a shortened window for sessions issued after the change.
 #[tokio::test]
-async fn session_idle_timeout_is_the_issuance_window_not_the_store_policy() {
+async fn session_idle_timeout_is_the_issuance_window_not_runtime_policy() {
     let pool = database().await;
     let user = user_repository::insert_user(
         &pool,
@@ -2597,10 +2681,16 @@ async fn session_idle_timeout_is_the_issuance_window_not_the_store_policy() {
     .expect("insert issuance-idle user");
     let key = [0x64; 32];
     let client = redis_client();
+    let runtime_policy = Arc::new(RwLock::new(SessionLifetimeSetting {
+        session_ttl_seconds: 3_600,
+        session_idle_timeout_seconds: 1_800,
+    }));
     let store_boot = SessionStore::with_metadata_and_key(client.clone(), pool.clone(), key)
-        .with_session_policy(Duration::from_secs(1_800), 5);
+        .with_session_policy(Duration::from_secs(1_800), 5)
+        .with_runtime_policy(runtime_policy.clone());
     let store_short = SessionStore::with_metadata_and_key(client.clone(), pool.clone(), key)
-        .with_session_policy(Duration::from_secs(60), 5);
+        .with_session_policy(Duration::from_secs(1_800), 5)
+        .with_runtime_policy(runtime_policy.clone());
 
     let mut issued_under_boot = Session::new_with_idle_timeout(
         user.id.to_string(),
@@ -2621,6 +2711,13 @@ async fn session_idle_timeout_is_the_issuance_window_not_the_store_policy() {
     .expect("read persisted idle window");
     assert_eq!(stored_idle, 1_800);
 
+    // The runtime policy changes after issuance. The old row must continue to
+    // use its own idle window for both token and hash-only lookup.
+    runtime_policy
+        .write()
+        .expect("runtime policy lock")
+        .session_idle_timeout_seconds = 60;
+
     chenxing_auth::sqlx::query(
         "UPDATE user_sessions
          SET last_seen_at = NOW() - INTERVAL '90 seconds'
@@ -2630,21 +2727,35 @@ async fn session_idle_timeout_is_the_issuance_window_not_the_store_policy() {
     .execute(&pool)
     .await
     .expect("age 1800s session past a 60s policy");
+    let found_old = store_short
+        .find(&issued_under_boot.token)
+        .await
+        .expect("find session issued under 1800s")
+        .expect("shortening the runtime policy must not expire an old session");
     assert!(
-        store_short
-            .find(&issued_under_boot.token)
-            .await
-            .expect("find session issued under 1800s")
-            .is_some(),
-        "shortening the store policy must not expire already-issued sessions"
+        found_old.is_active_at(OffsetDateTime::now_utc()),
+        "old token lookup must retain the issuance-time idle window"
+    );
+    let old_hash = session_token_hash_bytes(&issued_under_boot.token);
+    let found_old_hash = store_short
+        .find_by_token_hash(&old_hash)
+        .await
+        .expect("hash-only lookup for old session")
+        .expect("old hash-only lookup must remain active");
+    assert!(
+        found_old_hash.is_active_at(OffsetDateTime::now_utc()),
+        "old hash-only lookup must retain the issuance-time idle window"
     );
 
-    let mut issued_after_change = Session::new_with_idle_timeout(
-        user.id.to_string(),
-        Duration::from_secs(3_600),
-        Duration::from_secs(60),
-    )
-    .expect("session issued under 60s idle");
+    let new_idle = Duration::from_secs(
+        runtime_policy
+            .read()
+            .expect("runtime policy read")
+            .session_idle_timeout_seconds,
+    );
+    let mut issued_after_change =
+        Session::new_with_idle_timeout(user.id.to_string(), Duration::from_secs(3_600), new_idle)
+            .expect("session issued under 60s idle");
     store_short
         .save(&mut issued_after_change, Duration::from_secs(3_600))
         .await
@@ -2665,6 +2776,15 @@ async fn session_idle_timeout_is_the_issuance_window_not_the_store_policy() {
             .expect("find session issued under 60s")
             .is_none(),
         "sessions issued after the admin change must use the new 60s window"
+    );
+    let new_hash = session_token_hash_bytes(&issued_after_change.token);
+    assert!(
+        store_short
+            .find_by_token_hash(&new_hash)
+            .await
+            .expect("hash-only lookup for new session")
+            .is_none(),
+        "new hash-only lookup must use the new issuance-time window"
     );
 
     let mut issued_under_short = Session::new_with_idle_timeout(

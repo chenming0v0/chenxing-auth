@@ -295,10 +295,50 @@ fn legacy_payload_without_idle_timeout_remains_readable() {
     let payload: SessionPayload =
         serde_json::from_value(value).expect("legacy payload must remain readable");
     assert!(payload.idle_timeout_seconds.is_none());
-    assert!(
-        payload
-            .into_session("token-from-request".to_owned())
-            .idle_timeout()
-            .is_none()
+    let restored = payload.into_session_with_legacy_idle_fallback(
+        "token-from-request".to_owned(),
+        Duration::from_secs(90),
     );
+    assert_eq!(restored.idle_timeout(), Some(Duration::from_secs(90)));
+}
+
+/// A compatibility fallback must not replace a value written at issuance.
+#[test]
+fn legacy_idle_fallback_preserves_a_persisted_issuance_window() {
+    let session = Session::new_with_idle_timeout(
+        "42".to_owned(),
+        Duration::from_secs(3_600),
+        Duration::from_secs(1_800),
+    )
+    .expect("session");
+    let restored = SessionPayload::from(&session).into_session_with_legacy_idle_fallback(
+        "token-from-request".to_owned(),
+        Duration::from_secs(60),
+    );
+
+    assert_eq!(restored.idle_timeout(), Some(Duration::from_secs(1_800)));
+}
+
+/// Only a missing field is legacy. A present invalid value must fail closed
+/// instead of being replaced by a more permissive compatibility fallback.
+#[test]
+fn legacy_idle_fallback_does_not_accept_a_present_zero_window() {
+    let created_at = OffsetDateTime::UNIX_EPOCH;
+    let session = Session::new_at_with_idle_timeout(
+        "42".to_owned(),
+        Duration::from_secs(3_600),
+        Duration::from_secs(1_800),
+        created_at,
+    )
+    .expect("session");
+    let mut payload = SessionPayload::from(&session);
+    payload.idle_timeout_seconds = Some(0);
+
+    let restored = payload.into_session_with_legacy_idle_fallback(
+        "token-from-request".to_owned(),
+        Duration::from_secs(1_800),
+    );
+
+    assert_eq!(restored.idle_timeout(), Some(Duration::ZERO));
+    assert!(!restored.is_active_at(created_at));
 }
