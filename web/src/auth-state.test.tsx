@@ -221,6 +221,63 @@ describe('refresh request ordering (#473)', () => {
     expect(screen.getByLabelText('当前用户').textContent).toBe('')
   })
 
+  it('drops an initial refresh that succeeds after a remote logout', async () => {
+    let resolveInitial: ((response: Response) => void) | undefined
+    let profileCalls = 0
+    stubAuthNetwork(() => {
+      profileCalls += 1
+      return new Promise<Response>((resolve) => { resolveInitial = resolve })
+    })
+
+    render(<AuthProvider><AuthStateProbe /></AuthProvider>)
+    await waitFor(() => expect(profileCalls).toBe(1))
+    expect(screen.getByLabelText('认证状态').textContent).toBe('loading')
+    const generationBeforeLogout = screen.getByLabelText('认证代数').textContent
+
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: 'chenxing-auth-sync-event',
+        newValue: JSON.stringify({ type: 'logout', nonce: 'remote-initial-logout', occurredAt: Date.now() }),
+      }))
+    })
+
+    expect(screen.getByLabelText('认证状态').textContent).toBe('unauthenticated')
+    expect(screen.getByLabelText('认证代数').textContent).not.toBe(generationBeforeLogout)
+    await resolveDeferred(resolveInitial, jsonResponse(ownerProfile('stale-initial')))
+    expect(screen.getByLabelText('认证状态').textContent).toBe('unauthenticated')
+    expect(screen.getByLabelText('当前用户').textContent).toBe('')
+  })
+
+  it('drops a retry refresh that succeeds after a remote logout', async () => {
+    let resolveRetry: ((response: Response) => void) | undefined
+    let profileCalls = 0
+    stubAuthNetwork(() => {
+      profileCalls += 1
+      if (profileCalls === 1) return Promise.resolve(jsonResponse({ code: 'temporarily_unavailable' }, 503))
+      return new Promise<Response>((resolve) => { resolveRetry = resolve })
+    })
+
+    render(<AuthProvider><AuthStateProbe /></AuthProvider>)
+    await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('error'))
+    fireEvent.click(screen.getByRole('button', { name: '重试认证' }))
+    await waitFor(() => expect(profileCalls).toBe(2))
+    expect(screen.getByLabelText('认证状态').textContent).toBe('loading')
+    const generationBeforeLogout = screen.getByLabelText('认证代数').textContent
+
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: 'chenxing-auth-sync-event',
+        newValue: JSON.stringify({ type: 'logout', nonce: 'remote-retry-logout', occurredAt: Date.now() }),
+      }))
+    })
+
+    expect(screen.getByLabelText('认证状态').textContent).toBe('unauthenticated')
+    expect(screen.getByLabelText('认证代数').textContent).not.toBe(generationBeforeLogout)
+    await resolveDeferred(resolveRetry, jsonResponse(ownerProfile('stale-retry')))
+    expect(screen.getByLabelText('认证状态').textContent).toBe('unauthenticated')
+    expect(screen.getByLabelText('当前用户').textContent).toBe('')
+  })
+
   it('clears entitlement cache when refresh switches to a different account (#527)', async () => {
     let profileCalls = 0
     let entitlementCalls = 0
