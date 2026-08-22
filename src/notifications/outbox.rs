@@ -178,12 +178,25 @@ impl EmailOutbox {
     }
 
     async fn apply(&self, entry: &OutboxEntry) -> Result<bool, EmailOutboxError> {
-        // The provider call stays outside the database transaction. The claim
-        // generation/token fence makes completion safe after a lease is reclaimed;
-        // without a provider idempotency key, delivery is intentionally at-least-once.
-        let payload = self.load_current_payload(entry).await?;
+        // Keep the user advisory lock until the provider call and terminal
+        // write finish. A new challenge cannot commit between this state check
+        // and delivery, so a claimed old challenge is either cancelled before
+        // sending or is fully serialized ahead of the new request.
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(EmailOutboxError::Database)?;
+        crate::sessions::store::lock_user_session_scope(&mut transaction, entry.user_id)
+            .await
+            .map_err(EmailOutboxError::Database)?;
+        let payload = self.load_current_payload(&mut transaction, entry).await?;
         let Some((recipient, encrypted_code)) = payload else {
-            self.mark_cancelled(entry).await?;
+            self.mark_cancelled(&mut transaction, entry).await?;
+            transaction
+                .commit()
+                .await
+                .map_err(EmailOutboxError::Database)?;
             return Ok(false);
         };
         let code = decrypt_code(
@@ -213,21 +226,19 @@ impl EmailOutbox {
             .await
             .map_err(|_| EmailOutboxError::DeliveryTimeout)?
             .map_err(|_| EmailOutboxError::Delivery)?;
-        self.mark_processed(entry).await
+        let processed = self.mark_processed(&mut transaction, entry).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(EmailOutboxError::Database)?;
+        Ok(processed)
     }
 
     async fn load_current_payload(
         &self,
+        transaction: &mut Transaction<'_, Postgres>,
         entry: &OutboxEntry,
     ) -> Result<Option<(String, Zeroizing<Vec<u8>>)>, EmailOutboxError> {
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(EmailOutboxError::Database)?;
-        crate::sessions::store::lock_user_session_scope(&mut transaction, entry.user_id)
-            .await
-            .map_err(EmailOutboxError::Database)?;
         let row: Option<(String, Vec<u8>)> = crate::sqlx::query_as(
             "SELECT challenge.new_email, outbox.encrypted_code
              FROM email_outbox AS outbox
@@ -253,20 +264,17 @@ impl EmailOutbox {
         .bind(entry.challenge_id)
         .bind(entry.claim_generation)
         .bind(&entry.claim_token)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(&mut **transaction)
         .await
         .map_err(EmailOutboxError::Database)?;
-        if row.is_none() {
-            self.mark_cancelled(&mut transaction, entry).await?;
-        }
-        transaction
-            .commit()
-            .await
-            .map_err(EmailOutboxError::Database)?;
         Ok(row.map(|(recipient, encrypted_code)| (recipient, Zeroizing::new(encrypted_code))))
     }
 
-    async fn mark_processed(&self, entry: &OutboxEntry) -> Result<bool, EmailOutboxError> {
+    async fn mark_processed(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        entry: &OutboxEntry,
+    ) -> Result<bool, EmailOutboxError> {
         let result = crate::sqlx::query(
             "UPDATE email_outbox
              SET processed_at = NOW(), claim_token = '', last_error = NULL
@@ -277,7 +285,7 @@ impl EmailOutbox {
         .bind(entry.id)
         .bind(entry.claim_generation)
         .bind(&entry.claim_token)
-        .execute(&self.pool)
+        .execute(&mut **transaction)
         .await
         .map_err(EmailOutboxError::Database)?;
         Ok(result.rows_affected() == 1)

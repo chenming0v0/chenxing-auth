@@ -1,5 +1,5 @@
 import { createElement, useEffect, useId, useRef, useState } from 'react'
-import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
+import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, Ref, TextareaHTMLAttributes } from 'react'
 import {
   Activity, AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Box, CalendarClock, Check, ChevronDown,
   ChevronsUpDown, Circle, CircleAlert, Code2, Copy, Crown, Database, Download, ExternalLink, Eye, EyeOff, Fingerprint,
@@ -77,6 +77,7 @@ type HudPanelProps = HTMLAttributes<HTMLElement> & {
   /** 渲染成哪种标签。页面需要语义标签时传 section / article / aside / form，不要自己写玻璃容器类 */
   as?: HudPanelElement
   children: ReactNode
+  ref?: Ref<HTMLElement>
 }
 
 /**

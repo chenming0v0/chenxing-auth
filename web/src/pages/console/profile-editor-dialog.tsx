@@ -1,5 +1,6 @@
-import { useEffect, useRef, type FormEvent } from 'react'
+import { useModalFocus } from '../../components/modal'
 import { Button, Field, HudPanel, Icon, PasswordField } from '../../components/ui'
+import type { FormEvent } from 'react'
 
 type ProfileEditorDialogProps = {
   displayName: string
@@ -26,30 +27,13 @@ export function ProfileEditorDialog({
   onCancel,
   onSubmit,
 }: ProfileEditorDialogProps) {
-  const cancelRef = useRef(onCancel)
-  const busyRef = useRef(busy)
-
-  cancelRef.current = onCancel
-  busyRef.current = busy
-
   function requestCancel() {
     if (!busy) onCancel()
   }
-
-  useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    document.getElementById('profile-display-name')?.focus()
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      if (!busyRef.current) cancelRef.current()
-    }
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-      previousFocus?.focus()
-    }
-  }, [])
+  const containerRef = useModalFocus<HTMLFormElement>(onCancel, {
+    initialFocusSelector: '#profile-display-name',
+    escapeDisabled: busy,
+  })
 
   return (
     <div
@@ -59,9 +43,11 @@ export function ProfileEditorDialog({
     >
       <HudPanel
         as="form"
+        ref={containerRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="profile-editor-title"
+        tabIndex={-1}
         className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-2xl"
         onSubmit={onSubmit}
       >

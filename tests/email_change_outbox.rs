@@ -10,6 +10,7 @@ use chenxing_auth::{
     sqlx::PgPool,
     state::AppState,
 };
+use tokio::sync::Notify;
 use tower::ServiceExt;
 
 #[path = "support/db_isolation.rs"]
@@ -72,6 +73,57 @@ impl EmailSender for CapturingSender {
         Box::pin(async move {
             messages.lock().expect("sender lock").push(message);
             Ok(())
+        })
+    }
+}
+
+#[derive(Clone, Default)]
+struct BlockingSender {
+    messages: Arc<Mutex<Vec<EmailMessage>>>,
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+    first_send: Arc<Mutex<bool>>,
+}
+
+impl BlockingSender {
+    fn messages(&self) -> Vec<EmailMessage> {
+        self.messages.lock().expect("sender lock").clone()
+    }
+}
+
+impl EmailSender for BlockingSender {
+    fn send<'a>(
+        &'a self,
+        message: EmailMessage,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<(), chenxing_auth::notifications::EmailSendError>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        let messages = self.messages.clone();
+        let started = self.started.clone();
+        let release = self.release.clone();
+        let should_block = {
+            let mut first_send = self.first_send.lock().expect("sender lock");
+            if *first_send {
+                false
+            } else {
+                *first_send = true;
+                true
+            }
+        };
+        Box::pin(async move {
+            if should_block {
+                started.notify_one();
+                release.notified().await;
+                messages.lock().expect("sender lock").push(message);
+                Ok(())
+            } else {
+                Err(chenxing_auth::notifications::EmailSendError::Delivery)
+            }
         })
     }
 }
@@ -355,5 +407,62 @@ async fn concurrent_starts_leave_one_ordered_current_challenge() {
     .await
     .expect("cancelled outbox count");
     assert_eq!(cancelled_outbox, 1);
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn new_challenge_waits_for_in_flight_delivery() {
+    let (state, database, key_directory, cookie, _sender) =
+        logged_in_state("email_change_outbox_send_lock").await;
+    let sender = BlockingSender::default();
+    let state = state.with_email_sender(Arc::new(sender.clone()));
+    let router = api::router(state.clone());
+
+    assert_eq!(
+        start_request(&router, &cookie, "locked-first@example.com")
+            .await
+            .status(),
+        StatusCode::ACCEPTED
+    );
+    let processing = tokio::spawn({
+        let outbox = state.email_outbox.clone();
+        async move { outbox.process_pending_outbox().await }
+    });
+    sender.started.notified().await;
+
+    let second_router = router.clone();
+    let second_cookie = cookie.clone();
+    let mut second = tokio::spawn(async move {
+        start_request(&second_router, &second_cookie, "locked-second@example.com").await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), &mut second)
+            .await
+            .is_err(),
+        "a new challenge must wait while the old delivery owns the user lock"
+    );
+
+    sender.release.notify_one();
+    processing
+        .await
+        .expect("outbox task join")
+        .expect("process email outbox");
+    assert_eq!(
+        second.await.expect("second request join").status(),
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(sender.messages().len(), 1);
+    assert_eq!(
+        sender.messages()[0].to.to_string(),
+        "locked-first@example.com"
+    );
+    let pending: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM email_outbox
+         WHERE processed_at IS NULL AND cancelled_at IS NULL AND dead_lettered_at IS NULL",
+    )
+    .fetch_one(&database)
+    .await
+    .expect("pending second outbox");
+    assert_eq!(pending, 1);
     let _ = std::fs::remove_dir_all(key_directory);
 }
