@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Link, useLocation, useNavigate } from '../router'
+import { Link, replaceUrl, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
 import {
   ApiError,
@@ -76,7 +76,7 @@ function appMark(name?: string) {
  */
 function scrubLocationQuery(): void {
   if (!window.location.search) return
-  window.history.replaceState({}, '', window.location.pathname)
+  replaceUrl(window.location.pathname)
 }
 
 function scopeMeta(scope: string): { title: string; desc: string } {

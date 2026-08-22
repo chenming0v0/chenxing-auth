@@ -5,6 +5,7 @@ import type {
   PendingAuthorization,
   UserMe,
 } from './api-types'
+import { replaceUrl } from './router'
 
 export type * from './api-types'
 
@@ -151,8 +152,7 @@ export function loginRecoveryTarget(pathname: string, search: string): string {
 function redirectToLogin(): void {
   if (typeof window === 'undefined' || window.location.pathname === '/login') return
   const target = loginRecoveryTarget(window.location.pathname, window.location.search)
-  window.history.replaceState({}, '', target)
-  window.dispatchEvent(new PopStateEvent('popstate'))
+  replaceUrl(target)
 }
 
 function invalidSuccessResponse(status: number): ApiError {

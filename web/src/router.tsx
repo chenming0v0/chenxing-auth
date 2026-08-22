@@ -2,12 +2,12 @@ import { useEffect, useState, type AnchorHTMLAttributes, type MouseEvent, type R
 
 function currentPath() { return window.location.pathname }
 
-const HISTORY_INDEX = '__chenxing_history_index'
+export const HISTORY_INDEX = '__chenxing_history_index'
+export const NAVIGATION_EVENT = 'chenxing:navigation'
 let historyIndex = typeof window !== 'undefined' && typeof window.history.state?.[HISTORY_INDEX] === 'number'
   ? window.history.state[HISTORY_INDEX] as number
   : 0
 let restoringHistory = false
-let skipNextProgrammaticPopstate = false
 if (typeof window !== 'undefined' && window.history.state?.[HISTORY_INDEX] !== historyIndex) {
   window.history.replaceState({ ...(window.history.state ?? {}), [HISTORY_INDEX]: historyIndex }, '', window.location.href)
 }
@@ -20,13 +20,13 @@ function commitHistory(to: string, options?: NavigationOptions) {
   else window.history.pushState(state, '', to)
 }
 
+function notifyNavigation() {
+  window.dispatchEvent(new Event(NAVIGATION_EVENT))
+}
+
 function installPopstateGuard() {
   if (typeof window === 'undefined') return
   window.addEventListener('popstate', (event) => {
-    if (skipNextProgrammaticPopstate) {
-      skipNextProgrammaticPopstate = false
-      return
-    }
     if (restoringHistory) {
       restoringHistory = false
       return
@@ -83,8 +83,7 @@ export function prepareNavigation(to: string, options?: NavigationOptions): Navi
       if (committed) return false
       committed = true
       commitHistory(nextTo, nextOptions)
-      skipNextProgrammaticPopstate = true
-      window.dispatchEvent(new PopStateEvent('popstate'))
+      notifyNavigation()
       return true
     },
   }
@@ -99,9 +98,29 @@ export function navigate(to: string, options?: NavigationOptions) {
   intent.commit()
 }
 
+/**
+ * Replace the current same-document URL without creating a history entry.
+ *
+ * URL cleanup and auth redirects still need to re-render the SPA, but they are
+ * not browser history traversals and must not run the popstate blocker.
+ */
+export function replaceUrl(to: string) {
+  commitHistory(to, { replace: true })
+  notifyNavigation()
+}
+
+function subscribeToNavigation(listener: () => void) {
+  window.addEventListener('popstate', listener)
+  window.addEventListener(NAVIGATION_EVENT, listener)
+  return () => {
+    window.removeEventListener('popstate', listener)
+    window.removeEventListener(NAVIGATION_EVENT, listener)
+  }
+}
+
 export function usePathname() {
   const [path, setPath] = useState(currentPath)
-  useEffect(() => { const update = () => setPath(currentPath()); window.addEventListener('popstate', update); return () => window.removeEventListener('popstate', update) }, [])
+  useEffect(() => subscribeToNavigation(() => setPath(currentPath())), [])
   return path
 }
 
@@ -109,11 +128,7 @@ export function useNavigate() { return navigate }
 export function useLocation() {
   const pathname = usePathname()
   const [search, setSearch] = useState(window.location.search)
-  useEffect(() => {
-    const update = () => setSearch(window.location.search)
-    window.addEventListener('popstate', update)
-    return () => window.removeEventListener('popstate', update)
-  }, [])
+  useEffect(() => subscribeToNavigation(() => setSearch(window.location.search)), [])
   return { pathname, search }
 }
 

@@ -11,6 +11,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { PendingAuthorization } from '../api'
 import { installCsrfCookie } from '../test/csrf-cookie'
 import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './oauth'
+import { HISTORY_INDEX } from '../router'
 
 // 确认页的绑定与决策都是走 apiFetch 的状态变更请求，需要 CSRF cookie 才能发出。
 installCsrfCookie()
@@ -103,7 +104,9 @@ describe('OAuthConsentPage 跳转第三方前清理 request_id（#196）', () =>
     fireEvent.click(await screen.findByRole('button', { name: '允许' }))
 
     await waitFor(() => expect(assign).toHaveBeenCalledWith('https://client.example.com/cb?code=secret-code&state=xyz'))
-    expect(replaceState).toHaveBeenCalledWith({}, '', '/oauth/consent')
+    expect(replaceState).toHaveBeenCalledWith(
+      expect.objectContaining({ [HISTORY_INDEX]: expect.any(Number) }), '', '/oauth/consent',
+    )
   })
 
   it('拒绝时同样在跳转前抹掉 request_id', async () => {
@@ -121,7 +124,9 @@ describe('OAuthConsentPage 跳转第三方前清理 request_id（#196）', () =>
     fireEvent.click(await screen.findByRole('button', { name: '取消' }))
 
     await waitFor(() => expect(assign).toHaveBeenCalledWith('https://client.example.com/cb?error=access_denied&state=xyz'))
-    expect(replaceState).toHaveBeenCalledWith({}, '', '/oauth/consent')
+    expect(replaceState).toHaveBeenCalledWith(
+      expect.objectContaining({ [HISTORY_INDEX]: expect.any(Number) }), '', '/oauth/consent',
+    )
   })
 
   it('跳转地址无效时不改写地址，便于重新发起授权', async () => {
@@ -170,7 +175,9 @@ describe('OAuthRedirectPage 进入时清理敏感 query（#196）', () => {
     render(<OAuthRedirectPage />)
 
     expect(screen.getByRole('heading', { name: '授权没有完成' })).toBeTruthy()
-    expect(replaceState).toHaveBeenCalledWith({}, '', '/oauth/redirect')
+    expect(replaceState).toHaveBeenCalledWith(
+      expect.objectContaining({ [HISTORY_INDEX]: expect.any(Number) }), '', '/oauth/redirect',
+    )
   })
 
   it('带 code/state 进入：仍按成功分支展示，并清掉敏感参数', () => {
@@ -180,7 +187,9 @@ describe('OAuthRedirectPage 进入时清理敏感 query（#196）', () => {
     render(<OAuthRedirectPage />)
 
     expect(screen.getByText('授权回调已收到')).toBeTruthy()
-    expect(replaceState).toHaveBeenCalledWith({}, '', '/oauth/redirect')
+    expect(replaceState).toHaveBeenCalledWith(
+      expect.objectContaining({ [HISTORY_INDEX]: expect.any(Number) }), '', '/oauth/redirect',
+    )
   })
 
   it('无查询参数时不做无谓改写', () => {

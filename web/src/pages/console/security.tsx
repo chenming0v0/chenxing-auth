@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { useLocation, useNavigate } from '../../router'
+import { replaceUrl, useLocation, useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
 import { apiFetch, type SecurityEnrollmentResult, type SecurityFactorSummary, type SecurityPasskeyStart, type SecurityRemovalResult, type SecurityTotpStart } from '../../api'
 import { assertPublicKeyCredential, decodeCreationOptions, serializeAttestation, supportsWebAuthnCreate, type PasskeyChallenge } from '../../passkey'
@@ -64,7 +64,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     const error = new URLSearchParams(search).get('external_error')
     if (result === 'linked') show('外部账户已绑定。', 'success')
     else if (error) show(externalBindingErrorMessage(error))
-    if (result || error) window.history.replaceState({}, '', '/console/profile')
+    if (result || error) replaceUrl('/console/profile')
   }, [search])
 
   function show(text: string, tone: MessageTone = 'warning') {
