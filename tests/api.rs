@@ -711,7 +711,7 @@ async fn registration_endpoint_rejects_invalid_email_after_registration_gate() {
                 .header("authorization", "Bearer api-test-admin")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"enabled":true,"email_verification_required":false}"#,
+                    r#"{"enabled":true,"email_verification_required":false,"invitation_code_required":false}"#,
                 ))
                 .expect("enable registration request"),
         )

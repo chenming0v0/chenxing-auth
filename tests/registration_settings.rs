@@ -183,7 +183,11 @@ async fn admin_registration_endpoints_reject_anonymous_callers() {
         Method::PUT,
         SETTINGS_PATH,
         None,
-        Some(json!({"enabled": true, "email_verification_required": false})),
+        Some(json!({
+            "enabled": true,
+            "email_verification_required": false,
+            "invitation_code_required": false,
+        })),
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -197,7 +201,11 @@ async fn enabling_registration_without_issuer_is_rejected_and_status_stays_close
 
     let (status, body) = put_setting(
         &router,
-        json!({"enabled": true, "email_verification_required": false}),
+        json!({
+            "enabled": true,
+            "email_verification_required": false,
+            "invitation_code_required": false,
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -206,7 +214,11 @@ async fn enabling_registration_without_issuer_is_rejected_and_status_stays_close
     // 关闭方向不需要 Issuer。
     let (status, body) = put_setting(
         &router,
-        json!({"enabled": false, "email_verification_required": false}),
+        json!({
+            "enabled": false,
+            "email_verification_required": false,
+            "invitation_code_required": false,
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -219,7 +231,9 @@ async fn enabling_registration_without_issuer_is_rejected_and_status_stays_close
          VALUES ('registration', $1, NOW())
          ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value",
     )
-    .bind(r#"{"enabled":true,"email_verification_required":false}"#)
+    .bind(
+        r#"{"enabled":true,"email_verification_required":false,"invitation_code_required":false}"#,
+    )
     .execute(&database)
     .await
     .expect("persist registration setting");
@@ -238,7 +252,11 @@ async fn enabled_registration_creates_active_user_who_can_login() {
 
     let (status, body) = put_setting(
         &router,
-        json!({"enabled": true, "email_verification_required": false}),
+        json!({
+            "enabled": true,
+            "email_verification_required": false,
+            "invitation_code_required": false,
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -290,7 +308,11 @@ async fn email_verification_required_keeps_registration_fail_closed() {
 
     let (status, body) = put_setting(
         &router,
-        json!({"enabled": true, "email_verification_required": true}),
+        json!({
+            "enabled": true,
+            "email_verification_required": true,
+            "invitation_code_required": false,
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
