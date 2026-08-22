@@ -169,22 +169,18 @@ pub(crate) async fn update_client_secret_ciphertext(
     connection: &mut PgConnection,
     provider_id: i64,
     ciphertext: &[u8],
-) -> Result<(), crate::sqlx::Error> {
-    let result = crate::sqlx::query(
+) -> Result<i64, crate::sqlx::Error> {
+    crate::sqlx::query_scalar::<_, i64>(
         "UPDATE oauth_providers
          SET client_secret_ciphertext = $2, updated_at = $3, state_version = state_version + 1
-         WHERE id = $1",
+         WHERE id = $1
+         RETURNING state_version",
     )
     .bind(provider_id)
     .bind(ciphertext)
     .bind(OffsetDateTime::now_utc())
-    .execute(&mut *connection)
-    .await?;
-    if result.rows_affected() == 1 {
-        Ok(())
-    } else {
-        Err(crate::sqlx::Error::RowNotFound)
-    }
+    .fetch_one(&mut *connection)
+    .await
 }
 
 pub(crate) async fn lock_client_secret_ciphertexts(

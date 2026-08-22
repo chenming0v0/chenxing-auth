@@ -685,7 +685,7 @@ async fn security_alert_survives_smtp_failure_and_outbox_restart() {
         .process_pending_outbox()
         .await
         .expect("SMTP failure is retryable");
-    let failure: (i64, String) = chenxing_auth::sqlx::query_as(
+    let failure: (i32, String) = chenxing_auth::sqlx::query_as(
         "SELECT attempts, COALESCE(last_error, '') FROM email_outbox
          WHERE challenge_id = $1 AND kind = 'email_change_security_alert'",
     )

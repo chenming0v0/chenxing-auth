@@ -216,8 +216,12 @@ impl ExternalOAuthService {
             repository::insert_provider(&mut transaction, &validated, Vec::new()).await?;
         let ciphertext = self.encrypt_secret(provider.id, validated.client_secret.as_deref())?;
         if !ciphertext.is_empty() {
-            repository::update_client_secret_ciphertext(&mut transaction, provider.id, &ciphertext)
-                .await?;
+            provider.state_version = repository::update_client_secret_ciphertext(
+                &mut transaction,
+                provider.id,
+                &ciphertext,
+            )
+            .await?;
             provider.client_secret_ciphertext = ciphertext;
         }
         crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
