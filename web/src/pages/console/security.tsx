@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { useLocation, useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
 import { apiFetch, type SecurityEnrollmentResult, type SecurityFactorSummary, type SecurityPasskeyStart, type SecurityRemovalResult, type SecurityTotpStart } from '../../api'
@@ -8,7 +8,7 @@ import { Badge, Button, HudPanel, Icon, Notice, PasswordField } from '../../comp
 import { useModalFocus } from '../../components/modal'
 import { ExternalIdentities } from './external-identities'
 import type { MessageTone } from './profile-avatar'
-import { SecuritySettings } from './security-settings'
+import { SecuritySettings, type SecurityFactorState } from './security-settings'
 
 type NoticeState = { text: string; tone: MessageTone }
 type TotpState = { phase: 'idle' } | { phase: 'ready'; data: SecurityTotpStart }
@@ -25,8 +25,9 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
   const { clear } = useAuth()
   const navigate = useNavigate()
   const { search } = useLocation()
-  const [summary, setSummary] = useState<SecurityFactorSummary | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [factors, setFactors] = useState<SecurityFactorState>({ status: 'loading' })
+  const factorRequestIdRef = useRef(0)
+  const mountedRef = useRef(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<NoticeState | null>(null)
   const [totp, setTotp] = useState<TotpState>({ phase: 'idle' })
@@ -36,17 +37,27 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
   const [activeTab, setActiveTab] = useState<AccountTab>('bindings')
 
   async function loadFactors(): Promise<void> {
-    setLoading(true)
+    const requestId = ++factorRequestIdRef.current
+    setFactors({ status: 'loading' })
     try {
-      setSummary(await apiFetch<SecurityFactorSummary>('/api/v1/auth/security/factors'))
+      const summary = await apiFetch<SecurityFactorSummary>('/api/v1/auth/security/factors')
+      if (!mountedRef.current || requestId !== factorRequestIdRef.current) return
+      setFactors({ status: 'ready', summary })
     } catch (error) {
+      if (!mountedRef.current || requestId !== factorRequestIdRef.current) return
+      setFactors({ status: 'failed' })
       setNotice({ text: error instanceof Error ? error.message : '登录安全状态加载失败。', tone: 'warning' })
-    } finally {
-      setLoading(false)
     }
   }
 
-  useEffect(() => { void loadFactors() }, [])
+  useEffect(() => {
+    mountedRef.current = true
+    void loadFactors()
+    return () => {
+      mountedRef.current = false
+      factorRequestIdRef.current += 1
+    }
+  }, [])
 
   useEffect(() => {
     const result = new URLSearchParams(search).get('external')
@@ -198,8 +209,8 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     }
   }
 
-  const totpEnabled = summary?.totp_enabled ?? false
-  const passkeyCount = summary?.passkey_count ?? 0
+  const summary = factors.status === 'ready' ? factors.summary : null
+  const protectedAccount = summary !== null && (summary.totp_enabled || summary.passkey_count > 0)
   const readyTotp = totp.phase === 'ready' ? totp : null
 
   return (
@@ -216,7 +227,9 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
               <p className="chenxing-caption mt-1">账户绑定、安全设置和身份验证集中在这里管理。</p>
             </div>
           </div>
-          <Badge tone={totpEnabled || passkeyCount > 0 ? 'success' : 'neutral'}>{loading ? '同步中' : totpEnabled || passkeyCount > 0 ? '安全增强已启用' : '基础保护'}</Badge>
+          <Badge tone={factors.status === 'failed' ? 'warning' : protectedAccount ? 'success' : 'neutral'}>
+            {factors.status === 'loading' ? '同步中' : factors.status === 'failed' ? '状态未知' : protectedAccount ? '安全增强已启用' : '基础保护'}
+          </Badge>
         </div>
 
         <div className="mt-5 grid grid-cols-2 gap-1 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)] p-1" role="tablist" aria-label="账户管理">
@@ -232,10 +245,8 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
           ) : (
             <div id="security-settings-panel" role="tabpanel" aria-labelledby="security-settings-tab">
               <SecuritySettings
-                loading={loading}
+                factors={factors}
                 busy={busy}
-                totpEnabled={totpEnabled}
-                passkeyCount={passkeyCount}
                 totpData={readyTotp?.data ?? null}
                 code={code}
                 onCode={setCode}
