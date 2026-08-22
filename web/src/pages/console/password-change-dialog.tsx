@@ -1,5 +1,6 @@
-import { useEffect, useRef, type FormEvent } from 'react'
+import { useModalFocus } from '../../components/modal'
 import { Button, HudPanel, Icon, PasswordField } from '../../components/ui'
+import type { FormEvent } from 'react'
 
 type PasswordChangeDialogProps = {
   currentPassword: string
@@ -32,35 +33,24 @@ export function PasswordChangeDialog({
   onCancel,
   onSubmit,
 }: PasswordChangeDialogProps) {
-  const cancelRef = useRef(onCancel)
-
-  useEffect(() => { cancelRef.current = onCancel }, [onCancel])
-  useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    document.getElementById('password-change-current')?.focus()
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      cancelRef.current()
-    }
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-      previousFocus?.focus()
-    }
-  }, [])
+  const containerRef = useModalFocus<HTMLFormElement>(onCancel, {
+    initialFocusSelector: '#password-change-current',
+    escapeDisabled: busy,
+  })
 
   return (
     <div
       className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center overflow-y-auto bg-black/70 p-4"
       role="presentation"
-      onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}
+      onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onCancel() }}
     >
       <HudPanel
         as="form"
+        ref={containerRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="password-change-title"
+        tabIndex={-1}
         className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-lg"
         onSubmit={onSubmit}
       >
@@ -70,7 +60,7 @@ export function PasswordChangeDialog({
             <h2 id="password-change-title" className="chenxing-h2 mt-2">修改密码</h2>
             <p className="chenxing-caption mt-2">修改成功后，所有现有会话都会被撤销，需要使用新密码重新登录。</p>
           </div>
-          <button type="button" className="chenxing-icon-btn shrink-0" aria-label="关闭" onClick={onCancel}>
+          <button type="button" className="chenxing-icon-btn shrink-0" aria-label="关闭" onClick={onCancel} disabled={busy}>
             <Icon name="x" size={17} />
           </button>
         </div>
