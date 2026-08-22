@@ -5,10 +5,164 @@ use crate::sqlx::{PgPool, Postgres, Transaction};
 use crate::users::{domain::UserId, email::EmailAddress};
 
 pub struct LockedEmailChangeChallenge {
+    pub attempt_id: Uuid,
     pub new_email: String,
     pub new_canonical_email: String,
     pub code_hash: String,
     pub security_epoch: i64,
+}
+
+pub struct RecordedEmailChangeFailure {
+    pub challenge_consumed: bool,
+    pub threshold_reached: bool,
+}
+
+/// Atomically reserve one verification slot before doing Argon2 work.
+///
+/// `in_flight_attempts` is separate from `failed_attempts`: a correct code that
+/// races with wrong guesses must still be able to finish before the failed
+/// budget is exhausted. Both counters are changed only by guarded updates.
+pub async fn reserve_email_change_attempt(
+    pool: &PgPool,
+    challenge_id: Uuid,
+    user_id: UserId,
+    max_failed_attempts: i64,
+) -> Result<Option<LockedEmailChangeChallenge>, crate::sqlx::Error> {
+    let attempt_id = Uuid::new_v4();
+    crate::sqlx::query_as::<_, (String, String, String, i64)>(
+        "UPDATE user_email_change_challenges
+         SET in_flight_attempts = in_flight_attempts + 1,
+             active_attempt_ids = array_append(active_attempt_ids, $4)
+         WHERE id = $1 AND user_id = $2 AND consumed_at IS NULL
+           AND expires_at > NOW()
+           AND failed_attempts + in_flight_attempts < $3
+           AND in_flight_attempts = cardinality(active_attempt_ids)
+         RETURNING new_email, new_canonical_email, code_hash, security_epoch",
+    )
+    .bind(challenge_id)
+    .bind(user_id)
+    .bind(max_failed_attempts)
+    .bind(attempt_id)
+    .fetch_optional(pool)
+    .await
+    .map(|row| {
+        row.map(
+            |(new_email, new_canonical_email, code_hash, security_epoch)| {
+                LockedEmailChangeChallenge {
+                    attempt_id,
+                    new_email,
+                    new_canonical_email,
+                    code_hash,
+                    security_epoch,
+                }
+            },
+        )
+    })
+}
+
+/// Commit a wrong code and invalidate the challenge at the threshold.
+///
+/// `None` means the request did not own an active slot. The returned state
+/// distinguishes a threshold invalidation from a prior successful consumption.
+pub async fn record_email_change_failure(
+    pool: &PgPool,
+    challenge_id: Uuid,
+    user_id: UserId,
+    attempt_id: Uuid,
+    max_failed_attempts: i64,
+) -> Result<Option<RecordedEmailChangeFailure>, crate::sqlx::Error> {
+    crate::sqlx::query_as::<_, (bool, bool)>(
+        "UPDATE user_email_change_challenges
+         SET in_flight_attempts = in_flight_attempts - 1,
+             active_attempt_ids = array_remove(active_attempt_ids, $3),
+             failed_attempts = CASE
+                 WHEN consumed_at IS NULL THEN failed_attempts + 1
+                 ELSE failed_attempts
+             END,
+             consumed_at = CASE
+                 WHEN consumed_at IS NULL
+                   AND failed_attempts + 1 >= $4
+                   AND in_flight_attempts = 1
+                     THEN NOW()
+                 ELSE consumed_at
+             END
+         WHERE id = $1 AND user_id = $2
+           AND in_flight_attempts > 0
+           AND $3 = ANY(active_attempt_ids)
+         RETURNING consumed_at IS NOT NULL, failed_attempts >= $4",
+    )
+    .bind(challenge_id)
+    .bind(user_id)
+    .bind(attempt_id)
+    .bind(max_failed_attempts)
+    .fetch_optional(pool)
+    .await
+    .map(|row| {
+        row.map(
+            |(challenge_consumed, threshold_reached)| RecordedEmailChangeFailure {
+                challenge_consumed,
+                threshold_reached,
+            },
+        )
+    })
+}
+
+/// Release a reserved slot after the account transaction definitely rolled
+/// back. A consumed challenge may still have concurrent slots to drain, so the
+/// update deliberately works after `consumed_at` is set.
+pub async fn release_email_change_attempt(
+    pool: &PgPool,
+    challenge_id: Uuid,
+    user_id: UserId,
+    attempt_id: Uuid,
+    max_failed_attempts: i64,
+) -> Result<(), crate::sqlx::Error> {
+    crate::sqlx::query(
+        "UPDATE user_email_change_challenges
+         SET in_flight_attempts = in_flight_attempts - 1,
+             active_attempt_ids = array_remove(active_attempt_ids, $3),
+             consumed_at = CASE
+                 WHEN consumed_at IS NULL
+                   AND failed_attempts >= $4
+                   AND in_flight_attempts = 1
+                     THEN NOW()
+                 ELSE consumed_at
+             END
+         WHERE id = $1 AND user_id = $2 AND in_flight_attempts > 0
+           AND $3 = ANY(active_attempt_ids)",
+    )
+    .bind(challenge_id)
+    .bind(user_id)
+    .bind(attempt_id)
+    .bind(max_failed_attempts)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+/// Consume the slot reserved by the successful code. This is the final
+/// challenge CAS and is kept in the same PostgreSQL transaction as the email
+/// update and session revocation.
+pub async fn consume_email_change_attempt<'a>(
+    transaction: &mut Transaction<'a, Postgres>,
+    challenge_id: Uuid,
+    user_id: UserId,
+    attempt_id: Uuid,
+) -> Result<bool, crate::sqlx::Error> {
+    let result = crate::sqlx::query(
+        "UPDATE user_email_change_challenges
+         SET in_flight_attempts = in_flight_attempts - 1,
+             active_attempt_ids = array_remove(active_attempt_ids, $3),
+             consumed_at = NOW()
+         WHERE id = $1 AND user_id = $2 AND consumed_at IS NULL
+           AND in_flight_attempts > 0
+           AND $3 = ANY(active_attempt_ids)",
+    )
+    .bind(challenge_id)
+    .bind(user_id)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 pub async fn replace_pending_email_change(
@@ -47,36 +201,6 @@ pub async fn replace_pending_email_change(
     transaction.commit().await
 }
 
-pub async fn lock_email_change_challenge<'a>(
-    transaction: &mut Transaction<'a, Postgres>,
-    challenge_id: Uuid,
-    user_id: UserId,
-) -> Result<Option<LockedEmailChangeChallenge>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (String, String, String, i64)>(
-        "SELECT new_email, new_canonical_email, code_hash, security_epoch
-         FROM user_email_change_challenges
-         WHERE id = $1 AND user_id = $2 AND consumed_at IS NULL
-           AND expires_at > NOW()
-         FOR UPDATE",
-    )
-    .bind(challenge_id)
-    .bind(user_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map(|row| {
-        row.map(
-            |(new_email, new_canonical_email, code_hash, security_epoch)| {
-                LockedEmailChangeChallenge {
-                    new_email,
-                    new_canonical_email,
-                    code_hash,
-                    security_epoch,
-                }
-            },
-        )
-    })
-}
-
 pub async fn current_email_and_epoch(
     transaction: &mut Transaction<'_, Postgres>,
     user_id: UserId,
@@ -103,7 +227,6 @@ pub async fn target_email_is_taken(
 
 pub async fn apply_email_change(
     transaction: &mut Transaction<'_, Postgres>,
-    challenge_id: Uuid,
     user_id: UserId,
     new_email: &str,
     new_canonical_email: &str,
@@ -117,9 +240,5 @@ pub async fn apply_email_change(
     .bind(new_canonical_email)
     .execute(&mut **transaction)
     .await?;
-    crate::sqlx::query("UPDATE user_email_change_challenges SET consumed_at = NOW() WHERE id = $1")
-        .bind(challenge_id)
-        .execute(&mut **transaction)
-        .await?;
     Ok(())
 }

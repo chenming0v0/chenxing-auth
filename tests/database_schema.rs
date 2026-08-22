@@ -224,6 +224,38 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     assert_column(&pool, "user_passkeys", "user_id", "bigint", false).await;
     assert_column(&pool, "user_passkeys", "state_version", "bigint", false).await;
     assert_fk(&pool, "user_passkeys", "user_id", "users", "id").await;
+    assert_column(
+        &pool,
+        "user_email_change_challenges",
+        "failed_attempts",
+        "bigint",
+        false,
+    )
+    .await;
+    assert_column(
+        &pool,
+        "user_email_change_challenges",
+        "in_flight_attempts",
+        "bigint",
+        false,
+    )
+    .await;
+    assert_column(
+        &pool,
+        "user_email_change_challenges",
+        "active_attempt_ids",
+        "ARRAY",
+        false,
+    )
+    .await;
+    assert_fk(
+        &pool,
+        "user_email_change_challenges",
+        "user_id",
+        "users",
+        "id",
+    )
+    .await;
     assert_column(&pool, "oauth_clients", "id", "bigint", false).await;
     assert_identity(&pool, "oauth_clients", "id").await;
     assert_column(
@@ -497,6 +529,27 @@ async fn runtime_role_cannot_delete_audit_and_uses_security_definer_archive() {
     .await
     .expect("runtime role can insert audit events");
 
+    for privilege in ["SELECT", "INSERT", "UPDATE"] {
+        let granted: bool = chenxing_auth::sqlx::query_scalar(
+            "SELECT has_table_privilege(current_user, 'user_email_change_challenges', $1)",
+        )
+        .bind(privilege)
+        .fetch_one(&runtime_pool)
+        .await
+        .expect("email-change challenge privilege check");
+        assert!(
+            granted,
+            "runtime role must retain {privilege} on email-change challenges"
+        );
+    }
+    let delete_granted: bool = chenxing_auth::sqlx::query_scalar(
+        "SELECT has_table_privilege(current_user, 'user_email_change_challenges', 'DELETE')",
+    )
+    .fetch_one(&runtime_pool)
+    .await
+    .expect("email-change challenge DELETE privilege check");
+    assert!(!delete_granted);
+
     for privilege in ["DELETE", "UPDATE", "TRUNCATE"] {
         let granted: bool = chenxing_auth::sqlx::query_scalar(
             "SELECT has_table_privilege(current_user, 'audit_events', $1)",
@@ -632,7 +685,7 @@ async fn runtime_role_cannot_delete_audit_and_uses_security_definer_archive() {
             .fetch_one(&pool)
             .await
             .expect("read latest migration version");
-    assert_eq!(latest_migration, 40);
+    assert_eq!(latest_migration, 41);
 }
 
 /// Owner 初始化要求 `users.id` 从 1 开始，`bootstrap_owner` 因此在插入前调
