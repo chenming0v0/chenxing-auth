@@ -65,6 +65,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 function renderTable(permissions: string[] = ['manage_users', 'manage_roles', 'manage_settings', 'read_audit']) {
@@ -194,6 +195,31 @@ describe('UsersTable 自己的角色不可修改（对齐 self_role_change_forbi
 })
 
 describe('UsersTable 保持既有行为', () => {
+  it('成功响应发现当前页越界时 replace 到最后有效页并由 effect 重新加载', async () => {
+    window.history.replaceState({}, '', '/admin/users?search=star&status=active&page=4')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+    const pushState = vi.spyOn(window.history, 'pushState')
+    vi.stubGlobal('fetch', (path: string, init?: RequestInit) => {
+      requests.push({ path, method: init?.method })
+      const requestedPage = new URL(path, window.location.origin).searchParams.get('page')
+      if (requestedPage === '4') {
+        return Promise.resolve(jsonResponse({ items: [], page: 4, page_size: 20, total: 21 }))
+      }
+      return Promise.resolve(jsonResponse({ items: [TARGET], page: 2, page_size: 20, total: 21 }))
+    })
+
+    renderTable()
+
+    await screen.findByText('星尘')
+    const queries = requests.filter((request) => request.path.startsWith('/api/v1/admin/users/query'))
+    expect(queries).toHaveLength(2)
+    expect(new URL(queries[0].path, window.location.origin).searchParams.get('page')).toBe('4')
+    expect(new URL(queries[1].path, window.location.origin).searchParams.get('page')).toBe('2')
+    expect(replaceState).toHaveBeenCalledWith({}, '', '/admin/users?search=star&status=active&page=2')
+    expect(pushState).not.toHaveBeenCalled()
+    expect(window.location.search).toBe('?search=star&status=active&page=2')
+  })
+
   it('禁用用户的状态徽标显示中文而不是后端枚举值', async () => {
     renderTable()
     await screen.findByText('离线星')
