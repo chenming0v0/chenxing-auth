@@ -298,8 +298,8 @@ async fn delivery_failure_keeps_the_durable_challenge_for_retry() {
              COUNT(*) FILTER (WHERE processed_at IS NULL AND cancelled_at IS NULL AND dead_lettered_at IS NULL),
              COUNT(*) FILTER (WHERE last_error IS NOT NULL),
              COALESCE(MAX(last_error), '')
-         FROM user_email_change_challenges
-         JOIN email_outbox USING (challenge_id)",
+         FROM user_email_change_challenges AS challenge
+         JOIN email_outbox AS outbox ON outbox.challenge_id = challenge.id",
     )
     .fetch_one(&database)
     .await
