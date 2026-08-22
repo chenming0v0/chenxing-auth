@@ -19,6 +19,8 @@ mod retry;
 const OUTBOX_LEASE: time::Duration = time::Duration::minutes(5);
 const MAX_ATTEMPTS: i32 = 10;
 const EMAIL_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+const VERIFICATION_CODE_KIND: &str = "verification_code";
+const SECURITY_ALERT_KIND: &str = "email_change_security_alert";
 
 #[derive(Clone)]
 pub struct EmailOutbox {
@@ -41,6 +43,8 @@ pub enum EmailOutboxError {
     InvalidCode,
     #[error("email outbox recipient is invalid")]
     InvalidRecipient,
+    #[error("email outbox payload is invalid")]
+    InvalidPayload,
 }
 
 impl EmailOutboxError {
@@ -52,6 +56,7 @@ impl EmailOutboxError {
             Self::Decryption => "code_decryption_failure",
             Self::InvalidCode => "invalid_code",
             Self::InvalidRecipient => "invalid_recipient",
+            Self::InvalidPayload => "invalid_payload",
         }
     }
 }
@@ -60,6 +65,7 @@ struct OutboxEntry {
     id: i64,
     user_id: UserId,
     challenge_id: Uuid,
+    kind: String,
     attempts: i32,
     claim_generation: i64,
     claim_token: String,
@@ -135,7 +141,7 @@ impl EmailOutbox {
             .await
             .map_err(EmailOutboxError::Database)?;
         let claim_token = Uuid::new_v4().simple().to_string();
-        let row: Option<(i64, UserId, Uuid, i32, i64, String)> = crate::sqlx::query_as(
+        let row: Option<(i64, UserId, Uuid, String, i32, i64, String)> = crate::sqlx::query_as(
             "WITH next AS (
                  SELECT id FROM email_outbox
                  WHERE processed_at IS NULL
@@ -153,7 +159,7 @@ impl EmailOutbox {
                  available_at = NOW() + $1
              FROM next
              WHERE outbox.id = next.id
-             RETURNING outbox.id, outbox.user_id, outbox.challenge_id,
+             RETURNING outbox.id, outbox.user_id, outbox.challenge_id, outbox.kind,
                        outbox.attempts, outbox.claim_generation, outbox.claim_token",
         )
         .bind(OUTBOX_LEASE)
@@ -166,13 +172,16 @@ impl EmailOutbox {
             .await
             .map_err(EmailOutboxError::Database)?;
         Ok(row.map(
-            |(id, user_id, challenge_id, attempts, claim_generation, claim_token)| OutboxEntry {
-                id,
-                user_id,
-                challenge_id,
-                attempts,
-                claim_generation,
-                claim_token,
+            |(id, user_id, challenge_id, kind, attempts, claim_generation, claim_token)| {
+                OutboxEntry {
+                    id,
+                    user_id,
+                    challenge_id,
+                    kind,
+                    attempts,
+                    claim_generation,
+                    claim_token,
+                }
             },
         ))
     }
@@ -190,8 +199,8 @@ impl EmailOutbox {
         crate::sessions::store::lock_user_session_scope(&mut transaction, entry.user_id)
             .await
             .map_err(EmailOutboxError::Database)?;
-        let payload = self.load_current_payload(&mut transaction, entry).await?;
-        let Some((recipient, encrypted_code)) = payload else {
+        let message = self.load_message(&mut transaction, entry).await?;
+        let Some(message) = message else {
             self.mark_cancelled(&mut transaction, entry).await?;
             transaction
                 .commit()
@@ -199,6 +208,69 @@ impl EmailOutbox {
                 .map_err(EmailOutboxError::Database)?;
             return Ok(false);
         };
+        tokio::time::timeout(EMAIL_SEND_TIMEOUT, self.sender.send(message))
+            .await
+            .map_err(|_| EmailOutboxError::DeliveryTimeout)?
+            .map_err(|_| EmailOutboxError::Delivery)?;
+        let processed = self.mark_processed(&mut transaction, entry).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(EmailOutboxError::Database)?;
+        Ok(processed)
+    }
+
+    async fn load_message(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        entry: &OutboxEntry,
+    ) -> Result<Option<EmailMessage>, EmailOutboxError> {
+        match entry.kind.as_str() {
+            VERIFICATION_CODE_KIND => self.load_verification_message(transaction, entry).await,
+            SECURITY_ALERT_KIND => self.load_security_alert_message(transaction, entry).await,
+            _ => Err(EmailOutboxError::InvalidPayload),
+        }
+    }
+
+    async fn load_verification_message(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        entry: &OutboxEntry,
+    ) -> Result<Option<EmailMessage>, EmailOutboxError> {
+        let row: Option<(String, Option<Vec<u8>>)> = crate::sqlx::query_as(
+            "SELECT challenge.new_email, outbox.encrypted_code
+             FROM email_outbox AS outbox
+             JOIN user_email_change_challenges AS challenge
+               ON challenge.id = outbox.challenge_id
+             JOIN users ON users.id = outbox.user_id
+             WHERE outbox.id = $1
+               AND outbox.user_id = $2
+               AND outbox.challenge_id = $3
+               AND outbox.kind = $6
+               AND outbox.processed_at IS NULL
+               AND outbox.cancelled_at IS NULL
+               AND outbox.dead_lettered_at IS NULL
+               AND outbox.claim_generation = $4
+               AND outbox.claim_token = $5
+               AND challenge.consumed_at IS NULL
+               AND challenge.expires_at > NOW()
+               AND challenge.security_epoch = users.session_epoch
+               AND users.status = 'active'
+              FOR UPDATE OF outbox",
+        )
+        .bind(entry.id)
+        .bind(entry.user_id)
+        .bind(entry.challenge_id)
+        .bind(entry.claim_generation)
+        .bind(&entry.claim_token)
+        .bind(VERIFICATION_CODE_KIND)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(EmailOutboxError::Database)?;
+        let Some((recipient, encrypted_code)) = row else {
+            return Ok(None);
+        };
+        let encrypted_code = encrypted_code.ok_or(EmailOutboxError::InvalidPayload)?;
         let code = decrypt_code(
             &self.encryption_keys,
             encrypted_code.as_slice(),
@@ -214,60 +286,57 @@ impl EmailOutbox {
         );
         let recipient = crate::users::email::EmailAddress::parse(&recipient)
             .map_err(|_| EmailOutboxError::InvalidRecipient)?;
-        let message = EmailMessage {
+        Ok(Some(EmailMessage {
             to: recipient,
             subject: "辰星通行证邮箱变更验证码".to_owned(),
             body: format!(
                 "你的邮箱变更验证码是：{}\n验证码将在 10 分钟后失效。",
                 code.as_str()
             ),
-        };
-        tokio::time::timeout(EMAIL_SEND_TIMEOUT, self.sender.send(message))
-            .await
-            .map_err(|_| EmailOutboxError::DeliveryTimeout)?
-            .map_err(|_| EmailOutboxError::Delivery)?;
-        let processed = self.mark_processed(&mut transaction, entry).await?;
-        transaction
-            .commit()
-            .await
-            .map_err(EmailOutboxError::Database)?;
-        Ok(processed)
+        }))
     }
 
-    async fn load_current_payload(
+    async fn load_security_alert_message(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         entry: &OutboxEntry,
-    ) -> Result<Option<(String, Zeroizing<Vec<u8>>)>, EmailOutboxError> {
-        let row: Option<(String, Vec<u8>)> = crate::sqlx::query_as(
-            "SELECT challenge.new_email, outbox.encrypted_code
+    ) -> Result<Option<EmailMessage>, EmailOutboxError> {
+        let recipient: Option<String> = crate::sqlx::query_scalar(
+            "SELECT outbox.recipient
              FROM email_outbox AS outbox
              JOIN user_email_change_challenges AS challenge
                ON challenge.id = outbox.challenge_id
-             JOIN users ON users.id = outbox.user_id
              WHERE outbox.id = $1
                AND outbox.user_id = $2
                AND outbox.challenge_id = $3
+               AND outbox.kind = $4
                AND outbox.processed_at IS NULL
                AND outbox.cancelled_at IS NULL
                AND outbox.dead_lettered_at IS NULL
-               AND outbox.claim_generation = $4
-               AND outbox.claim_token = $5
-               AND challenge.consumed_at IS NULL
-               AND challenge.expires_at > NOW()
-               AND challenge.security_epoch = users.session_epoch
-               AND users.status = 'active'
-             FOR UPDATE OF outbox",
+               AND outbox.claim_generation = $5
+               AND outbox.claim_token = $6
+               AND challenge.consumed_at IS NOT NULL
+              FOR UPDATE OF outbox",
         )
         .bind(entry.id)
         .bind(entry.user_id)
         .bind(entry.challenge_id)
+        .bind(SECURITY_ALERT_KIND)
         .bind(entry.claim_generation)
         .bind(&entry.claim_token)
         .fetch_optional(&mut **transaction)
         .await
         .map_err(EmailOutboxError::Database)?;
-        Ok(row.map(|(recipient, encrypted_code)| (recipient, Zeroizing::new(encrypted_code))))
+        let Some(recipient) = recipient else {
+            return Ok(None);
+        };
+        let recipient = crate::users::email::EmailAddress::parse(&recipient)
+            .map_err(|_| EmailOutboxError::InvalidRecipient)?;
+        Ok(Some(EmailMessage {
+            to: recipient,
+            subject: "辰星通行证邮箱已变更".to_owned(),
+            body: "你的账户邮箱已变更。如果这不是你的操作，请立即联系管理员。".to_owned(),
+        }))
     }
 
     async fn mark_processed(
