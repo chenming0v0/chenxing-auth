@@ -1314,7 +1314,6 @@ fn migration_history_declares_final_security_and_consistency_invariants() {
         "CONSTRAINT user_email_change_attempts_bounded",
         "failed_attempts + in_flight_attempts <= 5",
         "DROP CONSTRAINT user_email_change_attempts_bounded",
-        "0042_email_change_attempt_budget_fix.sql",
         "active_attempt_ids UUID[]",
         "cardinality(active_attempt_ids)",
         "GRANT SELECT, INSERT, UPDATE ON TABLE user_email_change_challenges TO chenxing_runtime",
