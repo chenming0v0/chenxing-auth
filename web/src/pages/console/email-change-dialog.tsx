@@ -1,5 +1,6 @@
-import { useEffect, useRef, type FormEvent } from 'react'
+import { useModalFocus } from '../../components/modal'
 import { Button, Field, HudPanel, Icon, Notice, PasswordField } from '../../components/ui'
+import type { FormEvent } from 'react'
 
 type EmailChangeDialogProps = {
   currentEmail: string
@@ -28,38 +29,26 @@ export function EmailChangeDialog({
   onCancel,
   onSubmit,
 }: EmailChangeDialogProps) {
-  const cancelRef = useRef(onCancel)
-
-  useEffect(() => { cancelRef.current = onCancel }, [onCancel])
-  useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    document.getElementById(stage === 'details' ? 'new-email-address' : 'email-change-code')?.focus()
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      cancelRef.current()
-    }
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-      previousFocus?.focus()
-    }
-  }, [stage])
+  const containerRef = useModalFocus<HTMLFormElement>(onCancel, {
+    initialFocusSelector: stage === 'details' ? '#new-email-address' : '#email-change-code',
+    focusKey: stage,
+    escapeDisabled: busy,
+  })
 
   return (
     <div
       className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center overflow-y-auto bg-black/70 p-4"
       role="presentation"
-      onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}
+      onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onCancel() }}
     >
-      <HudPanel as="form" role="dialog" aria-modal="true" aria-labelledby="email-change-title" className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-lg" onSubmit={onSubmit}>
+      <HudPanel ref={containerRef} as="form" role="dialog" aria-modal="true" aria-labelledby="email-change-title" tabIndex={-1} className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-lg" onSubmit={onSubmit}>
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-cyan)]">// Email Security</p>
             <h2 id="email-change-title" className="chenxing-h2 mt-2">更改邮箱</h2>
             <p className="chenxing-caption mt-2">新邮箱验证通过后才会替换当前登录邮箱。</p>
           </div>
-          <button type="button" className="chenxing-icon-btn shrink-0" aria-label="关闭" onClick={onCancel}>
+          <button type="button" className="chenxing-icon-btn shrink-0" aria-label="关闭" onClick={onCancel} disabled={busy}>
             <Icon name="x" size={17} />
           </button>
         </div>

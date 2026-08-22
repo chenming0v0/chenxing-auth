@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import QRCode from 'qrcode'
 import type { SecurityTotpStart } from '../../api'
+import { useModalFocus } from '../../components/modal'
 import { Button, CopyValue, HudPanel, Icon } from '../../components/ui'
 
 type TotpEnrollmentDialogProps = {
@@ -14,23 +15,10 @@ type TotpEnrollmentDialogProps = {
 }
 
 export function TotpEnrollmentDialog({ data, code, busy, confirming, onCode, onCancel, onConfirm }: TotpEnrollmentDialogProps) {
-  const cancelRef = useRef(onCancel)
-
-  useEffect(() => { cancelRef.current = onCancel }, [onCancel])
-  useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    document.getElementById('security-totp-code')?.focus()
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || busy) return
-      event.preventDefault()
-      cancelRef.current()
-    }
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-      previousFocus?.focus()
-    }
-  }, [busy])
+  const containerRef = useModalFocus<HTMLElement>(onCancel, {
+    initialFocusSelector: '#security-totp-code',
+    escapeDisabled: busy,
+  })
 
   return (
     <div
@@ -40,9 +28,11 @@ export function TotpEnrollmentDialog({ data, code, busy, confirming, onCode, onC
     >
       <HudPanel
         as="section"
+        ref={containerRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="totp-enrollment-title"
+        tabIndex={-1}
         className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-3xl"
       >
         <div className="flex items-start justify-between gap-4">

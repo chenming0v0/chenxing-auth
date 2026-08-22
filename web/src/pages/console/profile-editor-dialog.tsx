@@ -1,5 +1,6 @@
-import { useEffect, useRef, type FormEvent } from 'react'
+import { useModalFocus } from '../../components/modal'
 import { Button, Field, HudPanel, Icon, PasswordField } from '../../components/ui'
+import type { FormEvent } from 'react'
 
 type ProfileEditorDialogProps = {
   displayName: string
@@ -26,35 +27,24 @@ export function ProfileEditorDialog({
   onCancel,
   onSubmit,
 }: ProfileEditorDialogProps) {
-  const cancelRef = useRef(onCancel)
-
-  useEffect(() => { cancelRef.current = onCancel }, [onCancel])
-  useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    document.getElementById('profile-display-name')?.focus()
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      cancelRef.current()
-    }
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-      previousFocus?.focus()
-    }
-  }, [])
+  const containerRef = useModalFocus<HTMLFormElement>(onCancel, {
+    initialFocusSelector: '#profile-display-name',
+    escapeDisabled: busy,
+  })
 
   return (
     <div
       className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center overflow-y-auto bg-black/70 p-4"
       role="presentation"
-      onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}
+      onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onCancel() }}
     >
       <HudPanel
         as="form"
+        ref={containerRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="profile-editor-title"
+        tabIndex={-1}
         className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-2xl"
         onSubmit={onSubmit}
       >
@@ -64,7 +54,7 @@ export function ProfileEditorDialog({
             <h2 id="profile-editor-title" className="chenxing-h2 mt-2">修改账户资料</h2>
             <p className="chenxing-caption mt-2">显示名称会公开展示；用户名属于登录身份，修改时需要重新认证。</p>
           </div>
-          <button type="button" className="chenxing-icon-btn shrink-0" aria-label="关闭" onClick={onCancel}>
+          <button type="button" className="chenxing-icon-btn shrink-0" aria-label="关闭" onClick={onCancel} disabled={busy}>
             <Icon name="x" size={17} />
           </button>
         </div>
