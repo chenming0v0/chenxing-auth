@@ -120,8 +120,8 @@ async fn setup() -> (
         .expect("test state")
         .with_email_sender(sender);
     let suffix = Uuid::new_v4().simple().to_string();
-    let email =
-        EmailAddress::parse(format!("email-change-{suffix}@example.com")).expect("fixture email");
+    let email_text = format!("email-change-{suffix}@example.com");
+    let email = EmailAddress::parse(&email_text).expect("fixture email");
     let user = repository::insert_user(
         &database,
         ValidatedRegistration {
