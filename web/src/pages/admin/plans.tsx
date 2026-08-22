@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { apiFetch, type AdminPlan, type AdminPlanInput } from '../../api'
 import { Drawer } from '../../components/drawer'
 import { ConsoleLayout } from '../../components/shells'
@@ -30,16 +30,34 @@ type EditorState = { mode: 'create'; asDefault?: boolean } | { mode: 'edit'; pla
 function PlansManager() {
   const [plans, setPlans] = useState<AdminPlan[] | null>(null)
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
   const [editor, setEditor] = useState<EditorState>(null)
   // 行级 busy：多行操作可同时在途，先完成的行只清除自己的标记，不会像单值 busy 那样提前解禁其他行
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set())
+  const reloadRequestId = useRef(0)
 
   const reload = useCallback(() => {
-    void apiFetch<AdminPlan[]>('/api/v1/admin/plans')
-      .then((value) => { setPlans(value); setError('') })
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '套餐列表加载失败。'))
+    const requestId = ++reloadRequestId.current
+    setLoading(true)
+    setError('')
+    return apiFetch<AdminPlan[]>('/api/v1/admin/plans')
+      .then((value) => {
+        if (requestId !== reloadRequestId.current) return
+        setPlans(value)
+        setError('')
+      })
+      .catch((reason: unknown) => {
+        if (requestId !== reloadRequestId.current) return
+        setError(reason instanceof Error ? reason.message : '套餐列表加载失败。')
+      })
+      .finally(() => {
+        if (requestId === reloadRequestId.current) setLoading(false)
+      })
   }, [])
-  useEffect(() => { reload() }, [reload])
+  useEffect(() => {
+    void reload()
+    return () => { reloadRequestId.current += 1 }
+  }, [reload])
 
   async function changeStatus(plan: AdminPlan) {
     const operation = plan.status === 'active' ? 'archive' : 'restore'
@@ -50,7 +68,7 @@ function PlansManager() {
     setError('')
     try {
       await apiFetch<void>(`/api/v1/admin/plans/${plan.id}/${operation}`, { method: 'POST' })
-      reload()
+      await reload()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '套餐状态更新失败。')
     } finally {
@@ -122,7 +140,7 @@ function PlansManager() {
         <DataTable
           minWidth={1080}
           columns={['套餐', 'OAuth 应用', '每日授权', '每月授权', 'QPS', '挂载用户', '状态', { label: '操作', align: 'right' }]}
-          empty={plans?.length ? null : plans ? '还没有套餐，从「新建套餐」开始。' : error ? null : '正在加载套餐列表。'}
+          empty={plans?.length ? null : plans ? '还没有套餐，从「新建套餐」开始。' : error ? null : loading ? '正在加载套餐列表。' : null}
         >
           {plans?.map((plan) => {
             const archived = plan.status !== 'active'
@@ -172,7 +190,7 @@ function PlansManager() {
           key={editor.mode === 'edit' ? editor.plan.id : 'create'}
           initial={editor.mode === 'edit' ? editor.plan : null}
           defaultOn={editor.mode === 'create' && Boolean(editor.asDefault)}
-          onSaved={() => { setEditor(null); reload() }}
+          onSaved={async () => { setEditor(null); await reload() }}
           onCancel={() => setEditor(null)}
         />
       ) : null}
@@ -214,7 +232,7 @@ function PlanEditorDrawer({ initial, defaultOn = false, onSaved, onCancel }: {
   initial: AdminPlan | null
   /** 从「新建默认套餐」入口进入时预勾选「设为默认」，一步恢复自助接入 */
   defaultOn?: boolean
-  onSaved: () => void
+  onSaved: () => void | Promise<void>
   onCancel: () => void
 }) {
   const [code, setCode] = useState(initial?.code ?? '')
@@ -270,7 +288,7 @@ function PlanEditorDrawer({ initial, defaultOn = false, onSaved, onCancel }: {
           method: initial ? 'PUT' : 'POST',
           body: JSON.stringify(input),
         })
-        onSaved()
+        await onSaved()
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : '套餐保存失败。')
       }
