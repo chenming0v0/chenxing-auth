@@ -306,6 +306,15 @@ impl AuthorizationRequestStore {
         Ok(replaced == 1)
     }
 
+    pub async fn remaining_ttl_ms(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<u64>, AuthorizationRequestStoreError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let ttl: i64 = connection.pttl(self.key(request_id)).await?;
+        Ok((ttl >= 0).then_some(ttl as u64))
+    }
+
     pub async fn find(
         &self,
         request_id: &str,

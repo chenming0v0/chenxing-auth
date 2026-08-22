@@ -285,7 +285,7 @@ export function Select({
                   key={option.value}
                   id={optionId(index)}
                   role="option"
-                  aria-selected={index === activeIndex}
+                  aria-selected={option.value === value}
                   aria-disabled={option.disabled || undefined}
                   data-index={index}
                   className={[

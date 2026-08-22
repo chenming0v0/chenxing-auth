@@ -1,3 +1,4 @@
+use crate::sqlx::Row;
 use crate::sqlx::{PgConnection, PgPool};
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -44,7 +45,7 @@ pub async fn insert_provider(
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'disabled', $15, $15)
          RETURNING id, name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
                    client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
-                   name_claim, email_verified_claim, client_auth_method, pkce_enabled, status",
+                   name_claim, email_verified_claim, client_auth_method, pkce_enabled, status, state_version",
     )
     .bind(&input.name)
     .bind(&input.slug)
@@ -70,7 +71,7 @@ pub async fn list_providers(pool: &PgPool) -> Result<Vec<ProviderRecord>, crate:
     let rows = crate::sqlx::query_as::<_, ProviderRow>(
         "SELECT id, name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
                 client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
-                name_claim, email_verified_claim, client_auth_method, pkce_enabled, status
+                name_claim, email_verified_claim, client_auth_method, pkce_enabled, status, state_version
          FROM oauth_providers ORDER BY created_at DESC",
     )
     .fetch_all(pool)
@@ -102,7 +103,7 @@ pub async fn find_by_slug(
     let row = crate::sqlx::query_as::<_, ProviderRow>(
         "SELECT id, name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
                 client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
-                name_claim, email_verified_claim, client_auth_method, pkce_enabled, status
+                name_claim, email_verified_claim, client_auth_method, pkce_enabled, status, state_version
          FROM oauth_providers WHERE slug = $1",
     )
     .bind(slug)
@@ -118,7 +119,7 @@ pub async fn lock_by_slug(
     let row = crate::sqlx::query_as::<_, ProviderRow>(
         "SELECT id, name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
                 client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
-                name_claim, email_verified_claim, client_auth_method, pkce_enabled, status
+                name_claim, email_verified_claim, client_auth_method, pkce_enabled, status, state_version
          FROM oauth_providers WHERE slug = $1 FOR UPDATE",
     )
     .bind(slug)
@@ -132,6 +133,7 @@ pub async fn update_provider(
     slug: &str,
     input: &ValidatedProviderInput,
     ciphertext: Vec<u8>,
+    expected_version: i64,
 ) -> Result<bool, crate::sqlx::Error> {
     let result = crate::sqlx::query(
         "UPDATE oauth_providers
@@ -139,8 +141,8 @@ pub async fn update_provider(
              userinfo_endpoint = $5, client_id = $6, client_secret_ciphertext = $7,
              scopes = $8, subject_claim = $9, email_claim = $10, name_claim = $11,
              email_verified_claim = $12, client_auth_method = $13, pkce_enabled = $14,
-             updated_at = $15
-         WHERE slug = $1",
+             updated_at = $15, state_version = state_version + 1
+         WHERE slug = $1 AND state_version = $16",
     )
     .bind(slug)
     .bind(&input.name)
@@ -156,8 +158,8 @@ pub async fn update_provider(
     .bind(&input.claims.email_verified)
     .bind(auth_method_value(input.client_auth_method))
     .bind(input.pkce_enabled)
-    // 保留墙钟（Issue #299 的明确例外）：配置行 updated_at。
     .bind(OffsetDateTime::now_utc())
+    .bind(expected_version)
     .execute(&mut *connection)
     .await?;
     Ok(result.rows_affected() == 1)
@@ -170,7 +172,7 @@ pub(crate) async fn update_client_secret_ciphertext(
 ) -> Result<(), crate::sqlx::Error> {
     let result = crate::sqlx::query(
         "UPDATE oauth_providers
-         SET client_secret_ciphertext = $2, updated_at = $3
+         SET client_secret_ciphertext = $2, updated_at = $3, state_version = state_version + 1
          WHERE id = $1",
     )
     .bind(provider_id)
@@ -203,17 +205,20 @@ pub async fn set_status(
     connection: &mut PgConnection,
     slug: &str,
     status: &str,
-) -> Result<bool, crate::sqlx::Error> {
-    let result = crate::sqlx::query(
-        "UPDATE oauth_providers SET status = $2, updated_at = $3 WHERE slug = $1",
+    expected_version: i64,
+) -> Result<Option<i64>, crate::sqlx::Error> {
+    crate::sqlx::query_scalar::<_, i64>(
+        "UPDATE oauth_providers
+         SET status = $2, updated_at = $3, state_version = state_version + 1
+         WHERE slug = $1 AND state_version = $4
+         RETURNING state_version",
     )
     .bind(slug)
     .bind(status)
-    // 保留墙钟（Issue #299 的明确例外）：配置行 updated_at。
     .bind(OffsetDateTime::now_utc())
-    .execute(&mut *connection)
-    .await?;
-    Ok(result.rows_affected() == 1)
+    .bind(expected_version)
+    .fetch_optional(&mut *connection)
+    .await
 }
 
 pub async fn find_identity(
@@ -355,27 +360,52 @@ pub enum CreateIdentityError {
     OwnerBootstrapRequired,
 }
 
-type ProviderRow = (
-    i64,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    Vec<u8>,
-    Value,
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    String,
-    bool,
-    String,
-);
+struct ProviderRow {
+    id: i64,
+    name: String,
+    slug: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+    userinfo_endpoint: String,
+    client_id: String,
+    client_secret_ciphertext: Vec<u8>,
+    scopes: Value,
+    subject_claim: String,
+    email_claim: String,
+    name_claim: Option<String>,
+    email_verified_claim: Option<String>,
+    client_auth_method: String,
+    pkce_enabled: bool,
+    status: String,
+    state_version: i64,
+}
+
+impl<'r> crate::sqlx::FromRow<'r, crate::sqlx::PgRow> for ProviderRow {
+    fn from_row(row: &'r crate::sqlx::PgRow) -> Result<Self, crate::sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            name: row.try_get("name")?,
+            slug: row.try_get("slug")?,
+            authorization_endpoint: row.try_get("authorization_endpoint")?,
+            token_endpoint: row.try_get("token_endpoint")?,
+            userinfo_endpoint: row.try_get("userinfo_endpoint")?,
+            client_id: row.try_get("client_id")?,
+            client_secret_ciphertext: row.try_get("client_secret_ciphertext")?,
+            scopes: row.try_get("scopes")?,
+            subject_claim: row.try_get("subject_claim")?,
+            email_claim: row.try_get("email_claim")?,
+            name_claim: row.try_get("name_claim")?,
+            email_verified_claim: row.try_get("email_verified_claim")?,
+            client_auth_method: row.try_get("client_auth_method")?,
+            pkce_enabled: row.try_get("pkce_enabled")?,
+            status: row.try_get("status")?,
+            state_version: row.try_get("state_version")?,
+        })
+    }
+}
 
 fn parse_provider_row(row: ProviderRow) -> Result<ProviderRecord, crate::sqlx::Error> {
-    let (
+    let ProviderRow {
         id,
         name,
         slug,
@@ -392,7 +422,8 @@ fn parse_provider_row(row: ProviderRow) -> Result<ProviderRecord, crate::sqlx::E
         client_auth_method,
         pkce_enabled,
         status,
-    ) = row;
+        state_version,
+    } = row;
     let scopes = serde_json::from_value(scopes)
         .map_err(|error| crate::sqlx::Error::Decode(Box::new(error)))?;
     let authorization_endpoint = url::Url::parse(&authorization_endpoint)
@@ -427,6 +458,7 @@ fn parse_provider_row(row: ProviderRow) -> Result<ProviderRecord, crate::sqlx::E
         client_auth_method,
         pkce_enabled,
         status,
+        state_version,
     })
 }
 

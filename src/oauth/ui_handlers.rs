@@ -90,13 +90,18 @@ pub async fn inspect_authorization_request(
     let Ok(redirect) = url::Url::parse(&pending.redirect_uri) else {
         return error::bad_request("invalid_request", "authorization request is invalid");
     };
-    let limits = match state.settings.security_limits().await {
-        Ok(limits) => limits,
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to load OAuth security limits");
+    let expires_in = match state
+        .authorization_requests
+        .remaining_ttl_ms(&pending.request_id)
+        .await
+    {
+        Ok(Some(remaining)) => remaining.div_ceil(1000),
+        Ok(None) => return pending_expired(),
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to read OAuth authorization request TTL");
             return error::service_unavailable(
-                "settings_unavailable",
-                "authorization settings are unavailable",
+                "storage_unavailable",
+                "authorization request storage is unavailable",
             );
         }
     };
@@ -112,7 +117,7 @@ pub async fn inspect_authorization_request(
                 .split_whitespace()
                 .map(str::to_owned)
                 .collect(),
-            expires_in: limits.pending_request_ttl_seconds,
+            expires_in,
         }),
     )
         .into_response()

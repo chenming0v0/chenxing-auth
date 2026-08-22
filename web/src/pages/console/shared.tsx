@@ -19,17 +19,30 @@ export function useEntitlements() {
   const [data, setData] = useState<EntitlementsResponse | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const requestId = useRef(0)
   // 返回 Promise 而不是 void：调用方在同一个「重试」动作里串联多个 loader 时
   // 需要知道这一次请求何时结束，否则无法保证重试顺序。
   const load = useCallback((force = false) => {
+    const id = ++requestId.current
     setLoading(true)
     setError('')
     return getEntitlements(force)
-      .then(setData)
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '权益数据加载失败。'))
-      .finally(() => setLoading(false))
+      .then((value) => {
+        if (id !== requestId.current) return
+        setData(value)
+      })
+      .catch((reason: unknown) => {
+        if (id !== requestId.current) return
+        setError(reason instanceof Error ? reason.message : '权益数据加载失败。')
+      })
+      .finally(() => {
+        if (id === requestId.current) setLoading(false)
+      })
   }, [])
-  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    void load()
+    return () => { requestId.current += 1 }
+  }, [load])
   return { data, error, loading, retry: useCallback(() => load(true), [load]) }
 }
 

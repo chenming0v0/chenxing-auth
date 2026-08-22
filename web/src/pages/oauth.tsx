@@ -288,7 +288,12 @@ export function OAuthRedirectPage() {
   // #196：结果分支在清理前固化成状态，进入页面后立即抹掉地址栏、Referer 与历史中的
   // 敏感 query（code/state/error/request_id 等）。读取与清理分离：先读后清，
   // 清理不影响本次渲染要展示的分支，页面展示不再依赖 URL 里的参数。
-  const [hasError] = useState(() => new URLSearchParams(window.location.search).has('error'))
+  const params = new URLSearchParams(window.location.search)
+  const [callbackState] = useState(() => {
+    const hasError = Boolean(params.get('error')?.trim())
+    const hasSuccess = Boolean(params.get('code')?.trim()) && Boolean(params.get('state')?.trim())
+    return { hasError, hasSuccess, valid: hasError || hasSuccess }
+  })
 
   // useLayoutEffect 先于绘制执行：避免敏感参数在地址栏闪现一个可被截图/观察的窗口
   useLayoutEffect(() => {
@@ -302,7 +307,7 @@ export function OAuthRedirectPage() {
       <HudPanel className="oauth-card" role="region" aria-live="polite" aria-label="辰星通行证授权结果">
         <div className="oauth-card-head">
           <BrandMark className="h-7 w-7 shrink-0 rounded-[var(--chenxing-radius-md)] object-contain" />
-          <span className="chenxing-body text-sm">{hasError ? '授权未完成' : '授权完成 · 正在返回接入应用'}</span>
+          <span className="chenxing-body text-sm">{!callbackState.valid ? '授权回调无效' : callbackState.hasError ? '授权未完成' : '授权完成 · 正在返回接入应用'}</span>
         </div>
         <div className="oauth-center">
           <div className="oauth-transfer" aria-hidden="true">
@@ -312,7 +317,13 @@ export function OAuthRedirectPage() {
             <span className="oauth-beam" />
             <span className="oauth-transfer-mark is-client">A</span>
           </div>
-          {hasError ? (
+          {!callbackState.valid ? (
+            <>
+              <h1 className="oauth-title is-compact">授权回调无效</h1>
+              <p className="oauth-copy is-notice">成功回调必须同时包含有效的 code 和 state；错误回调必须包含 error。请重新发起授权。</p>
+              <div className="mt-6"><Link to="/console" className="oauth-btn oauth-btn-primary">返回控制台</Link></div>
+            </>
+          ) : callbackState.hasError ? (
             <>
               <h1 className="oauth-title is-compact">授权没有完成</h1>
               <p className="oauth-copy is-notice">授权请求被拒绝或未完成。辰星不会在此页面展示授权码或 Token。</p>

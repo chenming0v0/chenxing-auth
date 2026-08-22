@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
 import { apiFetch, type SecurityEnrollmentResult, type SecurityFactorSummary, type SecurityPasskeyStart, type SecurityRemovalResult, type SecurityTotpStart } from '../../api'
 import { assertPublicKeyCredential, decodeCreationOptions, serializeAttestation, supportsWebAuthnCreate, type PasskeyChallenge } from '../../passkey'
+import { useDrawerFocus } from '../../components/drawer'
 import { Badge, Button, HudPanel, Icon, Notice, PasswordField } from '../../components/ui'
 import { useModalFocus } from '../../components/modal'
 import { ExternalIdentities } from './external-identities'
@@ -66,6 +67,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     try {
       const data = await apiFetch<SecurityTotpStart>('/api/v1/auth/security/totp/enrollment/start', {
         method: 'POST',
+        redirectOn401: false,
         body: JSON.stringify({}),
       })
       setTotp({ phase: 'ready', data })
@@ -77,6 +79,28 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     }
   }
 
+  function cancelTotp(): void {
+    if (totp.phase !== 'ready' || busy) {
+      if (totp.phase === 'idle') return
+      setTotp({ phase: 'idle' })
+      setCode('')
+      return
+    }
+    const enrollmentId = totp.data.enrollment_id
+    setBusy('totp-cancel')
+    void apiFetch<{ cancelled: true }>('/api/v1/auth/security/factor/enrollment/cancel', {
+      method: 'POST',
+      redirectOn401: false,
+      body: JSON.stringify({ enrollment_id: enrollmentId, method: 'totp' }),
+    }).then(() => {
+      setTotp({ phase: 'idle' })
+      setCode('')
+    }).catch((error) => {
+      show(error instanceof Error ? error.message : '取消 TOTP 绑定失败，请重试。')
+    }).finally(() => {
+      setBusy(null)
+    })
+  }
   async function confirmTotp(event: FormEvent): Promise<void> {
     event.preventDefault()
     if (busy || !/^\d{6}$/.test(code)) {
@@ -90,6 +114,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     try {
       const result = await apiFetch<SecurityEnrollmentResult>('/api/v1/auth/security/totp/enrollment/confirm', {
         method: 'POST',
+        redirectOn401: false,
         body: JSON.stringify({ enrollment_id: data.enrollment_id, code }),
       })
       setTotp({ phase: 'idle' })
@@ -114,12 +139,28 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     try {
       const start = await apiFetch<SecurityPasskeyStart>('/api/v1/auth/security/passkeys/registration/start', {
         method: 'POST',
+        redirectOn401: false,
         body: JSON.stringify({}),
       })
       const options = decodeCreationOptions(start.options as PasskeyChallenge)
-      const credential = assertPublicKeyCredential(await navigator.credentials.create({ publicKey: options }))
+      let credential: PublicKeyCredential
+      try {
+        credential = assertPublicKeyCredential(await navigator.credentials.create({ publicKey: options }))
+      } catch (error) {
+        if (error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
+          await apiFetch('/api/v1/auth/security/factor/enrollment/cancel', {
+            method: 'POST',
+            redirectOn401: false,
+            body: JSON.stringify({ enrollment_id: start.enrollment_id, method: 'passkey' }),
+          }).catch(() => undefined)
+          show('Passkey 注册已取消，可以立即重试。')
+          return
+        }
+        throw error
+      }
       const result = await apiFetch<SecurityEnrollmentResult>('/api/v1/auth/security/passkeys/registration/finish', {
         method: 'POST',
+        redirectOn401: false,
         body: JSON.stringify({ enrollment_id: start.enrollment_id, credential: serializeAttestation(credential) }),
       })
       show(result.enabled ? 'Passkey 已启用。下次登录可使用此设备验证。' : 'Passkey 尚未启用。', 'success')
@@ -142,6 +183,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     try {
       const result = await apiFetch<SecurityRemovalResult>(`/api/v1/auth/security/factors/${removing}`, {
         method: 'DELETE',
+        redirectOn401: false,
         body: JSON.stringify({ password }),
       })
       setRemoving(null)
@@ -198,7 +240,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
                 code={code}
                 onCode={setCode}
                 onStartTotp={() => void startTotp()}
-                onCancelTotp={() => { setTotp({ phase: 'idle' }); setCode('') }}
+                onCancelTotp={cancelTotp}
                 onConfirmTotp={(event) => void confirmTotp(event)}
                 onStartPasskey={() => void startPasskey()}
                 onRemove={setRemoving}

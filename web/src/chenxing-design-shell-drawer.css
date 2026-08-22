@@ -1,0 +1,181 @@
+/* 胶囊内手风琴抽屉（lamalama：GSAP height 0→auto，expo.out 0.45s）。
+   高度像素值由 JS 实测内容后写在 style 上（见 useAccordionHeight）——CSS 过渡
+   不认 auto。这里只负责裁切、圆角续接与过渡曲线。
+   overflow:hidden 同时承担两件事：收拢时裁掉内容，以及让抽屉底部贴合胶囊圆角。 */
+.chenxing-topbar-drawer {
+  overflow: hidden;
+  border-bottom-left-radius: calc(var(--chenxing-radius-lg) - 1px);
+  border-bottom-right-radius: calc(var(--chenxing-radius-lg) - 1px);
+  transition: height 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* 内层保持自然高度供外层测量；菜单长于 70vh 时在内部滚动，胶囊不顶穿视口 */
+.chenxing-topbar-drawer-inner {
+  max-height: 70vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.chenxing-topbar-drawer-inner::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* hamburger nav 遮罩：面板已移进胶囊，遮罩只剩「压暗并模糊背景」这一职责，
+   不再承担布局。lamalama 的 blurPanel 同样是独立的一层。 */
+.cx-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--chenxing-z-menu);
+  background: rgba(2, 4, 10, 0.55);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  opacity: 0;
+  /* 默认不拦截指针：关闭瞬间 is-open 被移除后遮罩还要存活 450ms 完成退出动画，
+     此时它是透明层，若仍可命中就会吞掉页面点击。打开（is-open）时才恢复命中，
+     与 .chenxing-drawer-overlay 的处理一致。 */
+  pointer-events: none;
+  /* lamalama 遮罩：0.35s power4.out */
+  transition: opacity 0.35s cubic-bezier(0.165, 0.84, 0.44, 1);
+}
+.cx-menu-overlay.is-open { opacity: 1; pointer-events: auto; }
+/* 面板现在长在胶囊内部，玻璃材质由胶囊本身提供：这里必须把 .chenxing-menu 的
+   浮层外观全部卸掉，否则会在玻璃胶囊里套出第二层玻璃卡片。
+   选择器写成 .chenxing-menu.cx-nav-panel：.chenxing-menu 定义在本文件更靠后的
+   位置，同优先级会后来居上，这里需要更高特异性压住它的圆角/边框/内边距。 */
+.chenxing-menu.cx-nav-panel {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+/* lamalama 导航行：固定 50px 行高（.ll-add-navItem h-[50px]），1rem/400 字号，
+   与顶栏行同高，展开后整个胶囊读成一列等距的 50px 格。
+   flex-shrink:0 防止内容多时被压扁——超出高度由抽屉内层滚动承接。 */
+.cx-nav-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: calc(0.8 * var(--cx-u));
+  width: 100%;
+  height: calc(3.125 * var(--cx-u));
+  flex-shrink: 0;
+  padding: 0 calc(0.85 * var(--cx-u));
+  font-family: var(--chenxing-font-body);
+  font-size: calc(1 * var(--cx-u));
+  font-weight: 400;
+  color: var(--chenxing-foreground);
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+/* lamalama js-line：每行顶部 1px 分隔线不是静态 border，而是随行入场
+   从左向右 scaleX 0→1 画出来（0.65s expo.out，50ms 级联）。::after 承担
+   这条常驻线，::before 仍是 hover 时盖上去的青色高亮线。 */
+.cx-nav-row::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--chenxing-border);
+  transform: scaleX(0);
+  transform-origin: left center;
+  animation: cx-line-in 0.65s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: calc(var(--i, 0) * 50ms + 100ms);
+}
+@keyframes cx-line-in {
+  to { transform: scaleX(1); }
+}
+.cx-nav-row::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--chenxing-cyan);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.cx-nav-row:hover { background: var(--chenxing-muted); }
+.cx-nav-row:hover::before { transform: scaleX(1); }
+.cx-nav-row-label {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  overflow: hidden;
+}
+.cx-nav-row-text {
+  display: block;
+  transform: translateY(118%);
+  animation: cx-mask-up 0.75s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: calc(var(--i, 0) * 50ms + 120ms);
+  transition: color 0.2s;
+}
+.cx-nav-row:hover .cx-nav-row-text { color: var(--chenxing-cyan); }
+.cx-nav-row svg { color: var(--chenxing-muted-foreground); transition: color 0.2s; }
+.cx-nav-row:hover svg { color: var(--chenxing-cyan); }
+/* #240：暂无行为的静态条目（应用广场）：保留行样式与入场，
+   移除可点击暗示与 hover 反馈；span 不进 useNavDisclosure 的焦点循环 */
+.cx-nav-row.is-static { cursor: default; }
+.cx-nav-row.is-static:hover { background: transparent; }
+.cx-nav-row.is-static:hover::before { transform: scaleX(0); }
+.cx-nav-row.is-static:hover .cx-nav-row-text { color: var(--chenxing-foreground); }
+.cx-nav-row.is-static:hover svg { color: var(--chenxing-muted-foreground); }
+.cx-nav-panel-extra {
+  border-top: 1px solid var(--chenxing-border);
+  padding: calc(0.7 * var(--cx-u));
+  /* 跟在三个菜单项（--i 0/1/2）之后入场，级联的收尾一拍 */
+  animation: cx-nav-fade 0.5s ease both;
+  animation-delay: 290ms;
+}
+@keyframes cx-nav-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* 抽屉底部的 CTA 按钮跟随胶囊缩放：全局按钮类用固定 rem，这里按 --cx-u 覆盖 */
+.cx-nav-panel-extra .chenxing-btn-primary,
+.cx-nav-panel-extra .chenxing-btn-ghost {
+  font-size: calc(0.9375 * var(--cx-u));
+  padding: calc(0.65 * var(--cx-u)) calc(1.25 * var(--cx-u));
+}
+
+/* ---------- 抽屉关闭编排（lamalama items.hide()）----------
+   高度收拢的同时：文字沉回遮罩下方（power4.inOut）、分隔线向左收回、
+   序号与图标淡出；全部同时开始，不做反向级联（与 lamalama 一致）。
+   is-closing 由 GlobalTopbar 在退出延时窗口内挂上。 */
+.chenxing-topbar-drawer.is-closing .cx-nav-row-text {
+  animation: cx-mask-down 0.4s cubic-bezier(0.77, 0, 0.175, 1) both;
+  animation-delay: 0ms;
+}
+.chenxing-topbar-drawer.is-closing .cx-nav-row::after {
+  animation: cx-line-out 0.35s cubic-bezier(0.77, 0, 0.175, 1) both;
+  animation-delay: 0ms;
+}
+.chenxing-topbar-drawer.is-closing .cx-nav-row svg,
+.chenxing-topbar-drawer.is-closing .cx-nav-panel-extra {
+  animation: cx-nav-fade-out 0.3s ease both;
+  animation-delay: 0ms;
+}
+@keyframes cx-mask-down {
+  from { transform: translateY(0); }
+  to { transform: translateY(118%); }
+}
+@keyframes cx-line-out {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+@keyframes cx-nav-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 /**
  * 开场闸门（lamalama 式打开动画）：整屏盖板 → 计数到 100 → 向上滑出揭示主页。
@@ -6,8 +6,18 @@ import { useEffect, useState } from 'react'
  * 滑出完成后经 onDone 卸载，盖板不留在 DOM 里。
  */
 export function IntroGate({ onDone }: { onDone: () => void }) {
+  const openerRef = useRef<HTMLElement | null>(null)
+  const gateRef = useRef<HTMLDivElement>(null)
   const [count, setCount] = useState(0)
   const [leaving, setLeaving] = useState(false)
+
+  useEffect(() => {
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    gateRef.current?.focus()
+    return () => {
+      if (openerRef.current?.isConnected) openerRef.current.focus()
+    }
+  }, [])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -27,7 +37,7 @@ export function IntroGate({ onDone }: { onDone: () => void }) {
   }, [count, onDone])
 
   return (
-    <div className={`cx-intro${leaving ? ' is-leaving' : ''}`} aria-hidden="true">
+    <div ref={gateRef} className={`cx-intro${leaving ? ' is-leaving' : ''}`} role="dialog" aria-modal="true" aria-label="正在加载辰星通行证" tabIndex={-1}>
       <span className="cx-intro-tag chenxing-mono">[ Chenxing Auth ]</span>
       <div className="flex flex-col items-center">
         <span className="cx-intro-count chenxing-mono">{String(count).padStart(3, '0')}%</span>

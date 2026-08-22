@@ -73,9 +73,7 @@ export function EmailChangeDialog({
 
         <div className="mt-6 flex flex-wrap justify-end gap-3">
           <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>取消</Button>
-          <Button type="submit" icon={stage === 'details' ? 'mail' : 'shield-check'} disabled={busy}>
-            {busy ? (stage === 'details' ? '发送中…' : '确认中…') : (stage === 'details' ? '发送验证码' : '确认变更')}
-          </Button>
+          <Button type="submit" icon={stage === 'details' ? 'mail' : 'shield-check'}>{stage === 'details' ? '发送验证码' : '确认变更'}</Button>
         </div>
       </HudPanel>
     </div>

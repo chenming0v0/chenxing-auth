@@ -35,6 +35,7 @@ const EMAIL_POLICY: EmailPolicySetting = {
   whitelist_enabled: true,
   alias_restriction_enabled: true,
   allowed_domains: ['corp.example'],
+  generation: 1,
 }
 
 const SMTP: SmtpSetting = {

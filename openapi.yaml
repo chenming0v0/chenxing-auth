@@ -589,6 +589,36 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/security/factor/enrollment/cancel:
+    post:
+      tags: [User Auth/Security]
+      summary: 取消当前 Session 的认证因素注册
+      operationId: cancelCurrentUserFactorEnrollment
+      description: 仅允许取消与当前用户、Session ID、session_epoch 和 enrollment_id 绑定的待确认注册。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelFactorEnrollmentInput' }
+      responses:
+        '200':
+          description: 注册已取消
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cancelled]
+                properties:
+                  cancelled: { type: boolean, const: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/security/totp/enrollment/confirm:
     post:
       tags: [User Auth/Security]
@@ -2577,10 +2607,7 @@ paths:
         - sessionCookie: []
       responses:
         '200':
-          description: 邮箱域名策略。已持久化行无法用于热路径时带 X-Chenxing-Setting-Diagnostic。
-          headers:
-            X-Chenxing-Setting-Diagnostic:
-              $ref: '#/components/headers/SettingDiagnostic'
+          description: 邮箱域名策略。持久化值损坏或越界时，body 中 diagnostic/repair_required 明确要求管理员确认修复。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EmailPolicySetting' }
@@ -2602,7 +2629,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/EmailPolicySetting' }
+            schema: { $ref: '#/components/schemas/UpdateEmailPolicySetting' }
       responses:
         '200':
           description: 已更新的邮箱域名策略
@@ -2837,7 +2864,11 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/OAuthProviderUpdateInput' }
       responses:
-        '204': { description: 更新成功，省略 Client Secret 时保留原值 }
+        '200':
+          description: 更新成功；返回包含递增 state_version 的最新提供商摘要，省略 Client Secret 时保留原值
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthProviderSummary' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2859,8 +2890,17 @@ paths:
           csrfHeader: []
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OAuthProviderStatusInput' }
       responses:
-        '204': { description: 停用成功 }
+        '200':
+          description: 停用成功，返回递增后的 state_version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthProviderStatusResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2879,8 +2919,17 @@ paths:
           csrfHeader: []
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OAuthProviderStatusInput' }
       responses:
-        '204': { description: 启用成功 }
+        '200':
+          description: 启用成功，返回递增后的 state_version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthProviderStatusResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -3087,12 +3136,11 @@ components:
           items: { $ref: '#/components/schemas/ExternalIdentity' }
     ExternalIdentity:
       type: object
-      required: [provider, provider_name, subject, email, linked_at]
+      required: [provider, provider_name, email, linked_at]
       additionalProperties: false
       properties:
         provider: { type: string, description: Provider slug }
         provider_name: { type: string }
-        subject: { type: string, description: External OAuth UserInfo subject }
         email: { type: string, format: email, description: Email snapshot received when the identity was linked }
         linked_at: { type: string, format: date-time }
     ExternalIdentityBindingStartResponse:
@@ -3191,6 +3239,13 @@ components:
         enrollment_id: { type: string, format: uuid }
         secret_base32: { type: string, description: 仅在 start 响应返回一次，按凭据材料处理且不得记录日志。 }
         otpauth_url: { type: string, format: uri, description: 仅在 start 响应返回一次，客户端应本地生成二维码。 }
+    CancelFactorEnrollmentInput:
+      type: object
+      required: [enrollment_id, method]
+      additionalProperties: false
+      properties:
+        enrollment_id: { type: string, format: uuid }
+        method: { type: string, enum: [totp, passkey] }
     SessionTotpConfirmInput:
       type: object
       required: [enrollment_id, code]
@@ -3822,7 +3877,7 @@ components:
           items: { type: string, format: uri }
     EmailPolicySetting:
       type: object
-      required: [whitelist_enabled, alias_restriction_enabled, allowed_domains]
+      required: [whitelist_enabled, alias_restriction_enabled, allowed_domains, generation, repair_required]
       properties:
         whitelist_enabled: { type: boolean }
         alias_restriction_enabled: { type: boolean }
@@ -3830,6 +3885,24 @@ components:
           type: array
           maxItems: 128
           items: { type: string, maxLength: 253 }
+        generation: { type: integer, format: int64, minimum: 0 }
+        diagnostic:
+          type: string
+          enum: [invalid, corrupt]
+          description: 仅持久化设置无法安全用于热路径时返回；响应 value 是 fail-closed 修复预览。
+        repair_required: { type: boolean, description: true 时 PUT 必须显式 confirm_repair=true 才能覆盖原值。 }
+    UpdateEmailPolicySetting:
+      type: object
+      required: [whitelist_enabled, alias_restriction_enabled, allowed_domains, expected_generation]
+      properties:
+        whitelist_enabled: { type: boolean }
+        alias_restriction_enabled: { type: boolean }
+        allowed_domains:
+          type: array
+          maxItems: 128
+          items: { type: string, maxLength: 253 }
+        expected_generation: { type: integer, format: int64, minimum: 0 }
+        confirm_repair: { type: boolean, default: false }
     RegistrationSetting:
       type: object
       description: >-
@@ -4093,7 +4166,7 @@ components:
           description: 是否对该外部提供商启用 PKCE；默认开启，只有明确确认提供商不支持时才关闭。
     OAuthProviderUpdateInput:
       type: object
-      required: [name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, scopes, email_verified_claim]
+      required: [name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, scopes, email_verified_claim, expected_version]
       description: client_secret 可省略，省略时保留原值
       properties:
         name: { type: string, maxLength: 128 }
@@ -4126,15 +4199,25 @@ components:
           type: string
           description: 指向布尔型邮箱验证状态的 claim 路径。必填：缺失、空白、非 bool 或 false 时服务端拒绝身份解析与自动建号。
         client_auth_method: { type: string, enum: [basic, request_body], default: basic }
-        pkce_enabled:
-          type: boolean
-          default: true
-          description: 是否对该外部提供商启用 PKCE；默认开启，只有明确确认提供商不支持时才关闭。
+        expected_version: { type: integer, format: int64, minimum: 1, description: 列表或最近写响应返回的 state_version。 }
+    OAuthProviderStatusInput:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, format: int64, minimum: 1 }
+    OAuthProviderStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [state_version]
+      properties:
+        state_version: { type: integer, format: int64, minimum: 1 }
     OAuthProviderSummary:
       type: object
       description: >-
         自定义提供商摘要。身份建立只依赖 UserInfo 响应；本平台不为该提供商验证 ID Token，
         因此契约中不存在 issuer、jwks_uri 或 id_token 相关字段。
+      required: [id, name, slug, trust_model, callback_uri, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, scopes, subject_claim, email_claim, client_auth_method, status, state_version, client_secret_configured]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         name: { type: string }
@@ -4162,6 +4245,7 @@ components:
         client_auth_method: { type: string, enum: [basic, request_body] }
         pkce_enabled: { type: boolean }
         status: { type: string, enum: [active, disabled] }
+        state_version: { type: integer, format: int64, minimum: 1 }
         client_secret_configured: { type: boolean }
     ClientInput:
       type: object

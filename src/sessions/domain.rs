@@ -159,6 +159,11 @@ impl SessionLookup {
     ///
     /// 生产路径一律传入 `AppState` 的共享时钟（[`Self::is_active_at`]）；保留这个
     /// 包装是为了让不持有状态的调用点和测试断言不必自己取时间。
+    pub(crate) fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+        self.idle_timeout = Some(idle_timeout);
+        self
+    }
+
     pub fn is_active(&self) -> bool {
         self.is_active_at(SystemClock.now())
     }
@@ -332,15 +337,6 @@ impl Session {
 
     pub(crate) fn set_idle_timeout(&mut self, idle_timeout: Duration) {
         self.idle_timeout = Some(idle_timeout);
-    }
-
-    /// Pre-#644 payloads omit the issuance window. Those sessions were
-    /// evaluated against the boot-time store policy; do not overwrite a
-    /// persisted value with a later admin or boot setting.
-    pub(crate) fn restore_idle_timeout(&mut self, fallback: Duration) {
-        if self.idle_timeout.is_none() {
-            self.idle_timeout = Some(fallback);
-        }
     }
 
     /// Credential generation recorded by the authoritative session metadata row.

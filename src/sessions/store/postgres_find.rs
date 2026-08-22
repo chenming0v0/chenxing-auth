@@ -162,7 +162,7 @@ pub(in crate::sessions::store) async fn find_authenticated_with_metadata(
     session.last_seen_at = row.last_seen_at;
     session.revoked_at = None;
     session.set_credential_generation(row.session_epoch);
-    session.set_idle_timeout(row.idle_timeout);
+    session.set_idle_timeout(store.current_idle_timeout());
 
     if row.needs_renewal {
         let Some(renewed_at) = renew_session_activity(
@@ -224,15 +224,18 @@ pub(in crate::sessions::store) async fn find_with_metadata_by_token_hash(
         row.last_seen_at
     };
 
-    Ok(Some(SessionLookup {
-        id: row.id,
-        user_id: row.user_id.to_string(),
-        created_at: row.created_at,
-        expires_at: row.expires_at,
-        last_seen_at,
-        revoked_at: None,
-        idle_timeout: Some(row.idle_timeout),
-    }))
+    Ok(Some(
+        SessionLookup {
+            id: row.id,
+            user_id: row.user_id.to_string(),
+            created_at: row.created_at,
+            expires_at: row.expires_at,
+            last_seen_at,
+            revoked_at: None,
+            idle_timeout: None,
+        }
+        .with_idle_timeout(row.idle_timeout),
+    ))
 }
 
 async fn load_active_by_token_hash(

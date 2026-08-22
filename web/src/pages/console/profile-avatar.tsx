@@ -71,6 +71,8 @@ export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarP
   const [loaded, setLoaded] = useState<LoadedSource | null>(null)
   const [avatarUser, setAvatarUser] = useState(user)
   const [busy, setBusy] = useState(false)
+  const decodeRequestRef = useRef(0)
+  const uploadRequestRef = useRef(0)
 
   useEffect(() => {
     setAvatarUser(user)
@@ -94,6 +96,7 @@ export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarP
       onMessage(localRejectionMessage(rejection), 'warning')
       return
     }
+    const requestId = ++decodeRequestRef.current
     try {
       if (!file.type && !(await hasSupportedBytes(file))) {
         onMessage(localRejectionMessage('unsupported_format'), 'warning')
@@ -104,6 +107,10 @@ export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarP
         return
       }
       const decoded = await decodeFile(file)
+      if (requestId !== decodeRequestRef.current) {
+        URL.revokeObjectURL(decoded.url)
+        return
+      }
       const sizeRejection = rejectDecodedSize(decoded.source)
       if (sizeRejection) {
         URL.revokeObjectURL(decoded.url)
@@ -117,24 +124,21 @@ export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarP
   }
 
   async function upload(blob: Blob) {
+    if (busy) return
+    const requestId = ++uploadRequestRef.current
     setBusy(true)
     try {
       // 直接 PUT Blob：它自带 MIME，apiFetch 不会覆盖 Content-Type。
-      const updated = await apiFetch<UserMe>('/api/v1/auth/me/avatar', { method: 'PUT', body: blob })
-      const refreshed = await refresh()
-      if (!refreshed) {
-        setAvatarUser(updated)
-        setLoaded(null)
-        onMessage('头像已上传，但资料刷新失败；已显示最新头像，请稍后重试。', 'warning')
-        return
-      }
-      setAvatarUser(refreshed)
+      await apiFetch<UserMe>('/api/v1/auth/me/avatar', { method: 'PUT', body: blob })
+      if (requestId !== uploadRequestRef.current) return
+      await refresh()
+      if (requestId !== uploadRequestRef.current) return
       setLoaded(null)
       onMessage('头像已更新。', 'success')
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : '头像上传失败。', 'warning')
+      if (requestId === uploadRequestRef.current) onMessage(error instanceof Error ? error.message : '头像上传失败。', 'warning')
     } finally {
-      setBusy(false)
+      if (requestId === uploadRequestRef.current) setBusy(false)
     }
   }
 

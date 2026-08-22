@@ -1,4 +1,5 @@
 use chenxing_auth::{
+    audit::{AuditAction, AuditEvent},
     config::Config,
     oauth::providers::{
         domain::{ClientAuthMethod, ProviderInput},
@@ -6,6 +7,7 @@ use chenxing_auth::{
     },
     settings::{SmtpPasswordAction, SmtpSettingUpdate},
     state::{AppState, StateError},
+    users::ManagementActorCredential,
 };
 use std::{fs, path::PathBuf};
 use uuid::Uuid;
@@ -97,7 +99,18 @@ async fn provider_ciphertext_blocks_replacement_key_and_accepts_restored_key() {
         .expect("initial state");
     state
         .external_oauth
-        .create(provider_input())
+        .create_with_audit(
+            provider_input(),
+            ManagementActorCredential::SystemToken,
+            AuditEvent::new(
+                "system_token".to_owned(),
+                None,
+                AuditAction::OauthProviderCreate,
+                "oauth_provider".to_owned(),
+                Some("recovery-provider".to_owned()),
+                serde_json::json!({"test": "provider_secret_recovery"}),
+            ),
+        )
         .await
         .expect("persist encrypted provider secret");
     let (provider_id, ciphertext): (i64, Vec<u8>) = chenxing_auth::sqlx::query_as(

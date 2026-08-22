@@ -40,8 +40,15 @@ fn provider_response(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ProviderStatusPath {
-    pub slug: String,
+pub struct UpdateProviderInput {
+    #[serde(flatten)]
+    provider: ProviderInput,
+    expected_version: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProviderStatusInput {
+    expected_version: i64,
 }
 
 pub async fn list_providers(
@@ -124,9 +131,10 @@ pub async fn create_provider(
 
 pub async fn update_provider(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     admin: AdminWrite,
     Path(slug): Path<String>,
-    ApiJson(input): ApiJson<ProviderInput>,
+    ApiJson(input): ApiJson<UpdateProviderInput>,
 ) -> Response {
     let authorization =
         match authorize_admin_write(&state, &admin, AdminPermission::ManageIdentityProviders).await
@@ -134,11 +142,10 @@ pub async fn update_provider(
             Ok(authorization) => authorization,
             Err(response) => return response,
         };
-    let actor = authorization.actor();
-    if input.slug != slug {
+    if input.provider.slug != slug {
         return error::bad_request("invalid_oauth_provider", "provider slug cannot be changed");
     }
-    let (actor_type, actor_id) = actor.audit_fields();
+    let (actor_type, actor_id) = authorization.actor().audit_fields();
     let event = AuditEvent::new(
         actor_type.to_owned(),
         actor_id,
@@ -146,39 +153,47 @@ pub async fn update_provider(
         "oauth_provider".to_owned(),
         Some(slug.clone()),
         serde_json::json!({
-            "authorization_endpoint": input.authorization_endpoint,
-            "token_endpoint": input.token_endpoint,
-            "userinfo_endpoint": input.userinfo_endpoint,
+            "authorization_endpoint": input.provider.authorization_endpoint,
+            "token_endpoint": input.provider.token_endpoint,
+            "userinfo_endpoint": input.provider.userinfo_endpoint,
         }),
     );
     match state
         .external_oauth
-        .update_with_audit(&slug, input, authorization.credential(), event)
+        .update_with_audit(
+            &slug,
+            input.provider,
+            input.expected_version,
+            authorization.credential(),
+            event,
+        )
         .await
     {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => error::not_found("oauth_provider_not_found", "provider was not found"),
+        Ok(provider) => {
+            (StatusCode::OK, Json(provider_response(&issuer, provider))).into_response()
+        }
         Err(ExternalOAuthError::ManagementActor(error_value)) => {
             management_actor_validation_failed(&state, authorization, error_value).await
         }
         Err(error_value) => provider_error_response(error_value, "update_provider"),
     }
 }
-
 pub async fn enable_provider(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(slug): Path<String>,
+    ApiJson(input): ApiJson<ProviderStatusInput>,
 ) -> Response {
-    set_provider_status(&state, &admin, &slug, "active").await
+    set_provider_status(&state, &admin, &slug, "active", input.expected_version).await
 }
 
 pub async fn disable_provider(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(slug): Path<String>,
+    ApiJson(input): ApiJson<ProviderStatusInput>,
 ) -> Response {
-    set_provider_status(&state, &admin, &slug, "disabled").await
+    set_provider_status(&state, &admin, &slug, "disabled", input.expected_version).await
 }
 
 /// 启用/停用的公共实现。授权由调用点传入的 `AdminWrite` 完成，
@@ -188,19 +203,19 @@ async fn set_provider_status(
     admin: &AdminWrite,
     slug: &str,
     status: &str,
+    expected_version: i64,
 ) -> Response {
     let authorization =
         match authorize_admin_write(state, admin, AdminPermission::ManageIdentityProviders).await {
             Ok(authorization) => authorization,
             Err(response) => return response,
         };
-    let actor = authorization.actor();
     let action = match status {
         "active" => crate::audit::AuditAction::OauthProviderActive,
         "disabled" => crate::audit::AuditAction::OauthProviderDisabled,
         _ => unreachable!("provider status is validated by the service"),
     };
-    let (actor_type, actor_id) = actor.audit_fields();
+    let (actor_type, actor_id) = authorization.actor().audit_fields();
     let event = AuditEvent::new(
         actor_type.to_owned(),
         actor_id,
@@ -211,18 +226,26 @@ async fn set_provider_status(
     );
     match state
         .external_oauth
-        .set_status_with_audit(slug, status, authorization.credential(), event)
+        .set_status_with_audit(
+            slug,
+            status,
+            expected_version,
+            authorization.credential(),
+            event,
+        )
         .await
     {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => error::not_found("oauth_provider_not_found", "provider was not found"),
+        Ok(version) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "state_version": version })),
+        )
+            .into_response(),
         Err(ExternalOAuthError::ManagementActor(error_value)) => {
             management_actor_validation_failed(state, authorization, error_value).await
         }
         Err(error_value) => provider_error_response(error_value, "set_provider_status"),
     }
 }
-
 /// `ExternalOAuthError` → HTTP 响应的统一映射。
 ///
 /// 变体逐个显式列出、不写 `_` 兜底（与 `client_errors.rs` 同一约定）：新增错误
@@ -250,6 +273,10 @@ fn provider_error_response(error_value: ExternalOAuthError, operation: &'static 
                 "provider slug is already registered",
             )
         }
+        ExternalOAuthError::Conflict => error::conflict(
+            "oauth_provider_version_conflict",
+            "provider changed; reload and retry",
+        ),
         ExternalOAuthError::Audit(_)
         | ExternalOAuthError::ManagementActor(_)
         | ExternalOAuthError::Database(_)

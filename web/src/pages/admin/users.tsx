@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from '../../router'
 import {
-  apiFetch, type Paged, type PublicUser,
+  apiFetch, type AdminUserQueryItem, type Paged, type PublicUser,
 } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Avatar, Badge, Button, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
@@ -73,7 +73,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
   const [search, setSearch] = useState(params.get('search') || '')
   const [status, setStatus] = useState(params.get('status') || '')
   const [page, setPage] = useState(parsePageParam(params.get('page')))
-  const [result, setResult] = useState<Paged<PublicUser> | null>(null)
+  const [result, setResult] = useState<Paged<AdminUserQueryItem> | null>(null)
   const [error, setError] = useState('')
   // 行级 busy：多行操作可同时在途，先完成的行只清除自己的标记，不会像单值 busy 那样提前解禁其他行
   const [busy, setBusy] = useState<ReadonlySet<number>>(() => new Set())
@@ -108,7 +108,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
     const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
     if (current.get('search')) query.set('search', current.get('search') as string)
     if (current.get('status')) query.set('status', current.get('status') as string)
-    void apiFetch<Paged<PublicUser>>(`/api/v1/admin/users/query?${query}`)
+    void apiFetch<Paged<AdminUserQueryItem>>(`/api/v1/admin/users/query?${query}`)
       .then((value) => {
         if (!active) return
         const totalPages = Math.max(1, Math.ceil(value.total / value.page_size))
@@ -238,6 +238,13 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                     </div>
                   </td>
                   <td>
+                    {user.plan ? (
+                      <div>
+                        <p className="chenxing-body text-sm">{user.plan.name}</p>
+                        <p className="chenxing-mono text-xs text-[var(--chenxing-cyan)]">{user.plan.code}</p>
+                        {user.plan.expires_at ? <p className="chenxing-caption text-xs">到期 {formatDate(user.plan.expires_at)}</p> : null}
+                      </div>
+                    ) : <span className="chenxing-caption">未挂载</span>}
                     <button
                       type="button"
                       className="chenxing-link chenxing-row-action"

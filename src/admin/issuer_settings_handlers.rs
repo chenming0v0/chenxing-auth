@@ -54,7 +54,7 @@ impl From<&IssuerRecord> for IssuerRecordResponse {
 
 fn issuer_setting_response(
     state: &AppState,
-    persisted: Option<&IssuerRecord>,
+    persisted: Option<IssuerRecordResponse>,
 ) -> IssuerSettingResponse {
     let runtime = state.issuer.state();
     let loaded = runtime.loaded().map(|snapshot| IssuerRecordResponse {
@@ -63,7 +63,7 @@ fn issuer_setting_response(
         updated_at: snapshot.updated_at(),
     });
     IssuerSettingResponse {
-        persisted: persisted.map(IssuerRecordResponse::from),
+        persisted,
         loaded,
         phase: runtime.phase(),
     }
@@ -74,22 +74,18 @@ pub async fn get_issuer_setting(State(state): State<AppState>, admin: AdminRead)
         return response;
     }
     match issuer::load_raw(&state.database).await {
-        Ok(Some(raw)) => {
-            let persisted = raw.value.as_deref().and_then(|value| {
-                crate::config::IssuerUrl::parse(value)
-                    .ok()
-                    .map(|issuer| IssuerRecord {
-                        value: issuer.as_str().to_owned(),
-                        generation: raw.generation,
-                        updated_at: raw.updated_at,
-                    })
-            });
-            (
-                StatusCode::OK,
-                Json(issuer_setting_response(&state, persisted.as_ref())),
-            )
-                .into_response()
-        }
+        Ok(Some(raw)) => (
+            StatusCode::OK,
+            Json(issuer_setting_response(
+                &state,
+                Some(IssuerRecordResponse {
+                    value: raw.value.clone().unwrap_or_default(),
+                    generation: raw.generation,
+                    updated_at: raw.updated_at,
+                }),
+            )),
+        )
+            .into_response(),
         Ok(None) => (StatusCode::OK, Json(issuer_setting_response(&state, None))).into_response(),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load issuer setting");
@@ -206,7 +202,14 @@ pub async fn update_issuer_setting(
         let _ = state.issuer.apply(&write.record);
         return (
             StatusCode::OK,
-            Json(issuer_setting_response(&state, Some(&write.record))),
+            Json(issuer_setting_response(
+                &state,
+                Some(IssuerRecordResponse {
+                    value: write.record.value.clone(),
+                    generation: write.record.generation,
+                    updated_at: write.record.updated_at,
+                }),
+            )),
         )
             .into_response();
     }
@@ -259,7 +262,14 @@ pub async fn update_issuer_setting(
     }
     (
         StatusCode::OK,
-        Json(issuer_setting_response(&state, Some(&write.record))),
+        Json(issuer_setting_response(
+            &state,
+            Some(IssuerRecordResponse {
+                value: write.record.value.clone(),
+                generation: write.record.generation,
+                updated_at: write.record.updated_at,
+            }),
+        )),
     )
         .into_response()
 }

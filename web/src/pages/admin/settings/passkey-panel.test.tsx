@@ -55,6 +55,7 @@ describe('validatePasskeyOrigins', () => {
   })
 
 
+  it('rejects non-URL input, non-origin schemes, and credentials', () => {
     expect(validatePasskeyOrigins('auth.clya.top', RP_ID, false)).toEqual({
       error: '「auth.clya.top」不是合法的 URL，请填写完整 Origin，例如 https://auth.clya.top。',
     })

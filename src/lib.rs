@@ -35,12 +35,13 @@ pub mod sqlx {
     pub use sqlx_core::query::query;
     pub use sqlx_core::query_as::query_as;
     pub use sqlx_core::query_scalar::query_scalar;
+    pub use sqlx_core::row::Row;
     pub use sqlx_core::transaction::Transaction;
     pub use sqlx_core::{Error, Result, acquire, error::DatabaseError, from_row, migrate, types};
-    pub use sqlx_postgres::{PgConnection, PgPool, PgPoolOptions, Postgres};
+    pub use sqlx_postgres::{PgConnection, PgPool, PgPoolOptions, PgRow, Postgres};
 
     pub mod postgres {
-        pub use sqlx_postgres::{PgConnection, PgPool, PgPoolOptions, Postgres};
+        pub use sqlx_postgres::{PgConnection, PgPool, PgPoolOptions, PgRow, Postgres};
     }
 }
 

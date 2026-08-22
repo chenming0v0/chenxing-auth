@@ -44,8 +44,7 @@ export type SecurityRemovalResult = {
 export type ExternalIdentity = {
   provider: string
   provider_name: string
-  /** Only render a masked form of this value; it is not a user-facing identifier. */
-  subject: string
+  /** Internal IdP subject is intentionally not exposed by the public API. */
   email: string
   linked_at: string
 }
@@ -144,11 +143,21 @@ export type AdminOverview = {
   administrators: number
   audit_events: number
 }
-/** 管理端用户对象。该接口不返回头像版本号，因此显式排除，避免类型宣称后端没给的字段。 */
+/** 公共用户对象不携带管理查询专用的套餐投影。 */
 export type PublicUser = Omit<
   UserMe,
   'current_session_expires_at' | 'avatar_updated_at'
 > & { created_at: string }
+
+/** 管理用户查询结果；套餐投影只由 GET /api/v1/admin/users/query 返回。 */
+export type AdminUserQueryItem = PublicUser & {
+  plan: {
+    id: number
+    code: string
+    name: string
+    expires_at: string | null
+  } | null
+}
 /** 管理端建号入参；display_name 留空时传 null，role / status 省略时由服务端取默认值。 */
 export type AdminCreateUserInput = {
   username: string
@@ -231,6 +240,13 @@ export type EmailPolicySetting = {
   whitelist_enabled: boolean
   alias_restriction_enabled: boolean
   allowed_domains: string[]
+  generation: number
+  diagnostic?: 'invalid' | 'corrupt'
+  repair_required?: boolean
+}
+export type UpdateEmailPolicySetting = Omit<EmailPolicySetting, 'generation' | 'diagnostic' | 'repair_required'> & {
+  expected_generation: number
+  confirm_repair?: boolean
 }
 export type SmtpSetting = {
   host: string
@@ -294,6 +310,7 @@ export type OAuthProviderSummary = {
   client_auth_method: 'basic' | 'request_body'
   pkce_enabled: boolean
   status: 'active' | 'disabled' | string
+  state_version?: number
   client_secret_configured: boolean
 }
 export type OAuthProviderInput = {

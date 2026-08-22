@@ -79,6 +79,43 @@ const REDIS_ONLY_REVOKE_SESSION: &str =
 ///
 /// 值不前进时也刷新 TTL：乱序撤销和升级前留下的无 TTL 老键只有走到这条分支
 /// 才能被补上过期时间。刷新只延长、不缩短，`TTL` 返回的 -1（无过期）天然小于目标值。
+/// Redis-side CAS for session activity. The marker stores the newest `last_seen_at`;
+/// a stale finder cannot overwrite a newer payload or move activity backwards.
+const REDIS_ONLY_SESSION_RENEW: &str = r#"
+local function normalize_decimal(value)
+    local sign = 1
+    local first = string.sub(value, 1, 1)
+    if first == '-' then sign = -1; value = string.sub(value, 2)
+    elseif first == '+' then value = string.sub(value, 2) end
+    if not string.match(value, '^%d+$') then return nil end
+    value = string.gsub(value, '^0+', '')
+    if value == '' then return 1, '0' end
+    return sign, value
+end
+local function compare_decimal(left, right)
+    local left_sign, left_digits = normalize_decimal(left)
+    local right_sign, right_digits = normalize_decimal(right)
+    if not left_sign or not right_sign then return nil end
+    if left_sign ~= right_sign then return left_sign < right_sign and -1 or 1 end
+    if #left_digits ~= #right_digits then
+        local result = #left_digits < #right_digits and -1 or 1
+        return left_sign < 0 and -result or result
+    end
+    if left_digits == right_digits then return 0 end
+    local result = left_digits < right_digits and -1 or 1
+    return left_sign < 0 and -result or result
+end
+if redis.call('EXISTS', KEYS[3]) == 1 then return 0 end
+if redis.call('EXISTS', KEYS[2]) == 0 then return 0 end
+local revoked_before = redis.call('GET', KEYS[1])
+if revoked_before and compare_decimal(revoked_before, ARGV[5]) >= 0 then return 0 end
+local current = redis.call('GET', KEYS[4])
+local comparison = current and compare_decimal(current, ARGV[1])
+if current and comparison and comparison >= 0 then return 2 end
+redis.call('SET', KEYS[4], ARGV[1], 'EX', ARGV[4])
+redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+return 1
+"#;
 const REDIS_ONLY_ADVANCE_WATERMARK: &str = r#"
 local function normalize_decimal(value)
     local sign = 1
@@ -170,7 +207,7 @@ pub(super) async fn find_redis_only(
     };
     // Redis 键由令牌哈希派生，能读到这条记录就说明调用方持有该令牌。
     let mut session = stored_payload.into_session(token.to_owned());
-    session.restore_idle_timeout(store.policy.idle_timeout);
+    session.set_idle_timeout(store.current_idle_timeout());
     let now = store.clock.now();
     if !session.is_active_at(now) {
         return Ok(None);
@@ -193,17 +230,31 @@ pub(super) async fn find_redis_only(
         session.last_seen_at = now;
         let payload =
             store.encrypt_payload(&serde_json::to_vec(&SessionPayload::from(&session))?)?;
-        let stored: i64 = Script::new(REDIS_ONLY_SESSION_SET)
+        let proposed_last_seen = timestamp_watermark(session.last_seen_at);
+        let created_at = timestamp_watermark(session.created_at);
+        let stored: i64 = Script::new(REDIS_ONLY_SESSION_RENEW)
             .key(store.redis_only_revocation_key(&session.user_id))
             .key(store.key(&session.token))
             .key(store.redis_only_token_revocation_key(&session_token_hash_bytes(&session.token)))
-            .arg(timestamp_watermark(session.created_at))
+            .key(store.redis_only_token_renewal_key(&session_token_hash_bytes(&session.token)))
+            .arg(proposed_last_seen)
             .arg(payload)
             .arg(store.redis_ttl_seconds(&session, Duration::from_secs(u64::MAX), now))
+            .arg(store.revocation_ttl_seconds())
+            .arg(created_at)
             .invoke_async(&mut connection)
             .await?;
         if stored == 0 {
             return Ok(None);
+        }
+        if stored == 2 {
+            let latest: Option<Vec<u8>> = connection.get(store.key(&session.token)).await?;
+            if let Some(latest) = latest
+                && let Some(payload) = store.decode_payload(&latest)?
+            {
+                session = payload.into_session(session.token.clone());
+                session.set_idle_timeout(store.policy.idle_timeout);
+            }
         }
     }
     Ok(Some(session))
@@ -222,7 +273,7 @@ pub(super) async fn find_redis_only_by_token_hash(
         return Ok(None);
     };
     let mut session = stored_payload.into_session(String::new());
-    session.restore_idle_timeout(store.policy.idle_timeout);
+    session.set_idle_timeout(store.current_idle_timeout());
     let now = store.clock.now();
     if !session.is_active_at(now) {
         return Ok(None);
@@ -243,20 +294,38 @@ pub(super) async fn find_redis_only_by_token_hash(
         session.last_seen_at = now;
         let payload =
             store.encrypt_payload(&serde_json::to_vec(&SessionPayload::from(&session))?)?;
-        let stored: i64 = Script::new(REDIS_ONLY_SESSION_SET)
+        let proposed_last_seen = timestamp_watermark(session.last_seen_at);
+        let created_at = timestamp_watermark(session.created_at);
+        let stored: i64 = Script::new(REDIS_ONLY_SESSION_RENEW)
             .key(store.redis_only_revocation_key(&session.user_id))
             .key(store.key_hash(token_hash))
             .key(store.redis_only_token_revocation_key(token_hash))
-            .arg(timestamp_watermark(session.created_at))
+            .key(store.redis_only_token_renewal_key(token_hash))
+            .arg(proposed_last_seen)
             .arg(payload)
             .arg(store.redis_ttl_seconds(&session, Duration::from_secs(u64::MAX), now))
+            .arg(store.revocation_ttl_seconds())
+            .arg(created_at)
             .invoke_async(&mut connection)
             .await?;
         if stored == 0 {
             return Ok(None);
         }
+        if stored == 2 {
+            let latest: Option<Vec<u8>> = connection.get(store.key_hash(token_hash)).await?;
+            if let Some(latest) = latest
+                && let Some(payload) = store.decode_payload(&latest)?
+            {
+                session = payload.into_session(String::new());
+                session.set_idle_timeout(store.policy.idle_timeout);
+            }
+        }
     }
-    Ok(Some(SessionPayload::from(&session).into_lookup()))
+    Ok(Some(
+        SessionPayload::from(&session)
+            .into_lookup()
+            .with_idle_timeout(store.current_idle_timeout()),
+    ))
 }
 
 pub(super) async fn revoke_redis_only(

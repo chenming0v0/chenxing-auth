@@ -44,6 +44,7 @@ fn provider_record() -> ProviderRecord {
             .expect("userinfo URL"),
         client_id: "client-id".to_owned(),
         client_secret_ciphertext: vec![1, 2, 3],
+        state_version: 1,
         scopes: vec!["openid".to_owned(), "email".to_owned()],
         subject_claim: "sub".to_owned(),
         email_claim: "email".to_owned(),

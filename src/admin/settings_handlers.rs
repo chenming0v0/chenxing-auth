@@ -15,7 +15,7 @@ use crate::{
     audit::AuditEvent,
     error,
     settings::{
-        EmailPolicySetting, PasskeySetting, REGISTRATION_EMAIL_FROM_KEY, SECURITY_LIMITS_KEY,
+        EMAIL_POLICY_KEY, EmailPolicySetting, PasskeySetting, SECURITY_LIMITS_KEY,
         SESSION_LIFETIME_KEY, SecurityLimitsSetting, SessionLifetimeSetting, SettingInspection,
         SettingsServiceError, SmtpSettingUpdate,
     },
@@ -26,115 +26,10 @@ pub use super::issuer_settings_handlers::{
     IssuerRecordResponse, IssuerSettingResponse, UpdateIssuerSetting, get_issuer_setting,
     update_issuer_setting,
 };
-
-/// 注册发件人的三态更新：缺失 = 非法请求，`null` = 清除，字符串 = 设置。
-///
-/// serde 对外层 `Option` 的特例化会把 JSON `null` 直接吞成 `None`（等同缺失），
-/// 内层 `Option` 永远收不到 `null`，`Some(None)` 这一「清除」态无从产生。
-/// 因此必须用 `deserialize_with` 把 null 转发给内层 Option：
-///
-/// - 字段缺失：`#[serde(default)]` 生效，`None` → handler 返回 `invalid_request`。
-/// - `null`：helper 得到 `Some(None)` → handler 清除。
-/// - `"a@b.c"`：helper 得到 `Some(Some("a@b.c"))` → handler 设置。
-#[derive(Debug, Deserialize)]
-pub struct UpdateRegistrationEmail {
-    #[serde(default, deserialize_with = "deserialize_tri_state")]
-    pub registration_email_from: Option<Option<String>>,
-}
-
-/// 把 JSON `null` 转成 `Some(None)`，其余值正常解析。
-fn deserialize_tri_state<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<String>::deserialize(deserializer).map(Some)
-}
-
-#[derive(Debug, Serialize)]
-pub struct RegistrationEmailSettingResponse {
-    pub registration_email_from: Option<String>,
-}
-
-pub async fn get_registration_email(State(state): State<AppState>, admin: AdminRead) -> Response {
-    if let Err(response) = admin
-        .authorize(&state, AdminPermission::ManageSettings)
-        .await
-    {
-        return response;
-    }
-    match state.settings.registration_email_from().await {
-        Ok(registration_email_from) => (
-            StatusCode::OK,
-            Json(RegistrationEmailSettingResponse {
-                registration_email_from,
-            }),
-        )
-            .into_response(),
-        Err(error_value) => {
-            tracing::error!(error = ?error_value, "failed to load registration email setting");
-            error::internal()
-        }
-    }
-}
-
-pub async fn update_registration_email(
-    State(state): State<AppState>,
-    admin: AdminWrite,
-    ApiJson(input): ApiJson<UpdateRegistrationEmail>,
-) -> Response {
-    let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
-            Ok(authorization) => authorization,
-            Err(response) => return response,
-        };
-    let actor = authorization.actor();
-    let Some(registration_email_from) = input.registration_email_from else {
-        return error::bad_request(
-            "invalid_request",
-            "registration_email_from must be provided",
-        );
-    };
-    let registration_email_from = match state
-        .settings
-        .set_registration_email_from_audited(
-            registration_email_from,
-            &state.audit,
-            authorization.credential(),
-            move |value| {
-                setting_event(
-                    actor,
-                    crate::audit::AuditAction::RegistrationEmailUpdate,
-                    REGISTRATION_EMAIL_FROM_KEY,
-                    serde_json::json!({"configured": value.is_some()}),
-                )
-            },
-        )
-        .await
-    {
-        Ok(value) => value,
-        Err(SettingsServiceError::InvalidEmail) => {
-            return error::bad_request("invalid_email", "registration sender email is invalid");
-        }
-        Err(SettingsServiceError::Database(error_value)) => {
-            tracing::error!(error = %error_value, "failed to update registration email setting");
-            return error::internal();
-        }
-        Err(SettingsServiceError::ManagementActor(error_value)) => {
-            return management_actor_validation_failed(&state, authorization, error_value).await;
-        }
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to update registration email setting");
-            return error::internal();
-        }
-    };
-    (
-        StatusCode::OK,
-        Json(RegistrationEmailSettingResponse {
-            registration_email_from,
-        }),
-    )
-        .into_response()
-}
+pub use super::registration_email_settings_handlers::{
+    RegistrationEmailSettingResponse, UpdateRegistrationEmail, get_registration_email,
+    update_registration_email,
+};
 
 pub async fn get_passkey_setting(State(state): State<AppState>, admin: AdminRead) -> Response {
     if let Err(response) = admin
@@ -209,6 +104,34 @@ pub async fn update_passkey_setting(
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct EmailPolicySettingResponse {
+    pub whitelist_enabled: bool,
+    pub alias_restriction_enabled: bool,
+    pub allowed_domains: Vec<String>,
+    pub generation: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<&'static str>,
+    pub repair_required: bool,
+}
+
+impl EmailPolicySettingResponse {
+    fn from_setting(
+        setting: EmailPolicySetting,
+        generation: i64,
+        diagnostic: Option<&'static str>,
+    ) -> Self {
+        Self {
+            whitelist_enabled: setting.whitelist_enabled,
+            alias_restriction_enabled: setting.alias_restriction_enabled,
+            allowed_domains: setting.allowed_domains,
+            generation,
+            repair_required: diagnostic.is_some(),
+            diagnostic,
+        }
+    }
+}
+
 pub async fn get_email_policy_setting(State(state): State<AppState>, admin: AdminRead) -> Response {
     if let Err(response) = admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -217,7 +140,38 @@ pub async fn get_email_policy_setting(State(state): State<AppState>, admin: Admi
         return response;
     }
     match state.settings.inspect_email_policy().await {
-        Ok(inspection) => respond_setting_inspection("email_policy", inspection),
+        Ok(inspection) => {
+            let generation = match crate::settings::repository::get_generation(
+                &state.database,
+                EMAIL_POLICY_KEY,
+            )
+            .await
+            {
+                Ok(generation) => generation,
+                Err(error_value) => {
+                    tracing::error!(error = %error_value, "failed to load email policy generation");
+                    return error::internal();
+                }
+            };
+            let diagnostic = inspection.diagnostic.as_ref().map(|value| value.as_str());
+            if let Some(diagnostic) = diagnostic {
+                tracing::warn!(
+                    event = "settings.admin_read_needs_repair",
+                    setting_key = "email_policy",
+                    diagnostic,
+                    "stored setting requires explicit repair before it can be overwritten"
+                );
+            }
+            (
+                StatusCode::OK,
+                Json(EmailPolicySettingResponse::from_setting(
+                    inspection.value,
+                    generation,
+                    diagnostic,
+                )),
+            )
+                .into_response()
+        }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load email policy setting");
             error::internal()
@@ -225,10 +179,19 @@ pub async fn get_email_policy_setting(State(state): State<AppState>, admin: Admi
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateEmailPolicySetting {
+    #[serde(flatten)]
+    setting: EmailPolicySetting,
+    expected_generation: i64,
+    #[serde(default)]
+    confirm_repair: bool,
+}
+
 pub async fn update_email_policy_setting(
     State(state): State<AppState>,
     admin: AdminWrite,
-    ApiJson(input): ApiJson<EmailPolicySetting>,
+    ApiJson(input): ApiJson<UpdateEmailPolicySetting>,
 ) -> Response {
     let authorization =
         match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
@@ -238,8 +201,10 @@ pub async fn update_email_policy_setting(
     let actor = authorization.actor();
     match state
         .settings
-        .set_email_policy_audited(
-            input,
+        .set_email_policy_audited_if_generation(
+            input.setting,
+            input.expected_generation,
+            input.confirm_repair,
             &state.audit,
             authorization.credential(),
             move |setting| {
@@ -257,12 +222,22 @@ pub async fn update_email_policy_setting(
         )
         .await
     {
-        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
+        Ok((setting, generation)) => (
+            StatusCode::OK,
+            Json(EmailPolicySettingResponse::from_setting(
+                setting, generation, None,
+            )),
+        )
+            .into_response(),
         Err(SettingsServiceError::Validation(error_value)) => {
             error::bad_request("invalid_email_policy", error_value.to_string())
         }
-        Err(SettingsServiceError::ManagementActor(error_value)) => {
-            management_actor_validation_failed(&state, authorization, error_value).await
+        Err(SettingsServiceError::RepairRequired) => error::conflict(
+            "setting_repair_required",
+            "stored email policy is corrupt; confirm explicit repair",
+        ),
+        Err(SettingsServiceError::Conflict) => {
+            error::conflict("setting_conflict", "setting changed; reload and retry")
         }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update email policy setting");

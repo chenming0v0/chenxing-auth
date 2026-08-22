@@ -22,6 +22,32 @@ where
     Ok(row.and_then(|(value,)| value))
 }
 
+pub async fn get_generation<'e, E>(executor: E, key: &str) -> Result<i64, crate::sqlx::Error>
+where
+    E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
+{
+    Ok(crate::sqlx::query_scalar::<_, i64>(
+        "SELECT generation FROM app_settings WHERE setting_key = $1",
+    )
+    .bind(key)
+    .fetch_optional(executor)
+    .await?
+    .unwrap_or(0))
+}
+
+pub async fn lock_text<'e, E>(executor: E, key: &str) -> Result<Option<String>, crate::sqlx::Error>
+where
+    E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
+{
+    let row = crate::sqlx::query_as::<_, (Option<String>,)>(
+        "SELECT setting_value FROM app_settings WHERE setting_key = $1 FOR UPDATE",
+    )
+    .bind(key)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row.and_then(|(value,)| value))
+}
+
 pub async fn set_text<'e, E>(
     executor: E,
     key: &str,
@@ -152,6 +178,29 @@ where
 {
     let raw = serde_json::to_string(value).map_err(json_error)?;
     set_text(executor, EMAIL_POLICY_KEY, Some(&raw)).await
+}
+
+pub async fn set_email_policy_with_generation(
+    connection: &mut crate::sqlx::PgConnection,
+    value: &EmailPolicySetting,
+    expected_generation: i64,
+) -> Result<Option<i64>, crate::sqlx::Error> {
+    let raw = serde_json::to_string(value).map_err(json_error)?;
+    crate::sqlx::query_scalar::<_, i64>(
+        "INSERT INTO app_settings (setting_key, setting_value, updated_at, generation)
+         VALUES ($1, $2, NOW(), 1)
+         ON CONFLICT (setting_key) DO UPDATE
+         SET setting_value = EXCLUDED.setting_value,
+             updated_at = EXCLUDED.updated_at,
+             generation = app_settings.generation + 1
+         WHERE app_settings.generation = $3
+         RETURNING generation",
+    )
+    .bind(EMAIL_POLICY_KEY)
+    .bind(raw)
+    .bind(expected_generation)
+    .fetch_optional(&mut *connection)
+    .await
 }
 
 pub async fn set_security_limits<'e, E>(

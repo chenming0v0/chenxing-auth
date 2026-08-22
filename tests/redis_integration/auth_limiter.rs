@@ -136,15 +136,12 @@ async fn reservations_bound_concurrent_attempts_before_password_work() {
         let account = account.clone();
         tasks.push(tokio::spawn(async move {
             let dimensions = vec![(FailureDimension::Account, account)];
-            if !limiter
-                .reserve(dimensions.clone())
-                .await
-                .expect("reserve attempt")
-            {
+            let reservation = limiter.reserve(dimensions).await.expect("reserve attempt");
+            if reservation.is_denied() {
                 return false;
             }
             limiter
-                .record_reserved_failures(dimensions)
+                .record_reserved_failures(reservation)
                 .await
                 .expect("commit reserved failure");
             true
@@ -345,16 +342,12 @@ async fn released_reservations_do_not_consume_failure_budget() {
     let account = unique_value("released-account");
     let dimensions = vec![(FailureDimension::Account, account.clone())];
     for _ in 0..FailureDimension::Account.limit() + 5 {
-        assert!(
-            limiter
-                .reserve(dimensions.clone())
-                .await
-                .expect("reserve attempt")
-        );
-        limiter
-            .release(dimensions.clone())
+        let reservation = limiter
+            .reserve(dimensions.clone())
             .await
-            .expect("release attempt");
+            .expect("reserve attempt");
+        assert!(!reservation.is_denied());
+        limiter.release(reservation).await.expect("release attempt");
     }
     assert!(
         !limiter
@@ -388,13 +381,14 @@ async fn redis_failure_policy_is_explicit_and_observable() {
             .expect("fail-open record")
     );
     assert!(
-        fail_open
+        !fail_open
             .reserve(vec![(
                 FailureDimension::Account,
                 "failure-policy-open-reserve".to_owned(),
             )])
             .await
             .expect("fail-open reserve")
+            .is_denied()
     );
     assert!(
         fail_closed
@@ -488,9 +482,14 @@ async fn fail_closed_rejects_when_settings_are_unavailable() {
     );
     assert!(limiter.reserve(dimensions.clone()).await.is_err());
     assert!(limiter.record_failures(dimensions.clone()).await.is_err());
+    let reservation =
+        RedisAuthFailureLimiter::new(::redis::Client::open(redis_url()).expect("Redis URL"))
+            .reserve(dimensions.clone())
+            .await
+            .expect("seed reservation");
     assert!(
         limiter
-            .record_reserved_failures(dimensions.clone())
+            .record_reserved_failures(reservation.clone())
             .await
             .is_err()
     );
@@ -503,7 +502,7 @@ async fn fail_closed_rejects_when_settings_are_unavailable() {
         .await
         .expect("clear must not depend on the settings store");
     limiter
-        .release(dimensions)
+        .release(reservation)
         .await
         .expect("release must not depend on the settings store");
 }

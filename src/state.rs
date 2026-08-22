@@ -28,10 +28,7 @@ use crate::{
     plans::service::PlanService,
     redis_client::RedisClient,
     sessions::store::SessionStore,
-    settings::{
-        IssuerRuntime, SecurityLimitsSetting, SessionLifetimeSetting, SettingsService,
-        issuer::IssuerRecord,
-    },
+    settings::{IssuerRuntime, SecurityLimitsSetting, SettingsService, issuer::IssuerRecord},
     users::service::UserService,
     web_dist::{WebDistError, WebDistRoot},
     workers::{WorkerContext, WorkerHealth},
@@ -91,6 +88,8 @@ pub enum StateError {
     Database(#[from] crate::db::DbError),
     #[error("issuer configuration could not be resolved: {0}")]
     Issuer(#[from] crate::settings::IssuerSettingError),
+    #[error("settings initialization failed: {0}")]
+    Settings(#[from] crate::settings::SettingsServiceError),
     #[error("redis configuration is invalid: {0}")]
     Redis(#[from] redis::RedisError),
     #[error("key manager initialization failed: {0}")]
@@ -305,11 +304,11 @@ impl AppState {
             &config.webauthn_origin,
             SecurityLimitsSetting::from(&config.security_limits),
         )
-        .with_issuer_runtime(issuer.clone())
-        .with_session_lifetime_default(SessionLifetimeSetting::from_boot_config(
-            config.session_ttl_seconds,
-            config.session_idle_timeout_seconds,
-        ));
+        .with_issuer_runtime(issuer.clone());
+        let session_lifetime = settings
+            .session_lifetime()
+            .await
+            .map_err(StateError::Settings)?;
 
         // 安全阈值从 SettingsService 读取。稳态下命中它的进程内缓存，认证热路径不再
         // 逐次查询 `app_settings`（#300）；管理接口写入后主动刷新该缓存，因此同一进程
@@ -330,12 +329,11 @@ impl AppState {
         // idle 只给并发上限和 Redis-only 旧载荷兜底。生产查找用会话行上
         // 签发时写入的 idle_timeout_seconds（#644），不读启动配置。
         .with_session_policy(
-            Duration::from_secs(config.session_idle_timeout_seconds),
+            Duration::from_secs(session_lifetime.session_idle_timeout_seconds),
             config.session_max_concurrent_sessions,
         )
-        // Redis 会话键与撤销 tombstone 的上限必须跟部署配置走。写死 90 天会让
-        // `SESSION_TTL_SECONDS=3600` 的实例仍按最大窗口持有投影（#645）。
-        .with_absolute_ttl(Duration::from_secs(config.session_ttl_seconds))
+        .with_runtime_policy(settings.session_lifetime_runtime())
+        .with_absolute_ttl(Duration::from_secs(crate::config::MAX_SESSION_TTL_SECONDS))
         .with_clock(clock.clone());
         // 先于 users 构造：公开注册的按 IP 尝试配额复用这个限流器实例。
         let qps = QpsRateLimiter::with_keyspace(redis.clone(), config.redis_keyspace.clone());
