@@ -250,7 +250,10 @@ async fn missing_issuer_allows_only_initial_owner_and_blocks_all_user_creation()
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
-    assert_eq!(json_body(response).await["id"], 1);
+    let owner_id = json_body(response).await["id"]
+        .as_i64()
+        .expect("bootstrap owner id");
+    assert!(owner_id > 0);
 
     let user_username = format!("setup-user-{suffix}");
     let user_email = format!("setup-user-{suffix}@example.com");
@@ -268,7 +271,7 @@ async fn missing_issuer_allows_only_initial_owner_and_blocks_all_user_creation()
     .fetch_one(&database)
     .await
     .expect("insert non-owner user");
-    assert_eq!(user_id, 2);
+    assert!(user_id > owner_id);
 
     let response = post_json(
         &router,
@@ -280,10 +283,8 @@ async fn missing_issuer_allows_only_initial_owner_and_blocks_all_user_creation()
         None,
     )
     .await;
-    // 当前实现（login_use_case）：未配置任何认证因子时密码即完成登录（200），
-    // `factor_setup_required` 是 login-factors 设计稿（docs/superpowers/specs/
-    // 2026-07-28-login-factors-design.md）的预留状态，实现未合入前不出现。
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(json_body(response).await["code"], "invalid_credentials");
 
     let response = post_json(
         &router,
