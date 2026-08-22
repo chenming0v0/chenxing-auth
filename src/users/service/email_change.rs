@@ -223,6 +223,13 @@ async fn complete_email_change(
             .ok_or(EmailChangeError::AuthenticationChanged)?;
         let old_email =
             EmailAddress::parse(&old_email).map_err(|_| EmailChangeError::AuthenticationChanged)?;
+        repository::email_change::enqueue_email_change_security_alert(
+            &mut transaction,
+            user_id,
+            challenge_id,
+            &old_email,
+        )
+        .await?;
         transaction.commit().await?;
         Ok(EmailChangeConfirmation { old_email })
     }

@@ -359,6 +359,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "oauth provider state version",
             include_str!("../../migrations/0044_oauth_provider_state_version.sql"),
         ),
+        (
+            45,
+            "email security alert outbox",
+            include_str!("../../migrations/0045_email_security_alert_outbox.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

@@ -224,7 +224,8 @@ pub async fn replace_pending_email_change(
     crate::sqlx::query(
         "UPDATE email_outbox SET cancelled_at = NOW(), claim_token = '', last_error = NULL
          WHERE user_id = $1 AND processed_at IS NULL
-           AND cancelled_at IS NULL AND dead_lettered_at IS NULL",
+           AND cancelled_at IS NULL AND dead_lettered_at IS NULL
+           AND kind = 'verification_code'",
     )
     .bind(user_id)
     .execute(&mut *transaction)
@@ -246,8 +247,8 @@ pub async fn replace_pending_email_change(
     .await?;
     crate::sqlx::query(
         "INSERT INTO email_outbox
-             (user_id, challenge_id, encrypted_code)
-         VALUES ($1, $2, $3)",
+             (user_id, challenge_id, encrypted_code, kind)
+         VALUES ($1, $2, $3, 'verification_code')",
     )
     .bind(user_id)
     .bind(challenge_id)
@@ -300,9 +301,29 @@ pub async fn apply_email_change(
     crate::sqlx::query(
         "UPDATE email_outbox SET cancelled_at = NOW(), claim_token = '', last_error = NULL
          WHERE user_id = $1 AND processed_at IS NULL
-           AND cancelled_at IS NULL AND dead_lettered_at IS NULL",
+           AND cancelled_at IS NULL AND dead_lettered_at IS NULL
+           AND kind = 'verification_code'",
     )
     .bind(user_id)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+pub async fn enqueue_email_change_security_alert(
+    transaction: &mut Transaction<'_, Postgres>,
+    user_id: UserId,
+    challenge_id: Uuid,
+    recipient: &EmailAddress,
+) -> Result<(), crate::sqlx::Error> {
+    crate::sqlx::query(
+        "INSERT INTO email_outbox (user_id, challenge_id, kind, recipient)
+         VALUES ($1, $2, 'email_change_security_alert', $3)
+         ON CONFLICT (challenge_id, kind) DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(challenge_id)
+    .bind(recipient.display())
     .execute(&mut **transaction)
     .await?;
     Ok(())

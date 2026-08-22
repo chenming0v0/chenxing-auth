@@ -123,7 +123,7 @@ pub async fn confirm_email_change(
         .confirm_email_change(session.user_id, input.challenge_id, &input.code)
         .await
     {
-        Ok(result) => {
+        Ok(_) => {
             state
                 .audit
                 .record_best_effort(AuditEvent::new(
@@ -142,18 +142,6 @@ pub async fn confirm_email_change(
                 tracing::error!(error = %error_value, "failed to clear cookies after email change");
                 return error::internal();
             }
-            let sender = state.email_sender.clone();
-            let old_email = result.old_email;
-            tokio::spawn(async move {
-                let _ = sender
-                    .send(crate::notifications::EmailMessage {
-                        to: old_email,
-                        subject: "辰星通行证邮箱已变更".to_owned(),
-                        body: "你的账户邮箱已变更。如果这不是你的操作，请立即联系管理员。"
-                            .to_owned(),
-                    })
-                    .await;
-            });
             response
         }
         Err(crate::users::service::EmailChangeError::InvalidChallenge) => error::bad_request(
