@@ -180,6 +180,30 @@ describe('ConsoleProfile 提交互斥（#586）', () => {
     expect(requests.filter(({ path, init }) => path === '/api/v1/auth/me' && init?.method === 'PATCH')).toHaveLength(1)
   })
 
+  it('资料保存期间关闭按钮、遮罩和 Escape 都不能关闭弹窗', async () => {
+    hangMutations()
+    render(<ConsoleProfile />)
+    await screen.findByRole('heading', { name: '账户管理' })
+    fireEvent.click(screen.getByRole('tab', { name: '安全设置' }))
+    fireEvent.click(screen.getByRole('button', { name: '修改账户资料' }))
+    fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: '更新后的用户' } })
+
+    fireEvent.submit(screen.getByRole('button', { name: '保存账户资料' }).closest('form') as HTMLFormElement)
+    await screen.findByRole('button', { name: '保存中…' })
+
+    const dialog = screen.getByRole('dialog', { name: '修改账户资料' })
+    const overlay = dialog.parentElement
+    const close = within(dialog).getByRole('button', { name: '关闭' }) as HTMLButtonElement
+    expect(close.disabled).toBe(true)
+    if (!overlay) throw new Error('Profile editor overlay is missing')
+
+    fireEvent.click(close)
+    fireEvent.mouseDown(overlay)
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(screen.getByRole('dialog', { name: '修改账户资料' })).toBe(dialog)
+  })
+
   it('密码修改在 busy 尚未重渲染时重复提交只发出一个 POST', async () => {
     hangMutations()
     render(<ConsoleProfile />)

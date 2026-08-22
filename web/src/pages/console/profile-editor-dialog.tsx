@@ -27,15 +27,22 @@ export function ProfileEditorDialog({
   onSubmit,
 }: ProfileEditorDialogProps) {
   const cancelRef = useRef(onCancel)
+  const busyRef = useRef(busy)
 
-  useEffect(() => { cancelRef.current = onCancel }, [onCancel])
+  cancelRef.current = onCancel
+  busyRef.current = busy
+
+  function requestCancel() {
+    if (!busy) onCancel()
+  }
+
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     document.getElementById('profile-display-name')?.focus()
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       event.preventDefault()
-      cancelRef.current()
+      if (!busyRef.current) cancelRef.current()
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => {
@@ -48,7 +55,7 @@ export function ProfileEditorDialog({
     <div
       className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center overflow-y-auto bg-black/70 p-4"
       role="presentation"
-      onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}
+      onMouseDown={(event) => { if (event.target === event.currentTarget) requestCancel() }}
     >
       <HudPanel
         as="form"
@@ -64,7 +71,7 @@ export function ProfileEditorDialog({
             <h2 id="profile-editor-title" className="chenxing-h2 mt-2">修改账户资料</h2>
             <p className="chenxing-caption mt-2">显示名称会公开展示；用户名属于登录身份，修改时需要重新认证。</p>
           </div>
-          <button type="button" className="chenxing-icon-btn shrink-0" aria-label="关闭" onClick={onCancel}>
+          <button type="button" className="chenxing-icon-btn shrink-0" aria-label="关闭" onClick={requestCancel} disabled={busy}>
             <Icon name="x" size={17} />
           </button>
         </div>
