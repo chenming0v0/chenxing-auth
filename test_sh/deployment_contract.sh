@@ -27,6 +27,9 @@ ring="$(awk -F= '$1 == "AUTH_ENCRYPTION_KEYS" { print substr($0, index($0, "=") 
 [[ -n "$actual_key" && "$actual_key" != "$external_key" ]]
 [[ "$ring" == "kid=active:${actual_key}" ]]
 assert_private_mode "$env_file"
+for key in POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD MIGRATION_DATABASE_URL; do
+    grep -q "^${key}=." "$env_file"
+done
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     unset AUTH_ENCRYPTION_KEY
@@ -101,6 +104,7 @@ AUTH_ENCRYPTION_KEY=$(openssl rand -base64 32)
 COOKIE_SECURE=true
 POSTGRES_DB=chenxing_auth
 POSTGRES_USER=chenxing
+POSTGRES_PASSWORD=$(openssl rand -hex 32)
 POSTGRES_RUNTIME_USER=chenxing_runtime
 POSTGRES_RUNTIME_PASSWORD=runtime-password
 REDIS_NAMESPACE=legacy
