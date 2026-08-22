@@ -200,6 +200,38 @@ describe('ConsoleProfile 账户设置布局', () => {
     expect(deferred).toHaveLength(0)
   })
 
+  it('非当前会话撤销失败后可以再次尝试', async () => {
+    const session = { id: 2, current: false, created_at: '2099-01-01', expires_at: '2099-01-02' }
+    let deleteAttempts = 0
+    let sessionLoads = 0
+    vi.stubGlobal('confirm', () => true)
+    vi.stubGlobal('fetch', vi.fn((path: string, init?: RequestInit) => {
+      requests.push({ path, init })
+      if (path === '/api/v1/auth/sessions' && init?.method === undefined) {
+        sessionLoads += 1
+        return Promise.resolve(jsonResponse({ items: sessionLoads === 1 ? [session] : [] }))
+      }
+      if (path === '/api/v1/auth/sessions/2' && init?.method === 'DELETE') {
+        deleteAttempts += 1
+        return deleteAttempts === 1
+          ? Promise.reject(new Error('temporary revoke failure'))
+          : Promise.resolve(jsonResponse(null, 204))
+      }
+      return Promise.reject(new Error(`unexpected request: ${path}`))
+    }))
+
+    render(<ConsoleProfile />)
+    const revokeButton = await screen.findByRole('button', { name: '撤销' })
+    fireEvent.click(revokeButton)
+
+    await waitFor(() => expect(screen.getByText('网络连接不可用，请稍后重试。')).toBeTruthy())
+    expect((screen.getByRole('button', { name: '撤销' }) as HTMLButtonElement).disabled).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: '撤销' }))
+    await waitFor(() => expect(deleteAttempts).toBe(2))
+    await waitFor(() => expect(screen.queryByRole('button', { name: '撤销' })).toBeNull())
+  })
+
   it('密码修改使用独立弹窗', async () => {
     render(<ConsoleProfile />)
 
