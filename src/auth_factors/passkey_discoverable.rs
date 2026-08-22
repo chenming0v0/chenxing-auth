@@ -17,6 +17,10 @@ const DISCOVERABLE_PASSKEY_PREFIX: &str = "chenxing:auth:passkey-discoverable:";
 struct PendingDiscoverablePasskeyAuthentication {
     state: webauthn_rs_core::proto::AuthenticationState,
     settings: crate::settings::PasskeySetting,
+    /// Issuer generation captured with the challenge; legacy payloads without
+    /// this field fail closed at finish.
+    #[serde(default)]
+    issuer_generation: Option<i64>,
     expires_at: time::OffsetDateTime,
 }
 
@@ -32,7 +36,7 @@ impl AuthFactorService {
         &self,
         source_ip: Option<&str>,
     ) -> Result<Option<(String, RequestChallengeResponse)>, AuthFactorServiceError> {
-        let settings = self.enabled_passkey_settings().await?;
+        let (settings, issuer_generation) = self.enabled_passkey_settings_with_generation().await?;
         match (source_ip, self.missing_source_ip_policy) {
             (Some(source_ip), _) => {
                 if self
@@ -67,6 +71,7 @@ impl AuthFactorService {
                 &PendingDiscoverablePasskeyAuthentication {
                     state,
                     settings,
+                    issuer_generation: Some(issuer_generation),
                     expires_at: self.clock.now() + LoginTicket::TTL,
                 },
                 LoginTicket::TTL.whole_seconds() as u64,
@@ -81,6 +86,8 @@ impl AuthFactorService {
         source_ip: Option<&str>,
         credential: &PublicKeyCredential,
     ) -> Result<DiscoverablePasskeyConfirmation, AuthFactorServiceError> {
+        let (_, current_issuer_generation) =
+            self.enabled_passkey_settings_with_generation().await?;
         let key = self.discoverable_passkey_key(challenge_id);
         let Some(pending) = self
             .tickets
@@ -89,6 +96,10 @@ impl AuthFactorService {
         else {
             return Ok(DiscoverablePasskeyConfirmation::Invalid);
         };
+        if pending.issuer_generation != Some(current_issuer_generation) {
+            self.tickets.delete(&key).await?;
+            return Ok(DiscoverablePasskeyConfirmation::Invalid);
+        }
         let Some(user_handle) = credential.get_user_unique_id() else {
             return self.unidentified_discoverable_failure(source_ip).await;
         };

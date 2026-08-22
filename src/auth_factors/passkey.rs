@@ -241,7 +241,7 @@ impl AuthFactorService {
         holder_hash: &str,
         source_ip: Option<&str>,
     ) -> Result<Option<RequestChallengeResponse>, AuthFactorServiceError> {
-        let settings = self.enabled_passkey_settings().await?;
+        let (settings, issuer_generation) = self.enabled_passkey_settings_with_generation().await?;
         let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(None);
         };
@@ -283,6 +283,7 @@ impl AuthFactorService {
                     user_id: ticket.user_id,
                     state,
                     settings,
+                    issuer_generation: Some(issuer_generation),
                     challenge: Some(challenge.clone()),
                     credential_row_ids,
                 },
@@ -310,7 +311,8 @@ impl AuthFactorService {
         source_ip: Option<&str>,
         credential: &PublicKeyCredential,
     ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
-        self.enabled_passkey_settings().await?;
+        let (_, current_issuer_generation) =
+            self.enabled_passkey_settings_with_generation().await?;
         let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(PasskeyConfirmation::InvalidTicket);
         };
@@ -325,6 +327,12 @@ impl AuthFactorService {
             return Ok(PasskeyConfirmation::InvalidTicket);
         };
         if pending.user_id != ticket.user_id {
+            return Ok(PasskeyConfirmation::InvalidTicket);
+        }
+        if pending.issuer_generation != Some(current_issuer_generation) {
+            self.tickets
+                .delete(&self.passkey_authentication_key(ticket_id))
+                .await?;
             return Ok(PasskeyConfirmation::InvalidTicket);
         }
         // 预留额度必须在 authenticate_credential 验签之前：challenge 是一次性的，但同一个
