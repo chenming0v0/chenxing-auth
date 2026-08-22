@@ -1,10 +1,9 @@
-use crate::clients::domain::ClientAuthMethod;
 use crate::sqlx::PgPool;
 use crate::users::domain::UserId;
 
 #[path = "repository_core.rs"]
 mod core;
-pub(super) use core::insert_client_row;
+use core::insert_client_row;
 pub use core::{
     AuditedClientInsertError, ClientCredential, ClientInsertError, ListedClient, NewClient,
     NewOwnedClient, StoredClient, count_clients, find_client_by_id, insert_client,
@@ -70,6 +69,8 @@ pub async fn update_client_secret(
 
 #[cfg(test)]
 mod tests {
+    use crate::clients::domain::ClientAuthMethod;
+
     use super::*;
 
     #[test]
