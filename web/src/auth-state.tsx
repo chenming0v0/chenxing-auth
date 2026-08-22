@@ -149,7 +149,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const onRemoteAuthSync = (event: AuthSyncEvent | null) => {
       if (!event || !Number.isFinite(event.occurredAt) || event.occurredAt < authChangedAtRef.current) return
       authChangedAtRef.current = event.occurredAt
-      if (event.type === 'logout' && statusRef.current === 'authenticated') clearLocal()
+      if (event.type === 'logout') clearLocal()
       else if (event.type === 'login') void refresh({ broadcast: false })
     }
     const onStorage = (event: StorageEvent) => {
