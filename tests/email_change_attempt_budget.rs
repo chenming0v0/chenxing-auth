@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use chenxing_auth::{
     auth_limiter::{AuthFailureLimiter, FailureDimension, domain::LimiterFuture},
-    config::Config,
+    config::{AuthEncryptionKey, AuthEncryptionKeyRing, Config},
     notifications::{EmailMessage, EmailSendError, EmailSender},
     state::AppState,
     users::{
@@ -114,6 +114,7 @@ async fn setup() -> (
     .expect("test config");
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
+    config.auth_encryption_keys = AuthEncryptionKeyRing::single(AuthEncryptionKey::new([0_u8; 32]));
     let sender = Arc::new(CapturingSender::default());
     let state = AppState::new_with_pool(config, database.clone())
         .await
