@@ -181,6 +181,7 @@ pub async fn consume_email_change_attempt<'a>(
     )
     .bind(challenge_id)
     .bind(user_id)
+    .bind(attempt_id)
     .execute(&mut **transaction)
     .await?;
     Ok(result.rows_affected() == 1)

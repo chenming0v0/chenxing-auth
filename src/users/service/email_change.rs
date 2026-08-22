@@ -133,7 +133,7 @@ impl UserService {
             Ok(None) => return Err(EmailChangeError::InvalidChallenge),
             Err(error) => return Err(error.into()),
         };
-        if !verify_password(code.to_owned(), challenge.code_hash).await {
+        if !verify_password(code.to_owned(), challenge.code_hash.clone()).await {
             let failure = match repository::email_change::record_email_change_failure(
                 &self.pool,
                 challenge_id,
