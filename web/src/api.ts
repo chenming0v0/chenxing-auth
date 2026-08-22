@@ -80,6 +80,7 @@ const safeMessages = new Map<string, string>([
   ['username_already_registered', '注册信息无法使用，请检查后重试。'],
   ['invalid_username', '用户名格式不正确，请检查长度和字符。'],
   ['invalid_email', '邮箱格式不正确，请检查输入。'],
+  ['invitation_code_not_found', '邀请码不存在或已失效。'],
   ['password_too_short', '密码长度不足，请设置更长的密码。'],
   ['password_too_long', '密码超出长度上限，请缩短后重试。'],
   ['display_name_too_long', '显示名称超出长度上限，请缩短后重试。'],

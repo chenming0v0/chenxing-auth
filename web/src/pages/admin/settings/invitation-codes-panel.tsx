@@ -48,9 +48,12 @@ export function InvitationCodesPanel() {
   async function disable(id: number) {
     if (!window.confirm('确认停用这个邀请码吗？停用后不可恢复。')) return
     setBusy(true)
+    setMessage('')
     try {
       await apiFetch(`/api/v1/admin/registration-invitation-codes/${id}/disable`, { method: 'POST' })
       await load()
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : '邀请码停用失败。')
     } finally {
       setBusy(false)
     }
