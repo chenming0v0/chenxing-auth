@@ -144,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut workers = WorkerSupervisor::new(state.worker_health.clone());
 
     // Route admission is runtime-gated, so worker startup cannot be frozen by the issuer
-    // state observed during construction. All four tasks are supervised: a panic or return
+    // state observed during construction. All five tasks are supervised: a panic or return
     // removes readiness immediately and initiates process shutdown.
     let issuer_state = state.clone();
     workers.spawn(WorkerName::IssuerSync, move |worker| {
@@ -153,6 +153,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sessions = state.sessions.clone();
     workers.spawn(WorkerName::SessionOutbox, move |worker| {
         sessions.run_outbox_worker(worker)
+    });
+    let email_outbox = state.email_outbox.clone();
+    workers.spawn(WorkerName::EmailOutbox, move |worker| {
+        email_outbox.run_worker(worker)
     });
     let keys = state.keys.clone();
     workers.spawn(WorkerName::KeySync, move |worker| {

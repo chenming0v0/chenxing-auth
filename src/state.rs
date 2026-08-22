@@ -11,7 +11,7 @@ use crate::{
     consents::ConsentService,
     db::Database,
     keys::{KeyManager, KeyManagerError},
-    notifications::{EmailSender, SmtpEmailSender},
+    notifications::{EmailOutbox, EmailSender, SmtpEmailSender},
     oauth::providers::{
         endpoint_policy::EndpointPolicy,
         secret_migration::{SecretMigrationError, migrate_persisted_credentials},
@@ -77,6 +77,7 @@ pub struct AppState {
     pub factors: AuthFactorService,
     pub external_oauth: ExternalOAuthService,
     pub email_sender: Arc<dyn EmailSender>,
+    pub email_outbox: EmailOutbox,
     pub external_login_states: ExternalLoginStateStore,
 }
 
@@ -189,7 +190,8 @@ impl AppState {
     /// 用途是集成测试：先用 `new_with_pool` 建好状态，再换成固定时钟驱动
     /// 授权码、Refresh Token、Session 和 MFA 的到期边界。
     pub fn with_email_sender(mut self, sender: Arc<dyn EmailSender>) -> Self {
-        self.email_sender = sender;
+        self.email_sender = sender.clone();
+        self.email_outbox = self.email_outbox.clone().with_sender(sender);
         self
     }
 
@@ -343,7 +345,8 @@ impl AppState {
             config.missing_source_ip_policy,
         )
         // 公开注册的按 IP 尝试配额复用同一个 QPS 限流器（作用域 key 独立）。
-        .with_registration_attempt_limiter(qps.clone());
+        .with_registration_attempt_limiter(qps.clone())
+        .with_email_encryption_keys(config.auth_encryption_keys.clone());
         let factors = AuthFactorService::new_with_source_ip_policy_and_keyspace(
             database.clone(),
             redis.clone(),
@@ -385,6 +388,11 @@ impl AppState {
         // 复用已加载的 secret_manager，避免第二次 load_or_generate 创建独立副本。
         // 出网边界策略来自配置（Issue #343）：回环/明文例外默认关闭。
         let email_sender: Arc<dyn EmailSender> = Arc::new(SmtpEmailSender::new(settings.clone()));
+        let email_outbox = EmailOutbox::new(
+            database.clone(),
+            config.auth_encryption_keys.clone(),
+            email_sender.clone(),
+        );
         let external_oauth = ExternalOAuthService::new(
             database.clone(),
             secret_manager,
@@ -423,6 +431,7 @@ impl AppState {
             external_oauth,
             external_login_states,
             email_sender,
+            email_outbox,
         })
     }
 

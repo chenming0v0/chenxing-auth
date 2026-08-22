@@ -10,7 +10,7 @@ info:
     的路由关闭，包括 OAuth/OIDC 协议与授权确认、Discovery、JWKS、外部登录及其 Provider 管理。Issuer 门禁发现 Runtime
     处于 AwaitingIssuer 时会立即回读 PostgreSQL：合法持久化值会应用到当前请求并继续处理；无记录、空值/无效值、数据库读取失败、
     Runtime 已是 Pending/Invalid，或 DB/Runtime 事实无法一致应用时才返回 503。readiness 独立要求 raw DB 与 Runtime 完全一致，
-    且四个关键后台 worker 的心跳与最近成功均在各自时限内，签名密钥同步状态允许令牌签发。
+    且五个关键后台 worker 的心跳与最近成功均在各自时限内，签名密钥同步状态允许令牌签发。
 
     ADMIN_TOKEN 为空时整个已初始化管理面 fail closed：系统 Bearer 与浏览器 Session 两条管理通道都返回 403
     admin_disabled；唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口。WebAuthn 的显式 WEBAUTHN_RP_ID / WEBAUTHN_ORIGIN
@@ -54,7 +54,7 @@ paths:
       summary: 就绪探针（与 /health/ready 相同）
       operationId: health
       description: |
-        兼容别名，处理逻辑与 GET /health/ready 相同：检查数据库、Redis、Issuer 收敛和四个关键后台 worker。
+        兼容别名，处理逻辑与 GET /health/ready 相同：检查数据库、Redis、Issuer 收敛和五个关键后台 worker。
         raw DB 没有 Issuer 记录且 Runtime 也未加载 Issuer 是合法的保护模式，此时数据库、Redis、worker 和签名密钥同步均就绪则返回 200。
         raw DB 存在合法 Issuer 且 generation/value 与 Runtime 完全一致时同样返回 200。raw 记录为空或无效、读取失败、
         Runtime 已加载但数据库无记录、数据库有记录但 Runtime 未加载，或值/代次不一致时返回 503。
@@ -62,7 +62,7 @@ paths:
         响应体只暴露聚合状态，不含连接串或错误细节。
       responses:
         '200':
-          description: 数据库、Redis、四个关键 worker 和签名密钥同步均就绪，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
+          description: 数据库、Redis、五个关键 worker 和签名密钥同步均就绪，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
           content:
             application/json:
               schema:
@@ -91,13 +91,13 @@ paths:
       summary: 就绪探针
       operationId: healthReady
       description: |
-        检查数据库、Redis、Issuer 收敛和四个关键后台 worker，并确认签名密钥同步允许令牌签发。raw DB 与 Runtime 都没有 Issuer 是合法的保护模式；raw DB 存在合法 Issuer
+        检查数据库、Redis、Issuer 收敛和五个关键后台 worker，并确认签名密钥同步允许令牌签发。raw DB 与 Runtime 都没有 Issuer 是合法的保护模式；raw DB 存在合法 Issuer
         且 generation/value 与 Runtime 完全一致时也就绪。raw 记录为空或无效、读取失败、任一侧缺失、值/代次不一致，
         任一依赖超时/未就绪，或任一关键 worker 未成功启动、心跳/最近成功过期、连续失败、panic/意外返回，或签名密钥同步异常时返回 503。
         响应体只暴露聚合状态，不含连接串、主机名或错误细节。
       responses:
         '200':
-          description: 数据库、Redis、四个关键 worker 和签名密钥同步均就绪，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
+          description: 数据库、Redis、五个关键 worker 和签名密钥同步均就绪，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
           content:
             application/json:
               schema:
@@ -759,7 +759,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/StartEmailChangeInput' }
       responses:
-        '202': { description: 验证码已发送, content: { application/json: { schema: { $ref: '#/components/schemas/EmailChangeStartResponse' } } } }
+        '202': { description: 验证码已可靠排队发送, content: { application/json: { schema: { $ref: '#/components/schemas/EmailChangeStartResponse' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }

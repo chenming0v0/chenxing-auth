@@ -339,6 +339,21 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "oauth client auth method secret",
             include_str!("../../migrations/0040_oauth_client_auth_method_secret.sql"),
         ),
+        (
+            41,
+            "email change attempt budget",
+            include_str!("../../migrations/0041_email_change_attempt_budget.sql"),
+        ),
+        (
+            42,
+            "fix email change attempt budget",
+            include_str!("../../migrations/0042_email_change_attempt_budget_fix.sql"),
+        ),
+        (
+            43,
+            "email outbox",
+            include_str!("../../migrations/0043_email_outbox.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

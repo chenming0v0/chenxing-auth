@@ -78,7 +78,7 @@ export function EmailChangeDialog({
         ) : (
           <div className="mt-5 space-y-4">
             <Field id="email-change-code" label="邮箱验证码" icon="shield-check" inputMode="numeric" autoComplete="one-time-code" value={code} maxLength={6} pattern="[0-9]{6}" required onChange={(event) => onCode(event.target.value.replace(/[^0-9]/g, '').slice(0, 6))} />
-            <Notice tone="info">验证码已发送到 {newEmail}。确认后所有登录会话都会退出。</Notice>
+            <Notice tone="info">验证码已排队发送到 {newEmail}。确认后所有登录会话都会退出。</Notice>
           </div>
         )}
 

@@ -11,20 +11,44 @@ pub struct LockedEmailChangeChallenge {
     pub security_epoch: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmailChangeStartOutcome {
+    Created,
+    AuthenticationChanged,
+}
+
 pub async fn replace_pending_email_change(
     pool: &PgPool,
     challenge_id: Uuid,
     user_id: UserId,
     new_email: &EmailAddress,
     code_hash: &str,
+    encrypted_code: &[u8],
     security_epoch: i64,
     expires_at: OffsetDateTime,
-) -> Result<(), crate::sqlx::Error> {
+) -> Result<EmailChangeStartOutcome, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
     crate::sessions::store::lock_user_session_scope(&mut transaction, user_id).await?;
+    let current_epoch: Option<i64> =
+        crate::sqlx::query_scalar("SELECT session_epoch FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    if current_epoch != Some(security_epoch) {
+        transaction.rollback().await?;
+        return Ok(EmailChangeStartOutcome::AuthenticationChanged);
+    }
     crate::sqlx::query(
         "UPDATE user_email_change_challenges SET consumed_at = NOW()
          WHERE user_id = $1 AND consumed_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *transaction)
+    .await?;
+    crate::sqlx::query(
+        "UPDATE email_outbox SET cancelled_at = NOW(), claim_token = '', last_error = NULL
+         WHERE user_id = $1 AND processed_at IS NULL
+           AND cancelled_at IS NULL AND dead_lettered_at IS NULL",
     )
     .bind(user_id)
     .execute(&mut *transaction)
@@ -44,7 +68,18 @@ pub async fn replace_pending_email_change(
     .bind(expires_at)
     .execute(&mut *transaction)
     .await?;
-    transaction.commit().await
+    crate::sqlx::query(
+        "INSERT INTO email_outbox
+             (user_id, challenge_id, encrypted_code)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(user_id)
+    .bind(challenge_id)
+    .bind(encrypted_code)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(EmailChangeStartOutcome::Created)
 }
 
 pub async fn lock_email_change_challenge<'a>(
@@ -121,5 +156,13 @@ pub async fn apply_email_change(
         .bind(challenge_id)
         .execute(&mut **transaction)
         .await?;
+    crate::sqlx::query(
+        "UPDATE email_outbox SET cancelled_at = NOW(), claim_token = '', last_error = NULL
+         WHERE user_id = $1 AND processed_at IS NULL
+           AND cancelled_at IS NULL AND dead_lettered_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut **transaction)
+    .await?;
     Ok(())
 }
