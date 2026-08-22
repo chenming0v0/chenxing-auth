@@ -28,12 +28,6 @@ use crate::{
 const PASSKEY_REGISTRATION_PREFIX: &str = "chenxing:auth:passkey-registration:";
 const PASSKEY_AUTHENTICATION_PREFIX: &str = "chenxing:auth:passkey-authentication:";
 impl AuthFactorService {
-    pub(super) async fn enabled_passkey_settings(
-        &self,
-    ) -> Result<crate::settings::PasskeySetting, AuthFactorServiceError> {
-        Ok(self.enabled_passkey_settings_with_generation().await?.0)
-    }
-
     pub(super) async fn enabled_passkey_settings_with_generation(
         &self,
     ) -> Result<(crate::settings::PasskeySetting, i64), AuthFactorServiceError> {
