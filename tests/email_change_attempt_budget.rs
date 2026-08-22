@@ -143,11 +143,10 @@ async fn start(users: &UserService, sender: Arc<CapturingSender>, user_id: i64) 
     let source_ip = format!("test-source-{}", Uuid::new_v4().simple());
     let start = users
         .start_email_change(
-            sender.clone(),
             user_id,
             &format!("replacement-{}@example.com", Uuid::new_v4().simple()),
             PASSWORD,
-            Some(&source_ip),
+            Some(source_ip.as_str()),
             OffsetDateTime::now_utc(),
         )
         .await
