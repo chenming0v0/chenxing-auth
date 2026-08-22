@@ -154,15 +154,7 @@ pub async fn get_email_policy_setting(State(state): State<AppState>, admin: Admi
                 }
             };
             let diagnostic = inspection.diagnostic.as_ref().map(|value| value.as_str());
-            if let Some(diagnostic) = diagnostic {
-                tracing::warn!(
-                    event = "settings.admin_read_needs_repair",
-                    setting_key = "email_policy",
-                    diagnostic,
-                    "stored setting requires explicit repair before it can be overwritten"
-                );
-            }
-            (
+            let response = (
                 StatusCode::OK,
                 Json(EmailPolicySettingResponse::from_setting(
                     inspection.value,
@@ -170,7 +162,8 @@ pub async fn get_email_policy_setting(State(state): State<AppState>, admin: Admi
                     diagnostic,
                 )),
             )
-                .into_response()
+                .into_response();
+            attach_setting_diagnostic("email_policy", diagnostic, response)
         }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load email policy setting");
@@ -452,19 +445,29 @@ pub(crate) fn respond_setting_inspection<T: Serialize>(
     setting_key: &'static str,
     inspection: SettingInspection<T>,
 ) -> Response {
-    let mut response = (StatusCode::OK, Json(inspection.value)).into_response();
-    if let Some(diagnostic) = &inspection.diagnostic {
-        tracing::warn!(
-            event = "settings.admin_read_needs_repair",
-            setting_key,
-            diagnostic = diagnostic.as_str(),
-            "stored setting is readable for repair but must not be used on the security hot path"
-        );
-        response.headers_mut().insert(
-            SETTING_DIAGNOSTIC_HEADER,
-            HeaderValue::from_static(diagnostic.as_str()),
-        );
-    }
+    let diagnostic = inspection.diagnostic.as_ref().map(|value| value.as_str());
+    let response = (StatusCode::OK, Json(inspection.value)).into_response();
+    attach_setting_diagnostic(setting_key, diagnostic, response)
+}
+
+fn attach_setting_diagnostic(
+    setting_key: &'static str,
+    diagnostic: Option<&'static str>,
+    mut response: Response,
+) -> Response {
+    let Some(diagnostic) = diagnostic else {
+        return response;
+    };
+    tracing::warn!(
+        event = "settings.admin_read_needs_repair",
+        setting_key,
+        diagnostic,
+        "stored setting is readable for repair but must not be used on the security hot path"
+    );
+    response.headers_mut().insert(
+        SETTING_DIAGNOSTIC_HEADER,
+        HeaderValue::from_static(diagnostic),
+    );
     response
 }
 
