@@ -109,7 +109,17 @@ export function UsersTable({ access }: { access: AdminAccess }) {
     if (current.get('search')) query.set('search', current.get('search') as string)
     if (current.get('status')) query.set('status', current.get('status') as string)
     void apiFetch<Paged<PublicUser>>(`/api/v1/admin/users/query?${query}`)
-      .then((value) => { if (active) { setResult(value); setError('') } })
+      .then((value) => {
+        if (!active) return
+        const totalPages = Math.max(1, Math.ceil(value.total / value.page_size))
+        if (page > totalPages) {
+          current.set('page', String(totalPages))
+          navigate(`/admin/users?${current.toString()}`, { replace: true })
+          return
+        }
+        setResult(value)
+        setError('')
+      })
       .catch((reason: unknown) => { if (active) { setResult(null); setError(reason instanceof Error ? reason.message : '用户查询失败。') } })
     return () => { active = false }
   }, [location.search, page, refreshKey])
