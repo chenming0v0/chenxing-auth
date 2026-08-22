@@ -244,10 +244,6 @@ impl SessionStore {
         }
     }
 
-    pub(super) fn current_idle_timeout(&self) -> Duration {
-        self.current_policy().idle_timeout
-    }
-
     pub(super) fn current_max_concurrent_sessions(&self) -> u64 {
         self.current_policy().max_concurrent_sessions
     }
