@@ -477,6 +477,11 @@ async fn audit_events_are_immutable_and_old_rows_move_to_archive() {
 #[tokio::test]
 async fn runtime_role_cannot_delete_audit_and_uses_security_definer_archive() {
     let pool = database().await;
+    let latest_migration_before: i64 =
+        chenxing_auth::sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .expect("read migration version before privilege probes");
     let schema: String = chenxing_auth::sqlx::query_scalar("SELECT current_schema()")
         .fetch_one(&pool)
         .await
@@ -680,12 +685,12 @@ async fn runtime_role_cannot_delete_audit_and_uses_security_definer_archive() {
         "default privileges must not regrant table mutation to the runtime role"
     );
 
-    let latest_migration: i64 =
+    let latest_migration_after: i64 =
         chenxing_auth::sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
             .fetch_one(&pool)
             .await
-            .expect("read latest migration version");
-    assert_eq!(latest_migration, 43);
+            .expect("read migration version after privilege probes");
+    assert_eq!(latest_migration_after, latest_migration_before);
 }
 
 /// Owner 初始化要求 `users.id` 从 1 开始，`bootstrap_owner` 因此在插入前调
