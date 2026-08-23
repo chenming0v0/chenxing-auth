@@ -28,7 +28,10 @@ use crate::{
     plans::service::PlanService,
     redis_client::RedisClient,
     sessions::store::SessionStore,
-    settings::{IssuerRuntime, SecurityLimitsSetting, SettingsService, issuer::IssuerRecord},
+    settings::{
+        IssuerRuntime, SecurityLimitsSetting, SessionLifetimeSetting, SettingsService,
+        issuer::IssuerRecord,
+    },
     users::service::UserService,
     web_dist::{WebDistError, WebDistRoot},
     workers::{WorkerContext, WorkerHealth},
@@ -304,6 +307,10 @@ impl AppState {
             &config.webauthn_origin,
             SecurityLimitsSetting::from(&config.security_limits),
         )
+        .with_session_lifetime_default(SessionLifetimeSetting::from_boot_config(
+            config.session_ttl_seconds,
+            config.session_idle_timeout_seconds,
+        ))
         .with_issuer_runtime(issuer.clone());
         let session_lifetime = settings
             .session_lifetime()
