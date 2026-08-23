@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-//! `tests/plans.rs` 的脚手架：状态构造、HTTP 辅助和套餐前提。
+//! `tests/storage/plans.rs` 的脚手架：状态构造、HTTP 辅助和套餐前提。
 //!
 //! 每个测试的套餐前提**写在测试里**：[`test_state`] 只保证一个已知的起点
 //! （清空 + 播种原种子等价的默认套餐），需要「没有套餐」的测试自己调
@@ -72,7 +72,7 @@ pub async fn test_state() -> PlanTestEnv {
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = crate::db_isolation::isolated_pool("plans", &database_url).await;
+    let database = super::db_isolation::isolated_pool("plans", &database_url).await;
     clear_all_plans(&database).await;
     let default_plan_id = seed_default_plan(&database).await;
     let key_directory = key_directory::isolated_key_directory("plans");

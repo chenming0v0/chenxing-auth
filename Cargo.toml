@@ -5,6 +5,7 @@ edition = "2024"
 description = "天穹辰星 · 辰星认证中枢"
 license = "MIT"
 publish = false
+autotests = false
 
 [dependencies]
 argon2 = "0.5"
@@ -81,3 +82,29 @@ tower = { version = "0.5", features = ["util"] }
 
 [build-dependencies]
 sha2 = "0.10"
+
+# Keep domain integration tests in one crate per subsystem. The explicit paths
+# allow Rust to resolve each crate's child modules from its domain directory.
+[[test]]
+name = "admin"
+path = "tests/admin/mod.rs"
+
+[[test]]
+name = "auth"
+path = "tests/auth/mod.rs"
+
+[[test]]
+name = "identity"
+path = "tests/identity/mod.rs"
+
+[[test]]
+name = "oauth"
+path = "tests/oauth/mod.rs"
+
+[[test]]
+name = "platform"
+path = "tests/platform/mod.rs"
+
+[[test]]
+name = "storage"
+path = "tests/storage/mod.rs"

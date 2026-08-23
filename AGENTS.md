@@ -145,13 +145,13 @@ cargo check --all-features
 CHENXING_TEST_ROLE=orchestrator ./test_sh/test.sh --full
 ```
 
-单目标集成测试可以连 PostgreSQL / Redis。`tests/support/db_isolation.rs` 提供 per-test schema 隔离，成本和风险都远低于全量套件。
+单目标集成测试可以连 PostgreSQL / Redis。当前显式目标为 `admin`、`auth`、`identity`、`oauth`、`platform`、`storage`。`tests/support/db_isolation.rs` 提供 per-test schema 隔离，成本和风险都远低于全量套件。
 
 脚本分三个文件：`test.sh`（参数解析、角色门控、模式分发）、`lib.sh`（计时、汇总表、日志、服务探测）、`phases.sh`（各验证阶段）。后两个由 `test.sh` source，不单独执行。
 
 #### 为什么必须剪枝 target
 
-`deps/` 下的文件名是 `名字-<hash>`，hash 由 feature 组合、profile、依赖版本、rustc 版本共同决定。任何一项变化都会产出一份新产物，而旧的不会被删除。本项目 77 个测试目标、每个约 242 MiB（其中 98% 是调试信息），因此每换一套编译配置就多占约 16 GiB，历史上曾累积到 160 GiB。
+`deps/` 下的文件名是 `名字-<hash>`，hash 由 feature 组合、profile、依赖版本、rustc 版本共同决定。任何一项变化都会产出一份新产物，而旧的不会被删除。本项目将集成测试收口为 6 个显式测试目标、每个约 242 MiB（其中 98% 是调试信息），因此每换一套编译配置就多占约 1.5 GiB；测试用例总数不因收口而减少。
 
 `test_sh/prune_target.py` 依据 Cargo 自己报告的 `compiler-artifact` 清单判定哪些产物还活着，只删陈旧配置的残留。受限编译（`--lib` / `--test`）下退化为同名去重，并用 mtime 窗口保留同一次构建的多个合法产物。
 

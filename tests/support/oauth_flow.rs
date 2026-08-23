@@ -19,14 +19,14 @@ pub fn isolated_key_directory(label: &str) -> std::path::PathBuf {
 #[path = "qps_window.rs"]
 pub mod qps_window;
 
-/// `binary_name` 决定 schema 隔离边界，必须传调用方测试二进制自己的名字
-/// （见 `support/db_isolation.rs`）。共享同一个名字的二进制会共享数据库状态。
+/// `binary_name` 决定 schema 隔离边界，必须传调用方使用的稳定隔离标签
+/// （见 `support/db_isolation.rs`）。共享同一个名字的测试会共享数据库状态。
 ///
 /// 调用方必须同时声明 `db_isolation` 模块：
 /// ```rust,ignore
-/// #[path = "support/db_isolation.rs"]
+/// #[path = "../support/db_isolation.rs"]
 /// mod db_isolation;
-/// #[path = "support/oauth_flow.rs"]
+/// #[path = "../support/oauth_flow.rs"]
 /// mod oauth_flow;
 /// ```
 pub async fn test_state(
@@ -59,7 +59,7 @@ pub async fn test_state_with_max_connections_and_keyspace(
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = crate::db_isolation::isolated_pool_with_max_connections(
+    let database = super::db_isolation::isolated_pool_with_max_connections(
         binary_name,
         &database_url,
         max_connections,
@@ -221,7 +221,7 @@ pub async fn ensure_owner_bootstrapped(
     // 键（TOTP 时间步 claim、会话吊销）在并行测试之间碰撞。引导不再把序列打回
     // 1：隔离 schema 已分配的 Owner identity 必须保留，isolate_user_ids 只向前
     // 推进。收敛到这一个入口，测试就无需各自记得调用。
-    crate::db_isolation::isolate_user_ids(pool, binary_name).await;
+    super::db_isolation::isolate_user_ids(pool, binary_name).await;
 }
 
 pub async fn create_test_client(router: &Router, token: &str) -> (String, String) {
