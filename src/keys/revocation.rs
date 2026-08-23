@@ -138,8 +138,8 @@ pub(super) fn revoke_blocking_at(
         None => (planned_active_key_id, planned_state, None),
     };
 
-    // 先发布不含 revoked kid 的快照，再推进本实例观察到的共享代际。签发路径只有在
-    // 代际仍与磁盘一致时才返回密钥，因此其他实例不会在吊销同步窗口继续签发。
+    // 先发布不含 revoked kid 的快照，再推进本实例观察到的共享代际。后台同步负责把
+    // 共享目录的健康状态传播到签发热路径；请求本身只读取内存状态，不争抢目录锁。
     let published_key_count = next_state.jwks.keys.len();
     *manager.write_state() = next_state;
     if let Some(generation) = generation {

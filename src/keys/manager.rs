@@ -142,42 +142,15 @@ impl KeyManager {
         }
     }
 
-    /// Return a consistent signing snapshot only if a non-blocking shared-directory generation
-    /// check proves this instance has observed every committed revocation. Any contention, I/O
-    /// error, corrupt watermark, or stale generation fails closed before cloning signing material.
+    /// Return a consistent signing snapshot only while background synchronization is healthy.
+    /// The flag is checked before and after cloning the state so a synchronization failure
+    /// published during the read fails closed before a new signature is produced.
     pub fn active_signing_key_if_ready(&self) -> Option<ActiveSigningKey> {
-        if !self.refresh_revocation_readiness() {
+        if !self.signing_ready() {
             return None;
         }
         let signing_key = self.active_signing_key();
-        if self.refresh_revocation_readiness() {
-            Some(signing_key)
-        } else {
-            None
-        }
-    }
-
-    fn refresh_revocation_readiness(&self) -> bool {
-        let directory = self.read_state().directory.clone();
-        let Some(directory) = directory else {
-            return self.signing_ready();
-        };
-        let ready = (|| {
-            let _lock = KeyStorageLock::try_acquire(&directory).ok()?;
-            let generation = journal::revocation_generation(&directory).ok()?;
-            let pending = journal::revocation_pending(&directory).ok()?;
-            Some(
-                self.signing_ready()
-                    && !pending
-                    && generation == self.revocation_generation.load(Ordering::Acquire),
-            )
-        })()
-        .unwrap_or(false);
-        if !ready {
-            self.mark_sync_healthy(false);
-            self.hint_resync();
-        }
-        ready
+        self.signing_ready().then_some(signing_key)
     }
 
     /// Whether the latest shared-directory synchronization permits token signing.
