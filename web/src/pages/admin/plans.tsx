@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { apiFetch, type AdminPlan, type AdminPlanInput } from '../../api'
 import { Drawer } from '../../components/drawer'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Field, HudPanel, Icon, Notice, PageIntro, TextAreaField, ToggleRow } from '../../components/ui'
 import { DataTable } from '../../components/data-table'
 import { AdminGate, useAdminAccess } from './shared'
+import { useMutationLock } from '../../use-mutation-lock'
 
 export function formatLimit(value: number | null): string {
   return value === null ? '∞' : value.toLocaleString('zh-CN')
@@ -29,27 +30,45 @@ type EditorState = { mode: 'create'; asDefault?: boolean } | { mode: 'edit'; pla
 function PlansManager() {
   const [plans, setPlans] = useState<AdminPlan[] | null>(null)
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
   const [editor, setEditor] = useState<EditorState>(null)
   // 行级 busy：多行操作可同时在途，先完成的行只清除自己的标记，不会像单值 busy 那样提前解禁其他行
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set())
+  const reloadRequestId = useRef(0)
 
   const reload = useCallback(() => {
-    void apiFetch<AdminPlan[]>('/api/v1/admin/plans')
-      .then((value) => { setPlans(value); setError('') })
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '套餐列表加载失败。'))
+    const requestId = ++reloadRequestId.current
+    setLoading(true)
+    setError('')
+    return apiFetch<AdminPlan[]>('/api/v1/admin/plans')
+      .then((value) => {
+        if (requestId !== reloadRequestId.current) return
+        setPlans(value)
+        setError('')
+      })
+      .catch((reason: unknown) => {
+        if (requestId !== reloadRequestId.current) return
+        setError(reason instanceof Error ? reason.message : '套餐列表加载失败。')
+      })
+      .finally(() => {
+        if (requestId === reloadRequestId.current) setLoading(false)
+      })
   }, [])
-  useEffect(() => { reload() }, [reload])
+  useEffect(() => {
+    void reload()
+    return () => { reloadRequestId.current += 1 }
+  }, [reload])
 
   async function changeStatus(plan: AdminPlan) {
     const operation = plan.status === 'active' ? 'archive' : 'restore'
     // 归档默认套餐会直接关闭全站自助接入，确认文案必须说明这个后果
     const defaultWarning = plan.is_default ? '这是当前的默认套餐，归档后全站自助接入将关闭，用户无法自行创建 OAuth 应用。' : ''
-    if (operation === 'archive' && !window.confirm(`确认归档套餐「${plan.name}」吗？${defaultWarning}归档后不能再分配给用户，已挂载的 ${plan.assigned_users} 个用户将在到期或重新分配后回退默认套餐。`)) return
+    if (operation === 'archive' && !window.confirm(`确认归档套餐「${plan.name}」吗？${defaultWarning}归档后不能再分配给用户，已挂载的 ${plan.assigned_users} 个用户会立即停止使用此套餐，并回退到当前启用的默认套餐；没有可用默认套餐时，自助接入会立即关闭。`)) return
     setBusyIds((prev) => new Set(prev).add(plan.id))
     setError('')
     try {
       await apiFetch<void>(`/api/v1/admin/plans/${plan.id}/${operation}`, { method: 'POST' })
-      reload()
+      await reload()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '套餐状态更新失败。')
     } finally {
@@ -121,7 +140,7 @@ function PlansManager() {
         <DataTable
           minWidth={1080}
           columns={['套餐', 'OAuth 应用', '每日授权', '每月授权', 'QPS', '挂载用户', '状态', { label: '操作', align: 'right' }]}
-          empty={plans?.length ? null : plans ? '还没有套餐，从「新建套餐」开始。' : error ? null : '正在加载套餐列表。'}
+          empty={plans?.length ? null : plans ? '还没有套餐，从「新建套餐」开始。' : error ? null : loading ? '正在加载套餐列表。' : null}
         >
           {plans?.map((plan) => {
             const archived = plan.status !== 'active'
@@ -171,7 +190,7 @@ function PlansManager() {
           key={editor.mode === 'edit' ? editor.plan.id : 'create'}
           initial={editor.mode === 'edit' ? editor.plan : null}
           defaultOn={editor.mode === 'create' && Boolean(editor.asDefault)}
-          onSaved={() => { setEditor(null); reload() }}
+          onSaved={async () => { setEditor(null); await reload() }}
           onCancel={() => setEditor(null)}
         />
       ) : null}
@@ -213,7 +232,7 @@ function PlanEditorDrawer({ initial, defaultOn = false, onSaved, onCancel }: {
   initial: AdminPlan | null
   /** 从「新建默认套餐」入口进入时预勾选「设为默认」，一步恢复自助接入 */
   defaultOn?: boolean
-  onSaved: () => void
+  onSaved: () => void | Promise<void>
   onCancel: () => void
 }) {
   const [code, setCode] = useState(initial?.code ?? '')
@@ -225,7 +244,7 @@ function PlanEditorDrawer({ initial, defaultOn = false, onSaved, onCancel }: {
   const [maxQps, setMaxQps] = useState(initial?.max_qps == null ? '' : String(initial.max_qps))
   const [isDefault, setIsDefault] = useState(initial?.is_default ?? defaultOn)
   const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
+  const { busy: saving, run } = useMutationLock()
   // 取消唯一默认套餐会让全站自助接入关闭，这是允许的操作，但必须提前说清后果。
   const clearingLastDefault = Boolean(initial?.is_default && initial.status === 'active' && !isDefault)
 
@@ -263,18 +282,17 @@ function PlanEditorDrawer({ initial, defaultOn = false, onSaved, onCancel }: {
       setError(reason instanceof Error ? reason.message : '表单校验失败。')
       return
     }
-    setSaving(true)
-    try {
-      await apiFetch<AdminPlan>(initial ? `/api/v1/admin/plans/${initial.id}` : '/api/v1/admin/plans', {
-        method: initial ? 'PUT' : 'POST',
-        body: JSON.stringify(input),
-      })
-      onSaved()
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '套餐保存失败。')
-    } finally {
-      setSaving(false)
-    }
+    await run(async () => {
+      try {
+        await apiFetch<AdminPlan>(initial ? `/api/v1/admin/plans/${initial.id}` : '/api/v1/admin/plans', {
+          method: initial ? 'PUT' : 'POST',
+          body: JSON.stringify(input),
+        })
+        await onSaved()
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : '套餐保存失败。')
+      }
+    })
   }
 
   return (

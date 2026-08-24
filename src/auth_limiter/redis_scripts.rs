@@ -85,92 +85,78 @@ end
 return reached
 "#;
 
-/// 预留一次尝试：先判定全部维度，再统一 INCR pending。
+/// 预留一次尝试：pending 是按 reservation token 持有的 ZSET lease，而不是共享计数器。
+/// 每次操作先清理已过期 lease，再按 ZCARD 判定；释放和提交只删除调用方自己的 token，
+/// 因此过期 reservation 不会误减后来请求的活跃 reservation。
 ///
-/// 两段式是必须的——边判边写会在中途拒绝时留下已写入的 pending，
-/// 让一次被拒的请求永久吃掉其他维度的配额。
-/// 判定口径是 `失败数 + 在途数 >= limit`：昂贵的密码校验（Argon2）在预留通过之后
-/// 才执行，若只看已记录的失败，并发请求会在第一次失败落库前全部挤进来。
-///
-/// 返回第一个触发上限的维度下标（1-based），0 表示预留成功。与
-/// `CHECK_LIMITS_SCRIPT` 共用同一约定。
+/// ARGV 与 `redis.rs` 的 packing 对齐，1-based index `i` 的阈值在 `ARGV[i + 4]`：
+/// `[1] count, [2] lease_seconds, [3] token, [4] window_seconds, [5..] limits`。
+/// 写成 `ARGV[i + 3]` 会把 window（默认 900）当成账户阈值（10），账户永远锁不上。
 pub(crate) const RESERVE_ATTEMPT_SCRIPT: &str = r#"
 local count = tonumber(ARGV[1])
-local window_seconds = tonumber(ARGV[2])
-local window = window_seconds * 1000
+local lease_seconds = tonumber(ARGV[2])
+local token = ARGV[3]
+local window = tonumber(ARGV[4]) * 1000
 local time = redis.call('TIME')
 local now = (tonumber(time[1]) * 1000) + math.floor(tonumber(time[2]) / 1000)
 local cutoff = now - window
-local ttl = window_seconds + 1
+local lease_until = now + lease_seconds * 1000
 for index = 1, count do
     local failure_key = KEYS[index]
+    local pending_key = KEYS[count + index]
     redis.call('ZREMRANGEBYSCORE', failure_key, '-inf', cutoff)
+    redis.call('ZREMRANGEBYSCORE', pending_key, '-inf', now)
     local failures = redis.call('ZCARD', failure_key)
-    local pending = tonumber(redis.call('GET', KEYS[count + index]) or '0')
-    if failures + pending >= tonumber(ARGV[index + 2]) then
+    local pending = redis.call('ZCARD', pending_key)
+    if failures + pending >= tonumber(ARGV[index + 4]) then
         return index
     end
 end
 for index = 1, count do
-    local pending_key = KEYS[count + index]
-    if redis.call('INCR', pending_key) == 1 then
-        redis.call('EXPIRE', pending_key, ttl)
-    end
+    redis.call('ZADD', KEYS[count + index], lease_until, token)
+    redis.call('EXPIRE', KEYS[count + index], lease_seconds + 1)
 end
 return 0
 "#;
 
-/// 把预留提交为一次真实失败：归还 pending 并写入失败记录，一次原子完成。
-/// 拆成两次往返会让崩溃窗口里的预留悬挂，或让失败计数丢失。
+/// 把预留提交为一次真实失败：只消费 token 仍持有的 lease。
+///
+/// ARGV 布局与 `RESERVE_ATTEMPT_SCRIPT` 相同：阈值在 `ARGV[index + 4]`，
+/// 不是 `ARGV[index + 3]`（那一格是 window）。
 pub(crate) const RECORD_RESERVED_FAILURE_SCRIPT: &str = r#"
 local count = tonumber(ARGV[1])
-local window_seconds = tonumber(ARGV[2])
-local window = window_seconds * 1000
-local member = ARGV[3]
+local lease_seconds = tonumber(ARGV[2])
+local token = ARGV[3]
+local window = tonumber(ARGV[4]) * 1000
 local time = redis.call('TIME')
 local now = (tonumber(time[1]) * 1000) + math.floor(tonumber(time[2]) / 1000)
 local cutoff = now - window
-local ttl = window_seconds + 1
 local reached = {}
 for index = 1, count do
     local pending_key = KEYS[count + index]
-    local pending = tonumber(redis.call('GET', pending_key) or '0')
-    if pending > 0 then
-        if pending == 1 then
-            redis.call('DEL', pending_key)
-        else
-            redis.call('DECR', pending_key)
-        end
+    local owned = redis.call('ZSCORE', pending_key, token)
+    if owned then
+        redis.call('ZREM', pending_key, token)
     end
-    local limit = tonumber(ARGV[index + 3])
+    local limit = tonumber(ARGV[index + 4])
     local failure_key = KEYS[index]
     redis.call('ZREMRANGEBYSCORE', failure_key, '-inf', cutoff)
     local current = redis.call('ZCARD', failure_key)
-    if current < limit then
-        current = current + redis.call('ZADD', failure_key, now, member .. ':' .. index)
-        redis.call('EXPIRE', failure_key, ttl)
+    if owned and current < limit then
+        current = current + redis.call('ZADD', failure_key, now, token .. ':' .. index)
+        redis.call('EXPIRE', failure_key, tonumber(ARGV[4]) + 1)
     end
-    if current >= limit then
-        reached[index] = 1
-    else
-        reached[index] = 0
-    end
+    reached[index] = (current >= limit) and 1 or 0
 end
 return reached
 "#;
 
-/// 认证成功后归还预留。只动 pending，不触碰失败历史：
-/// 密码正确本身不构成「清空失败计数」的理由，那一步由会话签发后的 clear 负责。
+/// 认证成功后归还预留。ZREM 只删除 token 自己的 lease，重复调用幂等。
 pub(crate) const RELEASE_ATTEMPT_SCRIPT: &str = r#"
-for index, key in ipairs(KEYS) do
-    local pending = tonumber(redis.call('GET', key) or '0')
-    if pending > 0 then
-        if pending == 1 then
-            redis.call('DEL', key)
-        else
-            redis.call('DECR', key)
-        end
-    end
+local count = tonumber(ARGV[1])
+local token = ARGV[2]
+for index = 1, count do
+    redis.call('ZREM', KEYS[index], token)
 end
 return 1
 "#;
@@ -228,6 +214,25 @@ mod tests {
             assert!(
                 !super::CHECK_LIMITS_SCRIPT.contains(command),
                 "check script must stay read-only, found {command}"
+            );
+        }
+    }
+
+    /// 插入 `lease_seconds` 之后阈值从 `ARGV[index + 3]` 挪到 `ARGV[index + 4]`。
+    /// 漏改会把 window（900）当成账户上限（10），MFA 失败满 10 次仍不会锁账户。
+    #[test]
+    fn reserve_scripts_read_per_dimension_limits_after_the_fixed_args() {
+        for (name, script) in [
+            ("reserve", super::RESERVE_ATTEMPT_SCRIPT),
+            ("record_reserved", super::RECORD_RESERVED_FAILURE_SCRIPT),
+        ] {
+            assert!(
+                script.contains("ARGV[index + 4]"),
+                "{name} must read per-dimension limits at ARGV[index + 4]"
+            );
+            assert!(
+                !script.contains("ARGV[index + 3]"),
+                "{name} must not read limits from ARGV[index + 3] (that slot is the window)"
             );
         }
     }

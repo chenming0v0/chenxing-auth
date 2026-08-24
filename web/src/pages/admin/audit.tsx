@@ -20,7 +20,7 @@ export function AdminAudit() {
   )
 }
 
-function AuditTable() {
+export function AuditTable() {
   const location = useLocation()
   const navigate = useNavigate()
   const params = new URLSearchParams(location.search)
@@ -55,7 +55,17 @@ function AuditTable() {
     if (current.get('resource_type')) query.set('resource_type', current.get('resource_type') as string)
     let active = true
     void apiFetch<Paged<AuditEvent>>(`/api/v1/admin/audit/query?${query}`)
-      .then((value) => { if (active) { setResult(value); setError('') } })
+      .then((value) => {
+        if (!active) return
+        const totalPages = Math.max(1, Math.ceil(value.total / value.page_size))
+        if (page > totalPages) {
+          current.set('page', String(totalPages))
+          navigate(`/admin/audit?${current.toString()}`, { replace: true })
+          return
+        }
+        setResult(value)
+        setError('')
+      })
       .catch((reason: unknown) => { if (active) { setResult(null); setError(reason instanceof Error ? reason.message : '审计查询失败。') } })
     return () => { active = false }
   }, [location.search, page])

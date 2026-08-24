@@ -29,6 +29,7 @@ const baseProvider = {
   name_claim: null,
   email_verified_claim: 'email_verified',
   client_auth_method: 'basic' as const,
+  pkce_enabled: true,
 }
 
 const CONFIGURED: OAuthProviderSummary = {

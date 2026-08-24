@@ -23,7 +23,7 @@ type PendingStatusChange = {
   reason: string
 }
 
-type StatusResult = { ok: true } | { ok: false; reason: string }
+type StatusResult = { ok: true; stateVersion: number } | { ok: false; reason: string }
 
 function errorText(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback
@@ -38,7 +38,10 @@ function actionLabel(action: StatusAction): string {
 function reconcile(current: PendingStatusChange | null, list: OAuthProviderSummary[]): PendingStatusChange | null {
   if (!current) return null
   const provider = list.find((item) => item.slug === current.slug)
-  if (!provider) return null
+  /* A refresh started immediately after creation can still return the old
+     list. Missing data is inconclusive; only an observed target state may
+     consume the retry notice. */
+  if (!provider) return current
   const active = provider.status === 'active'
   return active === (current.action === 'enable') ? null : current
 }
@@ -83,29 +86,31 @@ export function OAuthProvidersPanel({ onMessage, onDirtyChange }: SettingsPanelP
     setOpen(true)
   }
 
-  async function applyStatus(slug: string, action: StatusAction): Promise<StatusResult> {
+  async function applyStatus(slug: string, action: StatusAction, expectedVersion: number): Promise<StatusResult> {
     try {
-      await apiFetch<void>(`/api/v1/admin/oauth/providers/${encodeURIComponent(slug)}/${action}`, { method: 'POST' })
-      return { ok: true }
+      const result = await apiFetch<{ state_version: number }>(`/api/v1/admin/oauth/providers/${encodeURIComponent(slug)}/${action}`, {
+        method: 'POST',
+        body: JSON.stringify({ expected_version: expectedVersion }),
+      })
+      return { ok: true, stateVersion: result.state_version }
     } catch (reason) {
       return { ok: false, reason: errorText(reason, 'OAuth 提供商状态更新失败。') }
     }
   }
 
   /** 写入配置本身（创建或更新），返回后续状态切换要用的 slug。失败时抛错，弹层保持打开让用户改。 */
-  async function persist(form: ProviderForm, target: OAuthProviderSummary | null): Promise<string> {
+  async function persist(form: ProviderForm, target: OAuthProviderSummary | null): Promise<OAuthProviderSummary> {
     if (target) {
-      await apiFetch<void>(`/api/v1/admin/oauth/providers/${encodeURIComponent(target.slug)}`, {
+      const response = await apiFetch<OAuthProviderSummary>(`/api/v1/admin/oauth/providers/${encodeURIComponent(target.slug)}`, {
         method: 'PUT',
-        body: JSON.stringify(toInput(form)),
+        body: JSON.stringify({ ...toInput(form), expected_version: target.state_version ?? 1 }),
       })
-      return target.slug
+      return { ...target, ...response }
     }
-    const created = await apiFetch<OAuthProviderSummary>('/api/v1/admin/oauth/providers', {
+    return apiFetch<OAuthProviderSummary>('/api/v1/admin/oauth/providers', {
       method: 'POST',
       body: JSON.stringify(toInput(form)),
     })
-    return created.slug || form.slug.trim()
   }
 
   async function save(form: ProviderForm) {
@@ -117,12 +122,11 @@ export function OAuthProvidersPanel({ onMessage, onDirtyChange }: SettingsPanelP
     busyRef.current = true
     setBusy(true)
     try {
-      const slug = await persist(form, target)
-      /* 配置已经落库，这一步之后不允许再回到「保存失败」的语义：
-         状态切换失败只影响启用与否，弹层必须关闭并刷新列表，避免用户重复提交创建。 */
-      const currentActive = target ? target.status === 'active' : false
+      const saved = await persist(form, target)
+      const slug = saved.slug
+      const currentActive = saved.status === 'active'
       const action: StatusAction | null = form.enabled === currentActive ? null : form.enabled ? 'enable' : 'disable'
-      const status = action ? await applyStatus(slug, action) : { ok: true as const }
+      const status = action ? await applyStatus(slug, action, saved.state_version ?? 1) : { ok: true as const, stateVersion: saved.state_version ?? 1 }
       setOpen(false)
       if (action && !status.ok) {
         const failure: PendingStatusChange = {
@@ -157,7 +161,9 @@ export function OAuthProvidersPanel({ onMessage, onDirtyChange }: SettingsPanelP
     busyRef.current = true
     setBusy(true)
     try {
-      const status = await applyStatus(pending.slug, pending.action)
+      const current = providers?.find((provider) => provider.slug === pending.slug)
+      if (!current) return
+      const status = await applyStatus(pending.slug, pending.action, current.state_version ?? 1)
       if (status.ok) {
         setPending(null)
         onMessage(`已${actionLabel(pending.action)} ${pending.name}。`)
@@ -184,7 +190,7 @@ export function OAuthProvidersPanel({ onMessage, onDirtyChange }: SettingsPanelP
     busyRef.current = true
     setBusy(true)
     try {
-      const status = await applyStatus(provider.slug, action)
+      const status = await applyStatus(provider.slug, action, provider.state_version ?? 1)
       if (status.ok) onMessage(`已${label} ${provider.name}。`)
       else onMessage(status.reason, 'warning')
       await reload()

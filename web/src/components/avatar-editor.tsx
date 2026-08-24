@@ -45,7 +45,9 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
   const [transform, setTransform] = useState<CropTransform>({ scale: MIN_SCALE, offsetX: 0, offsetY: 0 })
   const [edge, setEdge] = useState(FALLBACK_EDGE)
   const [error, setError] = useState('')
-  const containerRef = useDrawerFocus(onCancel, busy)
+  const [exporting, setExporting] = useState(false)
+  const exportGenerationRef = useRef(0)
+  const containerRef = useDrawerFocus(cancel, busy || exporting)
   const viewportRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null)
   // 原生 wheel 监听器只挂一次；必须从 ref 读最新取景状态，否则连滚会吃到过期 scale。
@@ -56,9 +58,11 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
   transformRef.current = transform
   edgeRef.current = edge
   sourceRef.current = source
-  busyRef.current = busy
+  busyRef.current = busy || exporting
 
-  // useLayoutEffect 而不是 useEffect：在浏览器绘制前完成首次测量，避免用兜底值
+  useLayoutEffect(() => {
+    return () => { exportGenerationRef.current += 1 }
+  }, [])
   // 渲染一帧再跳到实际尺寸。
   useLayoutEffect(() => {
     const element = viewportRef.current
@@ -151,11 +155,21 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
     applyTransform({ scale: transform.scale, offsetX: transform.offsetX + move[0], offsetY: transform.offsetY + move[1] })
   }
 
+  function cancel(): void {
+    exportGenerationRef.current += 1
+    setExporting(false)
+    onCancel()
+  }
+
   function confirm() {
+    if (busy || exporting) return
+    const generation = ++exportGenerationRef.current
+    setExporting(true)
     setError('')
     const rejection = rejectDecodedSize(source)
     if (rejection) {
       setError(localRejectionMessage(rejection))
+      setExporting(false)
       return
     }
     const canvas = document.createElement('canvas')
@@ -164,6 +178,7 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
     const context = canvas.getContext('2d')
     if (!context) {
       setError('当前浏览器不支持图片裁剪。')
+      setExporting(false)
       return
     }
     const rect = sourceRect(source, edge, transform)
@@ -172,6 +187,8 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
     /* 导出 PNG 而不是 JPEG：服务端会统一重编码成 JPEG，此处再压一次只会叠加两代
        有损压缩。PNG 无损上传把唯一的有损环节留给服务端。 */
     canvas.toBlob((blob) => {
+      if (generation !== exportGenerationRef.current) return
+      setExporting(false)
       if (!blob) {
         setError('图片导出失败，请重试。')
         return
@@ -188,7 +205,7 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
   }
 
   return createPortal(
-    <div className="chenxing-drawer-overlay is-open" onClick={() => { if (!busy) onCancel() }}>
+    <div className="chenxing-drawer-overlay is-open" onClick={() => { if (!busy && !exporting) cancel() }}>
       <div
         ref={containerRef}
         className="chenxing-drawer is-open"
@@ -204,7 +221,7 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
             <h2 className="chenxing-h2">调整头像</h2>
             <p className="chenxing-caption mt-1">拖拽移动位置，滑块调整缩放。取景框内的方形区域即最终头像。</p>
           </div>
-          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel} disabled={busy}>
+          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={cancel} disabled={busy || exporting}>
             <Icon name="x" size={16} />
           </button>
         </div>
@@ -264,7 +281,7 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
         </div>
 
         <div className="chenxing-drawer-footer">
-          <Button variant="ghost" onClick={onCancel} disabled={busy}>取消</Button>
+          <Button variant="ghost" onClick={cancel} disabled={busy || exporting}>取消</Button>
           <Button icon="check" onClick={confirm} disabled={busy}>{busy ? '上传中…' : '使用这张'}</Button>
         </div>
       </div>

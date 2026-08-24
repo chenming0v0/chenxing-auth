@@ -1,4 +1,4 @@
-import { Component, type ReactNode } from 'react'
+import { Component, createRef, type ReactNode } from 'react'
 import { AuthPanel } from './shells'
 import { SpaceBackdrop } from './space'
 import { BrandLockup, Button } from './ui'
@@ -13,7 +13,7 @@ type ErrorBoundaryState = { hasError: boolean }
  * 安全约定：
  * - 恢复界面只展示通用文案，绝不渲染错误消息、堆栈或内部状态——错误内容可能
  *   携带令牌、URL 查询等敏感信息。
- * - 刻意不实现 componentDidCatch：任何日志都会冒泄漏风险。React 19 默认会在
+ * - 刻意不记录错误细节：任何日志都会冒泄漏风险。React 19 默认会在
  *   onCaughtError 里把完整错误打到控制台，main.tsx 已在 createRoot 层显式替换
  *   为不含错误细节的固定标记，这里不需要也不应该再打印任何东西。
  * - 恢复路径不依赖 router / AuthProvider：刷新是原生 location.reload()，
@@ -21,9 +21,14 @@ type ErrorBoundaryState = { hasError: boolean }
  */
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { hasError: false }
+  private readonly recoveryHeadingRef = createRef<HTMLHeadingElement>()
 
   static getDerivedStateFromError(): ErrorBoundaryState {
     return { hasError: true }
+  }
+
+  componentDidCatch() {
+    this.recoveryHeadingRef.current?.focus()
   }
 
   render() {
@@ -31,9 +36,9 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       return (
         <SpaceBackdrop opacity={0.7} className="chenxing-auth-layout">
           <AuthPanel>
-            <div className="flex flex-col items-start gap-3">
+            <div role="alert" aria-live="assertive" aria-atomic="true" className="flex flex-col items-start gap-3">
               <BrandLockup />
-              <h1 className="chenxing-h1 mt-1">界面遇到问题</h1>
+              <h1 ref={this.recoveryHeadingRef} tabIndex={-1} className="chenxing-h1 mt-1">界面遇到问题</h1>
               <p className="chenxing-caption">
                 页面未能正常加载。请刷新重试，或返回首页。
               </p>

@@ -15,7 +15,7 @@ pub use supervisor::{
     WORKER_DRAIN_TIMEOUT, WorkerContext, WorkerDrainError, WorkerFailure, WorkerSupervisor,
 };
 
-pub const WORKER_COUNT: usize = 4;
+pub const WORKER_COUNT: usize = 5;
 const NEVER_RECORDED: u64 = 0;
 const TEST_ALWAYS_FRESH: u64 = u64::MAX;
 
@@ -23,6 +23,7 @@ const TEST_ALWAYS_FRESH: u64 = u64::MAX;
 pub enum WorkerName {
     IssuerSync,
     SessionOutbox,
+    EmailOutbox,
     KeySync,
     QuotaRefund,
 }
@@ -31,6 +32,7 @@ impl WorkerName {
     pub const ALL: [Self; WORKER_COUNT] = [
         Self::IssuerSync,
         Self::SessionOutbox,
+        Self::EmailOutbox,
         Self::KeySync,
         Self::QuotaRefund,
     ];
@@ -39,6 +41,7 @@ impl WorkerName {
         match self {
             Self::IssuerSync => "issuer_sync",
             Self::SessionOutbox => "session_outbox",
+            Self::EmailOutbox => "email_outbox",
             Self::KeySync => "key_sync",
             Self::QuotaRefund => "quota_refund",
         }
@@ -48,6 +51,9 @@ impl WorkerName {
         match self {
             Self::IssuerSync => WorkerPolicy::new(Duration::from_secs(10), Duration::from_secs(10)),
             Self::SessionOutbox => {
+                WorkerPolicy::new(Duration::from_secs(10), Duration::from_secs(10))
+            }
+            Self::EmailOutbox => {
                 WorkerPolicy::new(Duration::from_secs(10), Duration::from_secs(10))
             }
             Self::KeySync => WorkerPolicy::new(Duration::from_secs(20), Duration::from_secs(30)),
@@ -61,8 +67,9 @@ impl WorkerName {
         match self {
             Self::IssuerSync => 0,
             Self::SessionOutbox => 1,
-            Self::KeySync => 2,
-            Self::QuotaRefund => 3,
+            Self::EmailOutbox => 2,
+            Self::KeySync => 3,
+            Self::QuotaRefund => 4,
         }
     }
 }
@@ -152,6 +159,7 @@ impl WorkerHealth {
                 shutting_down: AtomicBool::new(false),
                 supervisor_failed: AtomicBool::new(false),
                 slots: [
+                    WorkerSlot::new(),
                     WorkerSlot::new(),
                     WorkerSlot::new(),
                     WorkerSlot::new(),

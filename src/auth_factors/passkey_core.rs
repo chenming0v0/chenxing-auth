@@ -9,7 +9,7 @@ use webauthn_rs_core::{
     WebauthnCore,
     proto::{
         AuthenticationState, AuthenticatorAttachment, Credential, RegistrationState,
-        UserVerificationPolicy,
+        RequestChallengeResponse, UserVerificationPolicy,
     },
 };
 
@@ -45,6 +45,16 @@ pub(super) struct PendingPasskeyAuthentication {
     pub(super) user_id: i64,
     pub(super) state: AuthenticationState,
     pub(super) settings: crate::settings::PasskeySetting,
+    /// Issuer generation captured with the challenge; legacy payloads without
+    /// this field fail closed at finish.
+    #[serde(default)]
+    pub(super) issuer_generation: Option<i64>,
+    /// The options are retained with the reserved state so a browser cancel or
+    /// assertion failure can retry the same WebAuthn ceremony. A new start
+    /// must never replace a still-valid reservation, otherwise the browser's
+    /// original assertion would no longer match the server-side state.
+    #[serde(default)]
+    pub(super) challenge: Option<RequestChallengeResponse>,
     /// 签发 challenge 时的行身份。finish 必须按这个 `id` 做 CAS，
     /// 不能按 finish 当下的 `credential_id` 查找：删除后重新注册会换行。
     #[serde(default)]
@@ -304,6 +314,8 @@ mod tests {
             user_id: 7,
             state,
             settings,
+            issuer_generation: Some(3),
+            challenge: None,
             credential_row_ids: vec![(b"cred-a".to_vec(), 11), (b"cred-b".to_vec(), 22)],
         };
         assert_eq!(pending.row_id_for(b"cred-a"), Some(11));
@@ -319,5 +331,15 @@ mod tests {
             serde_json::from_value(legacy).expect("legacy pending still deserializes");
         assert!(decoded.credential_row_ids.is_empty());
         assert_eq!(decoded.row_id_for(b"cred-a"), None);
+        assert_eq!(decoded.issuer_generation, Some(3));
+
+        let mut legacy_without_generation = serde_json::to_value(&pending).expect("pending JSON");
+        legacy_without_generation
+            .as_object_mut()
+            .expect("object")
+            .remove("issuer_generation");
+        let decoded: PendingPasskeyAuthentication =
+            serde_json::from_value(legacy_without_generation).expect("legacy pending JSON");
+        assert_eq!(decoded.issuer_generation, None);
     }
 }

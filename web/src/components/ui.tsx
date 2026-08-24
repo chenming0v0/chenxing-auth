@@ -1,12 +1,12 @@
-import { createElement, useEffect, useId, useRef, useState } from 'react'
+import { createElement, forwardRef, useEffect, useId, useRef, useState } from 'react'
 import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
 import {
   Activity, AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Box, CalendarClock, Check, ChevronDown,
   ChevronsUpDown, Circle, CircleAlert, Code2, Copy, Crown, Database, Download, ExternalLink, Eye, EyeOff, Fingerprint,
-  FlaskConical, Gauge, Globe, Info, KeyRound, LayoutDashboard, LayoutGrid, Layers, Link2, Lock, LockKeyhole,
+  FlaskConical, Gauge, Globe, Globe2, Info, KeyRound, LayoutDashboard, LayoutGrid, Layers, Link2, Lock, LockKeyhole,
   LogIn, LogOut, Mail, Menu, MoreHorizontal, Pencil, Plus, Power, Receipt, RefreshCw, Rocket, RotateCcw, Save, Search,
   Send, Server, Settings, Settings2, Shield, ShieldAlert, ShieldCheck, Sparkles, Star, Store, Terminal, Trash2, Unlink,
-  User, UserPlus, Users, Wallet, X, Zap, type LucideIcon,
+  User, UserPlus, Users, Wallet, X, Zap, Clock3, type LucideIcon,
 } from 'lucide-react'
 import logoUrl from '../assets/logo.png'
 
@@ -17,14 +17,14 @@ const icons: Record<string, LucideIcon> = {
   'badge-check': BadgeCheck, 'book-open': BookOpen, box: Box, 'calendar-clock': CalendarClock, check: Check,
   'chevron-down': ChevronDown, 'chevrons-up-down': ChevronsUpDown, circle: Circle, 'circle-alert': CircleAlert,
   'code-2': Code2, copy: Copy, crown: Crown, database: Database, download: Download, 'external-link': ExternalLink,
-  eye: Eye, 'eye-off': EyeOff, fingerprint: Fingerprint, 'flask-conical': FlaskConical, gauge: Gauge, github: Code2, globe: Globe,
+  eye: Eye, 'eye-off': EyeOff, fingerprint: Fingerprint, 'flask-conical': FlaskConical, gauge: Gauge, github: Code2, globe: Globe, 'globe-2': Globe2,
   info: Info, 'key-round': KeyRound, 'layout-dashboard': LayoutDashboard, 'layout-grid': LayoutGrid, layers: Layers,
   link: Link2, lock: Lock, 'lock-keyhole': LockKeyhole, 'log-in': LogIn, 'log-out': LogOut, mail: Mail, menu: Menu,
   'more-horizontal': MoreHorizontal, pencil: Pencil, plus: Plus, power: Power, receipt: Receipt, 'refresh-cw': RefreshCw,
   rocket: Rocket, 'rotate-ccw': RotateCcw, save: Save, search: Search, send: Send, server: Server, settings: Settings,
   'settings-2': Settings2, shield: Shield, 'shield-alert': ShieldAlert, 'shield-check': ShieldCheck, sparkles: Sparkles,
   star: Star, store: Store, terminal: Terminal, 'trash-2': Trash2, unlink: Unlink, user: User, 'user-plus': UserPlus,
-  users: Users, wallet: Wallet, x: X, zap: Zap,
+  users: Users, wallet: Wallet, x: X, zap: Zap, 'clock-3': Clock3,
 }
 
 export function Icon({ name, size = 16, className = '', strokeWidth = 1.8 }: { name: string; size?: number; className?: string; strokeWidth?: number }) {
@@ -32,8 +32,8 @@ export function Icon({ name, size = 16, className = '', strokeWidth = 1.8 }: { n
   return <Component size={size} strokeWidth={strokeWidth} className={className} aria-hidden="true" />
 }
 
-export function BrandMark({ className = 'h-8 w-8 rounded-[var(--chenxing-radius-md)]' }: { className?: string }) {
-  return <img src={logoUrl} alt="天穹辰星" className={className} />
+export function BrandMark({ className = 'h-8 w-8 rounded-[var(--chenxing-radius-md)]', decorative = false }: { className?: string; decorative?: boolean }) {
+  return <img src={logoUrl} alt={decorative ? '' : '天穹辰星'} role={decorative ? 'img' : undefined} className={className} />
 }
 
 /**
@@ -61,7 +61,7 @@ export function Avatar({ src, name, className = '' }: { src?: string; name?: str
 export function BrandLockup({ subtitle = '辰星认证中枢', compact = false }: { subtitle?: string; compact?: boolean }) {
   return (
     <span className="flex items-center gap-2.5">
-      <BrandMark className={compact ? 'chenxing-brand-logo' : 'h-8 w-8 rounded-[var(--chenxing-radius-md)]'} />
+      <BrandMark decorative className={compact ? 'chenxing-brand-logo' : 'h-8 w-8 rounded-[var(--chenxing-radius-md)]'} />
       <span className={compact ? undefined : 'hidden sm:block'}>
         <span className={compact ? 'chenxing-wordmark text-aurora block text-base' : 'chenxing-body block text-sm font-semibold leading-tight'}>天穹辰星</span>
         <span className={compact ? 'chenxing-mono block text-[9px] uppercase tracking-[0.24em] text-[var(--chenxing-muted-foreground)]' : 'chenxing-caption block text-[10px] leading-tight tracking-[0.08em]'}>{subtitle}</span>
@@ -83,10 +83,10 @@ type HudPanelProps = HTMLAttributes<HTMLElement> & {
  * 玻璃容器唯一入口：`.chenxing-hud-panel` 的类名契约只在这里出现一次。
  * 页面不得直接写该类名，否则容器结构变更时无法统一跟随。
  */
-export function HudPanel({ as = 'div', children, className = '', ...rest }: HudPanelProps) {
-  // 用 createElement 承载多态标签，避免为一个受限联合类型引入完整的多态组件泛型
-  return createElement(as, { className: `chenxing-hud-panel ${className}`, ...rest }, children)
-}
+export const HudPanel = forwardRef<HTMLElement, HudPanelProps>(function HudPanel({ as = 'div', children, className = '', ...rest }, ref) {
+  // 用 createElement 承载多态标签，ref 始终指向唯一的实际面板容器。
+  return createElement(as, { ref, className: `chenxing-hud-panel ${className}`, ...rest }, children)
+})
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: 'primary' | 'ghost' | 'danger'

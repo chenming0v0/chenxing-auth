@@ -22,6 +22,14 @@ const MAX_POPUP_HEIGHT = 288
 const MIN_POPUP_HEIGHT = 160
 const TYPEAHEAD_RESET_MS = 700
 
+function viewportSize() {
+  const visualViewport = window.visualViewport
+  return {
+    width: visualViewport?.width || window.innerWidth,
+    height: visualViewport?.height || window.innerHeight,
+  }
+}
+
 type PopupPosition = {
   left: number
   width: number
@@ -77,14 +85,17 @@ export function Select({
     const trigger = triggerRef.current
     if (!trigger) return
     const rect = trigger.getBoundingClientRect()
-    const spaceBelow = window.innerHeight - rect.bottom - GAP - VIEWPORT_MARGIN
-    const spaceAbove = rect.top - GAP - VIEWPORT_MARGIN
+    const { width: viewportWidth, height: viewportHeight } = viewportSize()
+    const spaceBelow = Math.max(0, viewportHeight - rect.bottom - GAP - VIEWPORT_MARGIN)
+    const spaceAbove = Math.max(0, rect.top - GAP - VIEWPORT_MARGIN)
     const flip = spaceBelow < MIN_POPUP_HEIGHT && spaceAbove > spaceBelow
+    const popupWidth = Math.min(rect.width, Math.max(0, viewportWidth - VIEWPORT_MARGIN * 2))
+    const maxLeft = Math.max(VIEWPORT_MARGIN, viewportWidth - VIEWPORT_MARGIN - popupWidth)
     setPosition({
-      left: rect.left,
-      width: rect.width,
-      maxHeight: Math.max(MIN_POPUP_HEIGHT, Math.min(MAX_POPUP_HEIGHT, flip ? spaceAbove : spaceBelow)),
-      ...(flip ? { bottom: window.innerHeight - rect.top + GAP } : { top: rect.bottom + GAP }),
+      left: Math.min(Math.max(rect.left, VIEWPORT_MARGIN), maxLeft),
+      width: popupWidth,
+      maxHeight: Math.min(MAX_POPUP_HEIGHT, flip ? spaceAbove : spaceBelow),
+      ...(flip ? { bottom: viewportHeight - rect.top + GAP } : { top: rect.bottom + GAP }),
     })
   }, [])
 
@@ -97,12 +108,17 @@ export function Select({
   useEffect(() => {
     if (!open) return
     const onViewportChange = () => measure()
+    const visualViewport = window.visualViewport
     /* capture: ancestor scrollers (tables, drawers) don't bubble scroll */
     window.addEventListener('scroll', onViewportChange, true)
     window.addEventListener('resize', onViewportChange)
+    visualViewport?.addEventListener('resize', onViewportChange)
+    visualViewport?.addEventListener('scroll', onViewportChange)
     return () => {
       window.removeEventListener('scroll', onViewportChange, true)
       window.removeEventListener('resize', onViewportChange)
+      visualViewport?.removeEventListener('resize', onViewportChange)
+      visualViewport?.removeEventListener('scroll', onViewportChange)
     }
   }, [open, measure])
 
@@ -269,7 +285,7 @@ export function Select({
                   key={option.value}
                   id={optionId(index)}
                   role="option"
-                  aria-selected={index === activeIndex}
+                  aria-selected={option.value === value}
                   aria-disabled={option.disabled || undefined}
                   data-index={index}
                   className={[

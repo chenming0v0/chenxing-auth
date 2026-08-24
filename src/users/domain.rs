@@ -34,7 +34,8 @@ pub const RESERVED_USERNAMES: &[&str] = &[
     "system",
 ];
 pub type UserId = i64;
-/// The first-owner bootstrap transaction resets the users sequence so this identity is stable.
+/// First identity on a fresh `users` sequence. Bootstrap no longer rewinds the
+/// sequence to force this value; an empty database still yields `id = 1`.
 pub const INITIAL_OWNER_ID: UserId = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -163,26 +164,18 @@ impl UserRole {
             (Self::Owner, _) | (Self::Admin, Self::Admin | Self::User) | (Self::User, Self::User)
         )
     }
-}
 
-#[derive(Deserialize)]
-pub struct RegistrationInput {
-    pub username: String,
-    pub email: String,
-    pub password: String,
-    pub display_name: Option<String>,
-}
-
-impl fmt::Debug for RegistrationInput {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RegistrationInput")
-            .field("username", &self.username)
-            .field("email", &self.email)
-            .field("password", &"<redacted>")
-            .field("display_name", &self.display_name)
-            .finish()
+    /// Bind role and status from one user-row snapshot read with a live session.
+    ///
+    /// A non-active status cannot authenticate, even if `role` is already Owner
+    /// (Issue #646). Unknown roles degrade to User so they cannot gain privileges.
+    pub fn from_authenticated_row(role: &str, status: &str) -> Option<(Self, UserStatus)> {
+        let status = UserStatus::parse(status)?;
+        (status == UserStatus::Active).then_some((Self::parse(role).unwrap_or(Self::User), status))
     }
 }
+
+pub use super::registration_input::RegistrationInput;
 
 #[derive(Deserialize)]
 pub struct LoginInput {

@@ -8,6 +8,7 @@ use super::{
     },
     repository::{self, PlanAssignmentResult, PlanRepositoryError},
 };
+use crate::audit::AuditEvent;
 use crate::clock::SharedClock;
 use crate::sqlx::PgPool;
 use crate::users::{ManagementActorCredential, domain::UserId};
@@ -44,6 +45,8 @@ pub enum PlanServiceError {
     ActorPermissionRequired,
     #[error(transparent)]
     ManagementActor(#[from] crate::users::ManagementActorValidationError),
+    #[error("plan audit operation failed: {0}")]
+    Audit(#[from] crate::audit::AuditError),
     #[error("database operation failed: {0}")]
     Database(#[from] crate::sqlx::Error),
 }
@@ -77,9 +80,10 @@ impl PlanService {
         &self,
         input: PlanInput,
         credential: ManagementActorCredential,
+        audit_event: AuditEvent,
     ) -> Result<Plan, PlanServiceError> {
         let input = validate_plan_input(input)?;
-        match repository::insert(&self.pool, &input, credential).await {
+        match repository::insert(&self.pool, &input, credential, audit_event).await {
             Ok(plan) => Ok(plan),
             Err(PlanRepositoryError::Database(error)) if is_unique_violation(&error) => {
                 Err(PlanServiceError::CodeConflict)
@@ -94,13 +98,14 @@ impl PlanService {
         id: i64,
         input: PlanInput,
         credential: ManagementActorCredential,
+        audit_event: AuditEvent,
     ) -> Result<PlanWithUsers, PlanServiceError> {
         let input = validate_plan_input(input)?;
         let Some(current) = repository::find_by_id(&self.pool, id).await? else {
             return Err(PlanServiceError::NotFound);
         };
         validate_plan_update(&current, &input).map_err(map_mutation_error)?;
-        match repository::update(&self.pool, id, &input, credential).await {
+        match repository::update(&self.pool, id, &input, credential, audit_event).await {
             Ok(Some(plan_with_users)) => Ok(plan_with_users),
             Ok(None) => Err(PlanServiceError::NotFound),
             Err(PlanRepositoryError::Database(error)) if is_unique_violation(&error) => {
@@ -116,16 +121,19 @@ impl PlanService {
         &self,
         id: i64,
         credential: ManagementActorCredential,
+        audit_event: AuditEvent,
     ) -> Result<(), PlanServiceError> {
-        self.set_status(id, "archived", credential).await
+        self.set_status(id, "archived", credential, audit_event)
+            .await
     }
 
     pub async fn restore(
         &self,
         id: i64,
         credential: ManagementActorCredential,
+        audit_event: AuditEvent,
     ) -> Result<(), PlanServiceError> {
-        self.set_status(id, "active", credential).await
+        self.set_status(id, "active", credential, audit_event).await
     }
 
     async fn set_status(
@@ -133,8 +141,9 @@ impl PlanService {
         id: i64,
         status: &str,
         credential: ManagementActorCredential,
+        audit_event: AuditEvent,
     ) -> Result<(), PlanServiceError> {
-        if repository::set_status(&self.pool, id, status, credential)
+        if repository::set_status(&self.pool, id, status, credential, audit_event)
             .await
             .map_err(map_repository_error)?
         {
@@ -150,15 +159,23 @@ impl PlanService {
         plan_id: i64,
         expires_at: Option<OffsetDateTime>,
         credential: ManagementActorCredential,
+        audit_event: AuditEvent,
     ) -> Result<(), PlanServiceError> {
         if expires_at.is_some_and(|value| value <= self.clock.now()) {
             return Err(PlanServiceError::Validation(PlanError::ExpiryInPast));
         }
         // 套餐存在性与状态由仓储在目标用户锁定之后校验。事务外预查不但重复，
         // 还会让 Owner 权限错误退化成套餐资源预言机。
-        match repository::assign_to_user(&self.pool, user_id, plan_id, expires_at, credential)
-            .await
-            .map_err(map_repository_error)?
+        match repository::assign_to_user(
+            &self.pool,
+            user_id,
+            plan_id,
+            expires_at,
+            credential,
+            audit_event,
+        )
+        .await
+        .map_err(map_repository_error)?
         {
             PlanAssignmentResult::PlanNotFound => return Err(PlanServiceError::NotFound),
             PlanAssignmentResult::UserNotFound => return Err(PlanServiceError::UserNotFound),
@@ -217,5 +234,6 @@ fn map_repository_error(error: PlanRepositoryError) -> PlanServiceError {
         PlanRepositoryError::Database(error) => PlanServiceError::Database(error),
         PlanRepositoryError::Mutation(error) => map_mutation_error(error),
         PlanRepositoryError::ManagementActor(error) => PlanServiceError::ManagementActor(error),
+        PlanRepositoryError::Audit(error) => PlanServiceError::Audit(error),
     }
 }

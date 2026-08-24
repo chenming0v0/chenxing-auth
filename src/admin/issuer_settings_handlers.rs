@@ -7,7 +7,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
-use super::domain::AdminPermission;
+use super::{
+    authorization::{authorize_admin_write, management_actor_validation_failed},
+    domain::AdminPermission,
+};
 use crate::{
     api::extract::{AdminRead, AdminWrite, ApiJson},
     audit::AuditEvent,
@@ -51,7 +54,7 @@ impl From<&IssuerRecord> for IssuerRecordResponse {
 
 fn issuer_setting_response(
     state: &AppState,
-    persisted: Option<&IssuerRecord>,
+    persisted: Option<IssuerRecordResponse>,
 ) -> IssuerSettingResponse {
     let runtime = state.issuer.state();
     let loaded = runtime.loaded().map(|snapshot| IssuerRecordResponse {
@@ -60,7 +63,7 @@ fn issuer_setting_response(
         updated_at: snapshot.updated_at(),
     });
     IssuerSettingResponse {
-        persisted: persisted.map(IssuerRecordResponse::from),
+        persisted,
         loaded,
         phase: runtime.phase(),
     }
@@ -71,22 +74,18 @@ pub async fn get_issuer_setting(State(state): State<AppState>, admin: AdminRead)
         return response;
     }
     match issuer::load_raw(&state.database).await {
-        Ok(Some(raw)) => {
-            let persisted = raw.value.as_deref().and_then(|value| {
-                crate::config::IssuerUrl::parse(value)
-                    .ok()
-                    .map(|issuer| IssuerRecord {
-                        value: issuer.as_str().to_owned(),
-                        generation: raw.generation,
-                        updated_at: raw.updated_at,
-                    })
-            });
-            (
-                StatusCode::OK,
-                Json(issuer_setting_response(&state, persisted.as_ref())),
-            )
-                .into_response()
-        }
+        Ok(Some(raw)) => (
+            StatusCode::OK,
+            Json(issuer_setting_response(
+                &state,
+                Some(IssuerRecordResponse {
+                    value: raw.value.clone().unwrap_or_default(),
+                    generation: raw.generation,
+                    updated_at: raw.updated_at,
+                }),
+            )),
+        )
+            .into_response(),
         Ok(None) => (StatusCode::OK, Json(issuer_setting_response(&state, None))).into_response(),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load issuer setting");
@@ -102,10 +101,12 @@ pub async fn update_issuer_setting(
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     ApiJson(input): ApiJson<UpdateIssuerSetting>,
 ) -> Response {
-    let actor = match admin.authorize(&state, AdminPermission::ManageIssuer).await {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageIssuer).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
     if input.expected_generation < 0 {
         return error::bad_request(
             "invalid_issuer_generation",
@@ -150,47 +151,31 @@ pub async fn update_issuer_setting(
         }
     };
     if let Err(error_value) =
+        crate::users::repository::management_actor::validate_management_actor_in_transaction(
+            &mut transaction,
+            authorization.credential(),
+            AdminPermission::ManageIssuer,
+        )
+        .await
+    {
+        let _ = transaction.rollback().await;
+        return management_actor_validation_failed(&state, authorization, error_value).await;
+    }
+    if let Err(error_value) =
         crate::settings::repository::lock_passkey_policy(&mut transaction).await
     {
         tracing::error!(error = %error_value, "failed to lock Passkey policy for issuer update");
         let _ = transaction.rollback().await;
         return error::internal();
     }
-    if let Some(snapshot) = state.issuer.current() {
-        let defaults = match state.issuer.webauthn_defaults_for(&value) {
-            Ok(defaults) => defaults,
-            Err(error_value) => {
-                tracing::info!(error = %error_value, "issuer update rejected by WebAuthn policy");
-                return error::conflict(
-                    "issuer_passkey_migration_required",
-                    "issuer change is incompatible with the current WebAuthn configuration",
-                );
-            }
-        };
-        if defaults.0 != snapshot.webauthn_rp_id() || defaults.1 != snapshot.webauthn_origin() {
-            match state
-                .factors
-                .has_passkeys_in_transaction(&mut transaction)
-                .await
-            {
-                Ok(true) => {
-                    let _ = transaction.rollback().await;
-                    return error::conflict(
-                        "issuer_passkey_migration_required",
-                        "configure a stable WebAuthn RP ID and origin before changing issuer",
-                    );
-                }
-                Ok(false) => {}
-                Err(error_value) => {
-                    tracing::error!(error = %error_value, "failed to check passkey compatibility");
-                    let _ = transaction.rollback().await;
-                    return error::service_unavailable(
-                        "issuer_passkey_check_unavailable",
-                        "could not verify WebAuthn compatibility",
-                    );
-                }
-            }
-        }
+    if let Err(response) = super::issuer_passkey_compat::reject_if_issuer_breaks_existing_passkeys(
+        &state,
+        &mut transaction,
+        &value,
+    )
+    .await
+    {
+        return response;
     }
     let write =
         match issuer::set_in_transaction(&mut transaction, &value, input.expected_generation).await
@@ -217,7 +202,14 @@ pub async fn update_issuer_setting(
         let _ = state.issuer.apply(&write.record);
         return (
             StatusCode::OK,
-            Json(issuer_setting_response(&state, Some(&write.record))),
+            Json(issuer_setting_response(
+                &state,
+                Some(IssuerRecordResponse {
+                    value: write.record.value.clone(),
+                    generation: write.record.generation,
+                    updated_at: write.record.updated_at,
+                }),
+            )),
         )
             .into_response();
     }
@@ -270,7 +262,14 @@ pub async fn update_issuer_setting(
     }
     (
         StatusCode::OK,
-        Json(issuer_setting_response(&state, Some(&write.record))),
+        Json(issuer_setting_response(
+            &state,
+            Some(IssuerRecordResponse {
+                value: write.record.value.clone(),
+                generation: write.record.generation,
+                updated_at: write.record.updated_at,
+            }),
+        )),
     )
         .into_response()
 }

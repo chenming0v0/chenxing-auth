@@ -51,6 +51,9 @@ describe('Drawer', () => {
     const labelId = dialog.getAttribute('aria-labelledby')
     expect(labelId).toBeTruthy()
     expect(document.getElementById(labelId as string)?.textContent).toBe('测试抽屉')
+    const descriptionId = dialog.getAttribute('aria-describedby')
+    expect(descriptionId).toBeTruthy()
+    expect(document.getElementById(descriptionId as string)?.textContent).toBe('用于验证焦点管理。')
   })
 
   it('locks page scrolling and makes background branches inert while open', () => {

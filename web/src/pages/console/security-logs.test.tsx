@@ -22,10 +22,11 @@ const sampleEvents = {
     { id: 1, action: 'login', resource_type: 'session', client_id: null, client_name: null, created_at: '2026-08-12T16:22:00Z' },
     { id: 2, action: 'oauth_consent', resource_type: 'client', client_id: 'cx_demo', client_name: '示例应用', created_at: '2026-08-12T17:13:23Z' },
     { id: 3, action: 'mystery_action', resource_type: null, client_id: null, client_name: null, created_at: '2026-08-12T18:00:00Z' },
+    { id: 4, action: 'toString', resource_type: null, client_id: null, client_name: null, created_at: '2026-08-12T18:01:00Z' },
   ],
   page: 1,
   page_size: 20,
-  total: 3,
+  total: 4,
 }
 
 beforeEach(() => {
@@ -38,7 +39,7 @@ describe('SecurityLogsPage', () => {
   it('以分页参数请求用户级安全日志接口', async () => {
     apiFetchMock.mockResolvedValue(sampleEvents)
     render(<SecurityLogsPage />)
-    await screen.findByText('共 3 条')
+    await screen.findByText('共 4 条')
     expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events?page=1&page_size=20')
   })
 
@@ -51,6 +52,8 @@ describe('SecurityLogsPage', () => {
     expect(screen.getAllByText('示例应用')).toHaveLength(2)
     // 未知 action 原样展示，不猜文案
     expect(screen.getAllByText('mystery_action')).toHaveLength(2)
+    // 原型链同名 action 也必须原样展示，不得渲染空徽章
+    expect(screen.getAllByText('toString')).toHaveLength(2)
   })
 
   it('列表接口 404 时展示错误且不注入示例事件', async () => {
@@ -85,7 +88,7 @@ describe('SecurityLogsPage', () => {
     await screen.findByText('第 1 / 3 页 · 共 47 条')
     fireEvent.click(screen.getByRole('button', { name: '下一页' }))
 
-    await screen.findByText('共 3 条')
+    await screen.findByText('共 4 条')
     expect(screen.queryByText('暂无活动记录。')).toBeNull()
     expect(screen.queryByText('第 2 / 1 页')).toBeNull()
     expect(await screen.findAllByText('登录')).toHaveLength(2)
@@ -143,6 +146,19 @@ describe('SecurityLogDetail（经 ?id= 进入）', () => {
     expect(screen.queryByText('事件信息')).toBeNull()
     expect(screen.queryByText('WONG 公益站备用')).toBeNull()
   })
+
+  it('malformed detail ids stay on the list route', async () => {
+    for (const id of ['123abc', '1.5', '+123', ' 123']) {
+      window.history.replaceState({}, '', `/console/logs?id=${encodeURIComponent(id)}`)
+      apiFetchMock.mockResolvedValue(sampleEvents)
+      render(<SecurityLogsPage />)
+      await screen.findByText('共 4 条')
+      expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events?page=1&page_size=20')
+      cleanup()
+      apiFetchMock.mockReset()
+    }
+  })
+
 
   it('详情页提供返回列表的链接', async () => {
     window.history.replaceState({}, '', '/console/logs?id=11045978')

@@ -24,6 +24,8 @@ export const navGroups: NavGroup[] = [
     items: [
       { label: '仪表盘', path: '/admin', icon: 'gauge' },
       { label: '用户管理', path: '/admin/users', icon: 'users' },
+      { label: 'Client 管理', path: '/admin/clients', icon: 'key-round' },
+      { label: '审计日志', path: '/admin/audit', icon: 'file-search' },
       { label: '套餐管理', path: '/admin/plans', icon: 'crown' },
     ],
   },
@@ -45,6 +47,7 @@ export const pageStatus: Record<string, string> = {
   '/console/plans': '控制台 · 套餐与权益',
   '/console/profile': '控制台 · 个人信息',
   '/console/security': '控制台 · 个人信息',
+  '/settings/security': '控制台 · 个人信息',
   '/console/apps': '控制台 · 已授权应用',
   '/console/logs': '控制台 · 安全日志',
   '/console/integrate': '控制台 · 接入应用',

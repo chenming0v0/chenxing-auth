@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     auth_factors::{domain::LoginTicket, repository},
-    auth_limiter::{FailureDimension, LimiterDimension, MissingSourceIpPolicy},
+    auth_limiter::{AuthReservation, FailureDimension, MissingSourceIpPolicy},
 };
 
 const DISCOVERABLE_PASSKEY_PREFIX: &str = "chenxing:auth:passkey-discoverable:";
@@ -17,6 +17,10 @@ const DISCOVERABLE_PASSKEY_PREFIX: &str = "chenxing:auth:passkey-discoverable:";
 struct PendingDiscoverablePasskeyAuthentication {
     state: webauthn_rs_core::proto::AuthenticationState,
     settings: crate::settings::PasskeySetting,
+    /// Issuer generation captured with the challenge; legacy payloads without
+    /// this field fail closed at finish.
+    #[serde(default)]
+    issuer_generation: Option<i64>,
     expires_at: time::OffsetDateTime,
 }
 
@@ -32,7 +36,7 @@ impl AuthFactorService {
         &self,
         source_ip: Option<&str>,
     ) -> Result<Option<(String, RequestChallengeResponse)>, AuthFactorServiceError> {
-        let settings = self.enabled_passkey_settings().await?;
+        let (settings, issuer_generation) = self.enabled_passkey_settings_with_generation().await?;
         match (source_ip, self.missing_source_ip_policy) {
             (Some(source_ip), _) => {
                 if self
@@ -67,6 +71,7 @@ impl AuthFactorService {
                 &PendingDiscoverablePasskeyAuthentication {
                     state,
                     settings,
+                    issuer_generation: Some(issuer_generation),
                     expires_at: self.clock.now() + LoginTicket::TTL,
                 },
                 LoginTicket::TTL.whole_seconds() as u64,
@@ -81,6 +86,8 @@ impl AuthFactorService {
         source_ip: Option<&str>,
         credential: &PublicKeyCredential,
     ) -> Result<DiscoverablePasskeyConfirmation, AuthFactorServiceError> {
+        let (_, current_issuer_generation) =
+            self.enabled_passkey_settings_with_generation().await?;
         let key = self.discoverable_passkey_key(challenge_id);
         let Some(pending) = self
             .tickets
@@ -89,6 +96,10 @@ impl AuthFactorService {
         else {
             return Ok(DiscoverablePasskeyConfirmation::Invalid);
         };
+        if pending.issuer_generation != Some(current_issuer_generation) {
+            self.tickets.delete(&key).await?;
+            return Ok(DiscoverablePasskeyConfirmation::Invalid);
+        }
         let Some(user_handle) = credential.get_user_unique_id() else {
             return self.unidentified_discoverable_failure(source_ip).await;
         };
@@ -108,13 +119,13 @@ impl AuthFactorService {
             Err(error) => return Err(error),
         };
         let dimensions = self.failure_dimensions(&account_key, None, source_ip)?;
-        if self.ensure_dimensions_allowed(dimensions.clone()).await? {
+        let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(DiscoverablePasskeyConfirmation::RateLimited);
-        }
+        };
         let passkeys = match repository::list_passkeys_with_versions(&self.pool, user_id).await {
             Ok(passkeys) => passkeys,
             Err(error) => {
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(error.into());
             }
         };
@@ -122,19 +133,19 @@ impl AuthFactorService {
             .into_iter()
             .find(|p| p.credential_id == credential.get_credential_id())
         else {
-            return self.discoverable_failure(dimensions).await;
+            return self.discoverable_failure(reservation).await;
         };
         let stored_credential = match core_credential(stored.passkey()) {
             Ok(credential) => credential,
             Err(error) => {
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(error);
             }
         };
         let core = match build_core(&pending.settings) {
             Ok(core) => core,
             Err(error) => {
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(error);
             }
         };
@@ -142,17 +153,17 @@ impl AuthFactorService {
         state.set_allowed_credentials(vec![stored_credential]);
         let result = match core.authenticate_credential(credential, &state) {
             Ok(result) => result,
-            Err(_) => return self.discoverable_failure(dimensions).await,
+            Err(_) => return self.discoverable_failure(reservation).await,
         };
         let epoch =
             match crate::users::repository::find_active_session_epoch(&self.pool, user_id).await {
                 Ok(Some(epoch)) => epoch,
                 Ok(None) => {
-                    self.release_dimensions(dimensions).await?;
+                    self.release_dimensions(reservation).await?;
                     return Ok(DiscoverablePasskeyConfirmation::Invalid);
                 }
                 Err(error) => {
-                    self.release_dimensions_after_error(dimensions).await;
+                    self.release_dimensions_after_error(reservation).await;
                     return Err(error.into());
                 }
             };
@@ -163,11 +174,11 @@ impl AuthFactorService {
         {
             Ok(Some(consumed)) => consumed,
             Ok(None) => {
-                self.release_dimensions(dimensions).await?;
+                self.release_dimensions(reservation).await?;
                 return Ok(DiscoverablePasskeyConfirmation::Invalid);
             }
             Err(error) => {
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(error.into());
             }
         };
@@ -183,7 +194,7 @@ impl AuthFactorService {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.restore_discoverable_after_error(&key, &consumed).await;
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(error.into());
             }
         };
@@ -191,16 +202,16 @@ impl AuthFactorService {
             repository::PasskeyPersistOutcome::Applied
             | repository::PasskeyPersistOutcome::AlreadyCurrent => {}
             repository::PasskeyPersistOutcome::Missing => {
-                self.release_dimensions(dimensions).await?;
+                self.release_dimensions(reservation).await?;
                 return Ok(DiscoverablePasskeyConfirmation::Invalid);
             }
             repository::PasskeyPersistOutcome::Exhausted => {
                 self.restore_discoverable_after_error(&key, &consumed).await;
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(AuthFactorServiceError::PasskeyUpdateConflict);
             }
         }
-        self.release_dimensions(dimensions.clone()).await?;
+        self.release_dimensions(reservation.clone()).await?;
         for (dimension, value) in dimensions {
             self.limiter.clear(dimension, &value).await?;
         }
@@ -211,9 +222,9 @@ impl AuthFactorService {
 
     async fn discoverable_failure(
         &self,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
     ) -> Result<DiscoverablePasskeyConfirmation, AuthFactorServiceError> {
-        if self.record_failure(dimensions).await?.reached.is_empty() {
+        if self.record_failure(reservation).await?.reached.is_empty() {
             Ok(DiscoverablePasskeyConfirmation::Invalid)
         } else {
             Ok(DiscoverablePasskeyConfirmation::RateLimited)
@@ -238,10 +249,10 @@ impl AuthFactorService {
                 return Err(AuthFactorServiceError::SourceIpUnavailable);
             }
         };
-        if self.ensure_dimensions_allowed(dimensions.clone()).await? {
+        let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(DiscoverablePasskeyConfirmation::RateLimited);
-        }
-        self.discoverable_failure(dimensions).await
+        };
+        self.discoverable_failure(reservation).await
     }
 
     async fn restore_discoverable_passkey(

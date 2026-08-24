@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { AssignPlanDrawer } from './plan-assign'
 import type { AdminPlan } from '../../api'
 
@@ -93,5 +93,29 @@ describe('AssignPlanDrawer 每次打开都重新拉套餐（#373）', () => {
     expect(screen.queryByRole('option', { name: /基础版 · basic/ })).toBeNull()
     expect(screen.getByRole('option', { name: /专业版 · pro/ })).toBeTruthy()
     expect(apiFetchMock.mock.calls.filter(([path]) => path === '/api/v1/admin/plans')).toHaveLength(2)
+  })
+})
+
+describe('AssignPlanDrawer 提交互斥（#586）', () => {
+  it('busy 尚未重渲染时重复提交只发出一个分配请求', async () => {
+    const assignPath = '/api/v1/admin/users/12/plan'
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/api/v1/admin/plans') return Promise.resolve([PLAN_BASIC, PLAN_PRO])
+      if (path === assignPath) return new Promise(() => {})
+      return Promise.reject(new Error(`unexpected ${path}`))
+    })
+
+    openDrawer()
+    await openPlanSelect()
+    fireEvent.click(screen.getByRole('option', { name: /基础版 · basic/ }))
+
+    const form = screen.getByRole('button', { name: '分配套餐' }).closest('form') as HTMLFormElement
+    fireEvent.submit(form)
+    fireEvent.submit(form)
+
+    await waitFor(() => {
+      expect(apiFetchMock.mock.calls.filter(([path]) => path === assignPath)).toHaveLength(1)
+    })
+    expect(apiFetchMock.mock.calls.filter(([path]) => path === assignPath)).toHaveLength(1)
   })
 })

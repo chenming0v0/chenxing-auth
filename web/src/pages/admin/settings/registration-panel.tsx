@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { ApiError, apiFetch, type IssuerSettingResponse, type RegistrationSetting } from '../../../api'
 import { Button, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
@@ -17,10 +17,7 @@ export function RegistrationPanel({ onMessage, onDirtyChange }: SettingsPanelPro
   /* 上次成功加载/保存的基线：当前编辑与它不一致即视为有未保存草稿（#381）。 */
   const [savedSetting, setSavedSetting] = useState<RegistrationSetting | null>(null)
   const [busy, setBusy] = useState(false)
-  /* Issuer 闸门：公开注册依赖运行时有效的 OIDC Issuer，未配置时保存会被后端
-     以 503 issuer_not_configured 拒绝。复用 IssuerPanel 的同一端点与响应形状
-     推导就绪状态，在前端先行拦截。null = 尚未取回，此时不拦截、由后端兜底。 */
-  const [issuerReady, setIssuerReady] = useState<boolean | null>(null)
+  const [issuer, setIssuer] = useState<IssuerSettingResponse | null>(null)
 
   const { loading } = useSettingsResource<RegistrationSetting>({
     path: '/api/v1/admin/settings/registration',
@@ -32,24 +29,29 @@ export function RegistrationPanel({ onMessage, onDirtyChange }: SettingsPanelPro
     },
   })
 
-  useEffect(() => {
-    let active = true
-    apiFetch<IssuerSettingResponse>('/api/v1/admin/settings/issuer')
-      .then((value) => { if (active) setIssuerReady(value.phase === 'issuer_loaded') })
-      .catch(() => { if (active) setIssuerReady(false) })
-    return () => { active = false }
-  }, [])
+  const { loading: issuerLoading } = useSettingsResource<IssuerSettingResponse>({
+    path: '/api/v1/admin/settings/issuer',
+    onMessage,
+    failureMessage: 'Issuer 状态加载失败。',
+    apply: setIssuer,
+  })
+
+  const issuerBlocked = issuer !== null && issuer.phase !== 'issuer_loaded'
 
   const dirty = Boolean(savedSetting && !settingsEqual(setting, savedSetting))
   useDirtyReport(dirty, onDirtyChange)
 
   function updateSetting(patch: Partial<RegistrationSetting>) {
     if (busy) return
-    if (patch.enabled === true && issuerReady === false) {
+    setSetting((current) => current ? { ...current, ...patch } : current)
+  }
+
+  function updateEnabled(enabled: boolean) {
+    if (enabled && issuerBlocked) {
       onMessage(ISSUER_GATE_MESSAGE, 'warning')
       return
     }
-    setSetting((current) => current ? { ...current, ...patch } : current)
+    updateSetting({ enabled })
   }
 
   async function save(event: FormEvent) {
@@ -86,10 +88,8 @@ export function RegistrationPanel({ onMessage, onDirtyChange }: SettingsPanelPro
           <p className="chenxing-caption mt-1.5">控制访客能否在登录页自助创建辰星通行证账号。</p>
         </div>
       </div>
-      {issuerReady === false ? (
-        <div className="mt-5"><Notice tone="warning">{ISSUER_GATE_MESSAGE}</Notice></div>
-      ) : null}
-      {loading || !setting ? (
+      {issuerBlocked ? <div className="mt-5"><Notice tone="warning">{ISSUER_GATE_MESSAGE}</Notice></div> : null}
+      {loading || issuerLoading || !setting ? (
         <div className="mt-5"><Notice>正在加载公开注册设置。</Notice></div>
       ) : (
         <form className="mt-5 flex flex-col gap-4" onSubmit={save}>
@@ -99,7 +99,7 @@ export function RegistrationPanel({ onMessage, onDirtyChange }: SettingsPanelPro
               description="允许访客自助创建账号；关闭时新账号只能由管理员创建"
               checked={setting.enabled}
               disabled={busy}
-              onChange={(enabled) => updateSetting({ enabled })}
+              onChange={updateEnabled}
             />
             <ToggleRow
               title="要求邮箱所有权验证"
@@ -107,6 +107,13 @@ export function RegistrationPanel({ onMessage, onDirtyChange }: SettingsPanelPro
               checked={setting.email_verification_required}
               disabled={busy}
               onChange={(email_verification_required) => updateSetting({ email_verification_required })}
+            />
+            <ToggleRow
+              title="注册要求邀请码"
+              description="开启后注册者必须提供有效邀请码；可与邮箱域名白名单和邮箱验证叠加。"
+              checked={setting.invitation_code_required}
+              disabled={busy}
+              onChange={(invitation_code_required) => updateSetting({ invitation_code_required })}
             />
             <div>
               <Button type="submit" icon="save" disabled={busy}>保存公开注册设置</Button>

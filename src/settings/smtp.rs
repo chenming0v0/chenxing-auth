@@ -59,6 +59,31 @@ impl fmt::Debug for SmtpPasswordUpdate {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct SmtpDeliveryConfig {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub from_address: String,
+    pub ssl_enabled: bool,
+    pub force_auth_login: bool,
+    pub password: String,
+}
+impl fmt::Debug for SmtpDeliveryConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SmtpDeliveryConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("from_address", &self.from_address)
+            .field("ssl_enabled", &self.ssl_enabled)
+            .field("force_auth_login", &self.force_auth_login)
+            .field("password", &"<redacted>")
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SmtpSetting {
     pub host: String,

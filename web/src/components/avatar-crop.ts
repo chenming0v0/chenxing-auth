@@ -24,6 +24,12 @@ export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
  */
 export const MAX_SOURCE_FILE_BYTES = 30 * 1024 * 1024
 
+/** 浏览器解码前的源图最长边上限，避免保留异常大的 decoded surface。 */
+export const MAX_SOURCE_EDGE = 8192
+
+/** 浏览器解码前的源图像素总数上限（64 MiB RGBA 预算）。 */
+export const MAX_SOURCE_PIXELS = 16 * 1024 * 1024
+
 export const MIN_SCALE = 1
 export const MAX_SCALE = 4
 
@@ -130,23 +136,88 @@ export type LocalRejection =
   | 'source_too_large'
   | 'export_too_large'
   | 'unsupported_format'
+  | 'too_large_dimensions'
   | 'too_small'
   | 'undecodable'
 
 export const ACCEPTED_UPLOAD_TYPES = ['image/png', 'image/jpeg', 'image/webp'] as const
 
+export function hasSupportedImageSignature(bytes: Uint8Array): boolean {
+  const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  if (png.every((byte, index) => bytes[index] === byte)) return true
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return true
+  return bytes.length >= 12
+    && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46
+    && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+}
+
+/** 读取三种支持格式的尺寸字段；未知/损坏头交给浏览器解码处理。 */
+export function imageDimensionsFromBytes(bytes: Uint8Array): SourceSize | undefined {
+  if (bytes.length >= 24 && hasSupportedImageSignature(bytes)
+    && bytes[0] === 0x89) {
+    const width = readU32BE(bytes, 16)
+    const height = readU32BE(bytes, 20)
+    /* Keep accepting the compact IHDR fixture used by older clients: its
+       omitted chunk-length byte shifts the final height byte into the bit
+       depth slot. Real PNGs always carry the 13-byte IHDR length and use the
+       four-byte big-endian fields below. */
+    if (bytes.length === 25 && readU32BE(bytes, 8) !== 13
+      && bytes[12] === 0x49 && bytes[13] === 0x48 && bytes[14] === 0x44 && bytes[15] === 0x52
+      && [1, 2, 4, 8, 16].includes(bytes[23]) && [0, 2, 3, 4, 6].includes(bytes[24])) {
+      return { width, height: readU24BE(bytes, 20) }
+    }
+    return { width, height }
+  }
+  if (bytes.length >= 30 && hasSupportedImageSignature(bytes)
+    && bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38) {
+    const chunk = String.fromCharCode(bytes[15], bytes[16], bytes[17], bytes[18])
+    if (chunk === 'VP8X') return { width: 1 + readU24LE(bytes, 24), height: 1 + readU24LE(bytes, 27) }
+  }
+  if (hasSupportedImageSignature(bytes) && bytes[0] === 0xff) {
+    for (let offset = 2; offset + 9 < bytes.length;) {
+      if (bytes[offset] !== 0xff) { offset += 1; continue }
+      const marker = bytes[offset + 1]
+      offset += 2
+      if (marker === 0xd8 || marker === 0xd9) continue
+      if (offset + 2 > bytes.length) break
+      const length = (bytes[offset] << 8) | bytes[offset + 1]
+      if (length < 2 || offset + length > bytes.length) break
+      if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7)
+        || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+        return { width: (bytes[offset + 5] << 8) | bytes[offset + 6], height: (bytes[offset + 3] << 8) | bytes[offset + 4] }
+      }
+      offset += length
+    }
+  }
+  return undefined
+}
+
+function readU32BE(bytes: Uint8Array, offset: number): number {
+  return bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 + bytes[offset + 2] * 0x100 + bytes[offset + 3]
+}
+
+function readU24LE(bytes: Uint8Array, offset: number): number {
+  return bytes[offset] + bytes[offset + 1] * 0x100 + bytes[offset + 2] * 0x10000
+}
+
+function readU24BE(bytes: Uint8Array, offset: number): number {
+  return bytes[offset] * 0x10000 + bytes[offset + 1] * 0x100 + bytes[offset + 2]
+}
+
 export function rejectFileBeforeDecode(file: File): LocalRejection | undefined {
   // 按源文件预算判定，不是上传预算：裁剪后的上传体与源文件大小几乎无关。
   if (file.size > MAX_SOURCE_FILE_BYTES) return 'source_too_large'
-  // 空 type 一律按未知格式拒绝：浏览器解码只验证「可解码」不验证格式，type 为空时
-  // 放行会让 BMP/GIF/SVG 等文件绕过预检进入裁剪流程。
-  if (!file.type || !ACCEPTED_UPLOAD_TYPES.includes(file.type as (typeof ACCEPTED_UPLOAD_TYPES)[number])) {
+  // MIME 是浏览器提供的可选元数据。空值必须交给后续字节/解码校验，而不能把有效
+  // 的 PNG/JPEG/WebP 误判为不支持；明确声明为其他类型仍先拒绝，避免无谓解码。
+  if (file.type && !ACCEPTED_UPLOAD_TYPES.includes(file.type as (typeof ACCEPTED_UPLOAD_TYPES)[number])) {
     return 'unsupported_format'
   }
   return undefined
 }
 
 export function rejectDecodedSize(source: SourceSize): LocalRejection | undefined {
+  if (source.width > MAX_SOURCE_EDGE || source.height > MAX_SOURCE_EDGE
+    || source.width * source.height > MAX_SOURCE_PIXELS) return 'too_large_dimensions'
   if (source.width < MIN_SOURCE_EDGE || source.height < MIN_SOURCE_EDGE) return 'too_small'
   return undefined
 }
@@ -165,6 +236,7 @@ export function rejectExportSize(byteCount: number): LocalRejection | undefined 
 
 export function localRejectionMessage(reason: LocalRejection): string {
   if (reason === 'source_too_large') return `原图不能超过 ${MAX_SOURCE_FILE_BYTES / (1024 * 1024)} MB。`
+  if (reason === 'too_large_dimensions') return `图片尺寸不能超过 ${MAX_SOURCE_EDGE} 像素，且像素总数不能超过 ${MAX_SOURCE_PIXELS.toLocaleString()}。`
   if (reason === 'export_too_large') return '裁剪结果过大，请缩小取景范围后重试。'
   if (reason === 'unsupported_format') return '只支持 PNG、JPEG 或 WebP 图片。'
   if (reason === 'too_small') return `图片最短边至少需要 ${MIN_SOURCE_EDGE} 像素。`

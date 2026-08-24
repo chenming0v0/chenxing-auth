@@ -2,6 +2,50 @@ import { useEffect, useState, type AnchorHTMLAttributes, type MouseEvent, type R
 
 function currentPath() { return window.location.pathname }
 
+export const HISTORY_INDEX = '__chenxing_history_index'
+export const NAVIGATION_EVENT = 'chenxing:navigation'
+let historyIndex = typeof window !== 'undefined' && typeof window.history.state?.[HISTORY_INDEX] === 'number'
+  ? window.history.state[HISTORY_INDEX] as number
+  : 0
+let restoringHistory = false
+if (typeof window !== 'undefined' && window.history.state?.[HISTORY_INDEX] !== historyIndex) {
+  window.history.replaceState({ ...(window.history.state ?? {}), [HISTORY_INDEX]: historyIndex }, '', window.location.href)
+}
+
+function commitHistory(to: string, options?: NavigationOptions) {
+  const index = options?.replace ? historyIndex : historyIndex + 1
+  historyIndex = index
+  const state = { ...(window.history.state ?? {}), [HISTORY_INDEX]: index }
+  if (options?.replace) window.history.replaceState(state, '', to)
+  else window.history.pushState(state, '', to)
+}
+
+function notifyNavigation() {
+  window.dispatchEvent(new Event(NAVIGATION_EVENT))
+}
+
+function installPopstateGuard() {
+  if (typeof window === 'undefined') return
+  window.addEventListener('popstate', (event) => {
+    if (restoringHistory) {
+      restoringHistory = false
+      return
+    }
+    const targetIndex = typeof event.state?.[HISTORY_INDEX] === 'number'
+      ? event.state[HISTORY_INDEX] as number
+      : historyIndex - 1
+    if (navigationBlocker && !navigationBlocker()) {
+      const delta = historyIndex - targetIndex
+      if (delta !== 0) {
+        restoringHistory = true
+        window.history.go(delta)
+      }
+      return
+    }
+    historyIndex = targetIndex
+  })
+}
+
 /**
  * 路由级导航拦截器：本项目没有 react-router，这是 useBlocker 的自制等价物。
  * navigate 是 Link 点击与程序化跳转的唯一入口，跳转前询问已注册的拦截器，
@@ -13,6 +57,7 @@ function currentPath() { return window.location.pathname }
  * 再次触发重定向，永远回不到目标页之前的正常历史。
  */
 let navigationBlocker: (() => boolean) | null = null
+installPopstateGuard()
 
 export type NavigationOptions = { replace?: boolean }
 
@@ -37,12 +82,8 @@ export function prepareNavigation(to: string, options?: NavigationOptions): Navi
     commit(nextTo = to, nextOptions = options) {
       if (committed) return false
       committed = true
-      if (nextOptions?.replace) {
-        window.history.replaceState({}, '', nextTo)
-      } else {
-        window.history.pushState({}, '', nextTo)
-      }
-      window.dispatchEvent(new PopStateEvent('popstate'))
+      commitHistory(nextTo, nextOptions)
+      notifyNavigation()
       return true
     },
   }
@@ -57,9 +98,29 @@ export function navigate(to: string, options?: NavigationOptions) {
   intent.commit()
 }
 
+/**
+ * Replace the current same-document URL without creating a history entry.
+ *
+ * URL cleanup and auth redirects still need to re-render the SPA, but they are
+ * not browser history traversals and must not run the popstate blocker.
+ */
+export function replaceUrl(to: string) {
+  commitHistory(to, { replace: true })
+  notifyNavigation()
+}
+
+function subscribeToNavigation(listener: () => void) {
+  window.addEventListener('popstate', listener)
+  window.addEventListener(NAVIGATION_EVENT, listener)
+  return () => {
+    window.removeEventListener('popstate', listener)
+    window.removeEventListener(NAVIGATION_EVENT, listener)
+  }
+}
+
 export function usePathname() {
   const [path, setPath] = useState(currentPath)
-  useEffect(() => { const update = () => setPath(currentPath()); window.addEventListener('popstate', update); return () => window.removeEventListener('popstate', update) }, [])
+  useEffect(() => subscribeToNavigation(() => setPath(currentPath())), [])
   return path
 }
 
@@ -67,11 +128,7 @@ export function useNavigate() { return navigate }
 export function useLocation() {
   const pathname = usePathname()
   const [search, setSearch] = useState(window.location.search)
-  useEffect(() => {
-    const update = () => setSearch(window.location.search)
-    window.addEventListener('popstate', update)
-    return () => window.removeEventListener('popstate', update)
-  }, [])
+  useEffect(() => subscribeToNavigation(() => setSearch(window.location.search)), [])
   return { pathname, search }
 }
 

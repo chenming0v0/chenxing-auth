@@ -44,8 +44,7 @@ export type SecurityRemovalResult = {
 export type ExternalIdentity = {
   provider: string
   provider_name: string
-  /** Only render a masked form of this value; it is not a user-facing identifier. */
-  subject: string
+  /** Internal IdP subject is intentionally not exposed by the public API. */
   email: string
   linked_at: string
 }
@@ -144,11 +143,21 @@ export type AdminOverview = {
   administrators: number
   audit_events: number
 }
-/** 管理端用户对象。该接口不返回头像版本号，因此显式排除，避免类型宣称后端没给的字段。 */
+/** 公共用户对象不携带管理查询专用的套餐投影。 */
 export type PublicUser = Omit<
   UserMe,
   'current_session_expires_at' | 'avatar_updated_at'
 > & { created_at: string }
+
+/** 管理用户查询结果；套餐投影只由 GET /api/v1/admin/users/query 返回。 */
+export type AdminUserQueryItem = PublicUser & {
+  plan: {
+    id: number
+    code: string
+    name: string
+    expires_at: string | null
+  } | null
+}
 /** 管理端建号入参；display_name 留空时传 null，role / status 省略时由服务端取默认值。 */
 export type AdminCreateUserInput = {
   username: string
@@ -205,6 +214,7 @@ export type RegistrationEmailSetting = { registration_email_from: string | null 
 export type RegistrationSetting = {
   enabled: boolean
   email_verification_required: boolean
+  invitation_code_required: boolean
 }
 /**
  * 登录页可见的公开注册状态（GET /api/v1/auth/registration-status，匿名可读）。
@@ -213,6 +223,7 @@ export type RegistrationSetting = {
 export type RegistrationStatus = {
   enabled: boolean
   email_verification_required: boolean
+  invitation_code_required: boolean
 }
 export type PasskeyUserVerification = 'preferred' | 'required' | 'discouraged'
 export type PasskeyAuthenticatorAttachment = 'any' | 'platform' | 'cross_platform'
@@ -229,6 +240,13 @@ export type EmailPolicySetting = {
   whitelist_enabled: boolean
   alias_restriction_enabled: boolean
   allowed_domains: string[]
+  generation: number
+  diagnostic?: 'invalid' | 'corrupt'
+  repair_required?: boolean
+}
+export type UpdateEmailPolicySetting = Omit<EmailPolicySetting, 'generation' | 'diagnostic' | 'repair_required'> & {
+  expected_generation: number
+  confirm_repair?: boolean
 }
 export type SmtpSetting = {
   host: string
@@ -290,7 +308,9 @@ export type OAuthProviderSummary = {
   name_claim?: string | null
   email_verified_claim?: string | null
   client_auth_method: 'basic' | 'request_body'
+  pkce_enabled: boolean
   status: 'active' | 'disabled' | string
+  state_version?: number
   client_secret_configured: boolean
 }
 export type OAuthProviderInput = {
@@ -308,6 +328,8 @@ export type OAuthProviderInput = {
   /** 必填：指向布尔型邮箱验证状态的 claim 路径。缺失时后端拒绝配置（Issue #261）。 */
   email_verified_claim: string
   client_auth_method?: 'basic' | 'request_body'
+  /** 是否启用 PKCE；省略时后端按安全默认值开启。 */
+  pkce_enabled?: boolean
 }
 export type AdminPlan = {
   id: number

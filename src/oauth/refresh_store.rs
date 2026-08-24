@@ -51,6 +51,9 @@ const CLIENT_REVOKE_BATCH_SIZE: u64 = 128;
 
 /// Token 主键前缀（保持与历史一致，避免 keyspace 迁移风险）。
 const TOKEN_KEY_PREFIX: &str = "chenxing:oauth:refresh:";
+/// Token 到 family 的反向定位键。grant 索引成员只有 token hash；主键过期后，
+/// 撤销仍需要这份映射才能清理真实 family 索引。
+const TOKEN_FAMILY_PREFIX: &str = "cx:refresh:token_family:";
 /// Client 索引前缀。
 const CLIENT_IDX_PREFIX: &str = "cx:refresh:client_idx:";
 /// Grant 索引前缀（`{user_id}:{client_id}`）。
@@ -190,6 +193,10 @@ impl RefreshTokenStore {
         format!("{}{hash}", self.token_key_prefix())
     }
 
+    fn token_family_key_for_hash(&self, hash: &str) -> String {
+        format!("{}{hash}", self.keyspace.prefix(TOKEN_FAMILY_PREFIX))
+    }
+
     fn client_idx_key(&self, client_id: &str) -> String {
         format!("{}{client_id}", self.keyspace.prefix(CLIENT_IDX_PREFIX))
     }
@@ -243,11 +250,13 @@ impl RefreshTokenStore {
             .key(self.client_idx_key(&token.client_id))
             .key(self.family_idx_key(&token.family_id))
             .key(self.grant_idx_key(&token.user_id, &token.client_id))
+            .key(self.token_family_key_for_hash(&hash))
             .arg(payload)
             .arg(ttl)
             .arg(INDEX_TTL_SECONDS)
             .arg(&hash)
             .arg(&token.family_id) // 空字符串时 Lua 不写 family 索引
+            .arg(token.family_identifier())
             .invoke_async(&mut connection)
             .await?;
         Ok(())
@@ -293,6 +302,7 @@ impl RefreshTokenStore {
                 .key(self.client_idx_key(&token.client_id))
                 .key(self.family_idx_key(&token.family_id))
                 .key(self.grant_idx_key(&token.user_id, &token.client_id))
+                .key(self.token_family_key_for_hash(&hash))
                 .arg(&hash)
                 .arg(INDEX_TTL_SECONDS)
                 .arg(&token.family_id)
@@ -323,6 +333,7 @@ impl RefreshTokenStore {
             .key(self.family_idx_key(&token.family_id))
             .key(self.tombstone_key_for_hash(&hash))
             .key(self.grant_idx_key(&token.user_id, &token.client_id))
+            .key(self.token_family_key_for_hash(&hash))
             .arg(expected)
             .arg(&hash)
             .arg(tombstone)
@@ -383,6 +394,8 @@ impl RefreshTokenStore {
             // 轮换前后属于同一个 grant：用后继的归属拼键，保证 grant 索引跟着
             // 轮换链走，撤销总能看到当前活成员。
             .key(self.grant_idx_key(&replacement.user_id, &replacement.client_id))
+            .key(self.token_family_key_for_hash(&old_hash))
+            .key(self.token_family_key_for_hash(&new_hash))
             .arg(expected)
             .arg(replacement_payload)
             .arg(new_ttl)
@@ -393,6 +406,7 @@ impl RefreshTokenStore {
             .arg(TOMBSTONE_TTL_SECONDS)
             .arg(&token.family_id) // ARGV[9]
             .arg(&replacement.family_id) // ARGV[10]
+            .arg(replacement.family_identifier()) // ARGV[11]
             .invoke_async(&mut connection)
             .await?;
         Ok(match rotated {

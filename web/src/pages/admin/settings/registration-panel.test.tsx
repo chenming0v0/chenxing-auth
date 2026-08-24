@@ -24,7 +24,7 @@ function stubFetch(options: {
   putStatus?: number
   putCode?: string
 } = {}) {
-  const registration = options.registration ?? { enabled: false, email_verification_required: false }
+  const registration = options.registration ?? { enabled: false, email_verification_required: false, invitation_code_required: false }
   requests = []
   vi.stubGlobal('fetch', (path: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET'

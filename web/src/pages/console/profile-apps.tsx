@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
 import { apiFetch, ApiError, type SessionItem, type UserMe } from '../../api'
@@ -11,6 +11,7 @@ import { AccountManagement } from './security'
 import { ProfileEditorDialog } from './profile-editor-dialog'
 import { EmailChangeDialog } from './email-change-dialog'
 import { PasswordChangeDialog } from './password-change-dialog'
+import { useMutationLock } from '../../use-mutation-lock'
 
 const PASSWORD_MIN_LENGTH = 10
 const PASSWORD_MAX_LENGTH = 128
@@ -40,19 +41,24 @@ export function ConsoleProfile() {
   const [showProfileEditor, setShowProfileEditor] = useState(false)
   const [newEmail, setNewEmail] = useState('')
   const [emailPassword, setEmailPassword] = useState('')
+  const [emailCode, setEmailCode] = useState('')
+  const [emailChallengeId, setEmailChallengeId] = useState<string | null>(null)
   const [showEmailEditor, setShowEmailEditor] = useState(false)
   const [sessions, setSessions] = useState<SessionItem[]>([])
   const [showPassword, setShowPassword] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const emailChangeGeneration = useRef(0)
   /* 提示语连同语气一起存。早先的实现用 message.includes('已保存') 反推语气，
      每加一条成功提示都得记得让文案命中那个子串，是等着出错的写法。 */
   const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
-  const [busy, setBusy] = useState(false)
+  const { busy, acquire, release, run } = useMutationLock()
+  const profileRequestIdRef = useRef(0)
   /* 撤销在途的会话 id。与 AuthorizedApps 的 busyClientId 同款约定：
      null 表示无在途请求，非 null 期间所有撤销按钮禁用，防止快速连点并发 DELETE。 */
   const [busySessionId, setBusySessionId] = useState<number | null>(null)
+  const sessionsRequestId = useRef(0)
   const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
   const warn = (text: string) => notify(text, 'warning')
 
@@ -60,12 +66,16 @@ export function ConsoleProfile() {
     setDisplayName(user?.display_name || '')
     setUsername(user?.username || '')
   }, [user?.display_name, user?.username])
-  const loadSessions = () => {
-    void apiFetch<{ items: SessionItem[] }>('/api/v1/auth/sessions')
-      .then((response) => setSessions(response.items))
-      .catch((reason: unknown) => warn(reason instanceof Error ? reason.message : '会话列表加载失败。'))
+  const loadSessions = async () => {
+    const requestId = ++sessionsRequestId.current
+    try {
+      const response = await apiFetch<{ items: SessionItem[] }>('/api/v1/auth/sessions')
+      if (requestId === sessionsRequestId.current) setSessions(response.items)
+    } catch (reason: unknown) {
+      if (requestId === sessionsRequestId.current) warn(reason instanceof Error ? reason.message : '会话列表加载失败。')
+    }
   }
-  useEffect(() => { loadSessions() }, [])
+  useEffect(() => { void loadSessions() }, [])
 
   async function updateProfile(event: FormEvent) {
     event.preventDefault()
@@ -86,29 +96,33 @@ export function ConsoleProfile() {
       warn('修改用户名需要输入当前密码。')
       return
     }
-    setBusy(true)
+    if (!acquire()) return
+    const requestId = ++profileRequestIdRef.current
     try {
       const updated = await apiFetch<UserMe>('/api/v1/auth/me', {
         method: 'PATCH',
+        redirectOn401: false,
         body: JSON.stringify({
           display_name: displayName.trim() || null,
           username: normalizedUsername,
           ...(usernameChanged ? { current_password: profilePassword } : {}),
         }),
       })
+      if (requestId !== profileRequestIdRef.current) return
       if (updated.username !== normalizedUsername) {
         warn('服务端返回的用户名与本次修改不一致，请刷新后重试。')
         return
       }
       await refresh()
+      if (requestId !== profileRequestIdRef.current) return
       setDisplayName(updated.display_name || '')
       setUsername(updated.username)
       setProfilePassword('')
       setShowProfileEditor(false)
       notify('账户资料已保存。', 'success')
     } catch (error) {
-      warn(error instanceof Error ? error.message : '资料保存失败。')
-    } finally { setBusy(false) }
+      if (requestId === profileRequestIdRef.current) warn(error instanceof Error ? error.message : '资料保存失败。')
+    } finally { release() }
   }
 
   async function updatePassword(event: FormEvent) {
@@ -118,14 +132,15 @@ export function ConsoleProfile() {
     if (newPasswordLength < PASSWORD_MIN_LENGTH) { warn(`新密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`); return }
     if (newPasswordLength > PASSWORD_MAX_LENGTH) { warn(`新密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`); return }
     if (newPassword !== confirmPassword) { warn('两次输入的新密码不一致。'); return }
-    setBusy(true)
-    try {
-      await apiFetch<void>('/api/v1/auth/password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) })
-      clear()
-      navigate('/login?returnTo=%2Fconsole%2Fprofile')
-    } catch (error) {
-      warn(error instanceof Error ? error.message : '密码修改失败。')
-    } finally { setBusy(false) }
+    await run(async () => {
+      try {
+        await apiFetch<void>('/api/v1/auth/password', { method: 'POST', redirectOn401: false, body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) })
+        clear()
+        navigate('/login?returnTo=%2Fconsole%2Fprofile')
+      } catch (error) {
+        warn(error instanceof Error ? error.message : '密码修改失败。')
+      }
+    })
   }
 
   async function revokeSession(session: SessionItem) {
@@ -133,18 +148,20 @@ export function ConsoleProfile() {
     setBusySessionId(session.id)
     setNotice(null)
     try {
-      await apiFetch<void>(`/api/v1/auth/sessions/${session.id}`, { method: 'DELETE' })
-    } catch (error) {
-      // 404 表示会话已不存在（重复撤销或他处已撤销），与撤销成功等价，不算失败。
-      if (!(error instanceof ApiError && error.status === 404)) {
-        warn(error instanceof Error ? error.message : '会话撤销失败。')
-        return
+      try {
+        await apiFetch<void>(`/api/v1/auth/sessions/${session.id}`, { method: 'DELETE' })
+      } catch (error) {
+        // 404 表示会话已不存在（重复撤销或他处已撤销），与撤销成功等价，不算失败。
+        if (!(error instanceof ApiError && error.status === 404)) {
+          warn(error instanceof Error ? error.message : '会话撤销失败。')
+          return
+        }
       }
+      if (session.current) { clear(); navigate('/login?returnTo=%2Fconsole%2Fprofile'); return }
+      await loadSessions()
     } finally {
-      setBusySessionId(null)
+      setBusySessionId((current) => current === session.id ? null : current)
     }
-    if (session.current) { clear(); navigate('/login?returnTo=%2Fconsole%2Fprofile'); return }
-    loadSessions()
   }
 
   const name = user?.display_name || user?.username || '用户'
@@ -166,15 +183,22 @@ export function ConsoleProfile() {
     setShowProfileEditor(false)
   }
 
-  function openEmailEditor() {
+  function resetEmailEditor() {
+    emailChangeGeneration.current += 1
     setNewEmail('')
     setEmailPassword('')
+    setEmailCode('')
+    setEmailChallengeId(null)
+    setNotice(null)
+  }
+
+  function openEmailEditor() {
+    resetEmailEditor()
     setShowEmailEditor(true)
   }
 
   function closeEmailEditor() {
-    setNewEmail('')
-    setEmailPassword('')
+    resetEmailEditor()
     setShowEmailEditor(false)
   }
 
@@ -192,9 +216,28 @@ export function ConsoleProfile() {
     setShowPassword(false)
   }
 
-  function requestEmailChange(event: FormEvent) {
+  async function requestEmailChange(event: FormEvent) {
     event.preventDefault()
-    warn('邮箱变更后端尚未实现，当前不会提交修改。')
+    setNotice(null)
+    const generation = emailChangeGeneration.current
+    await run(async () => {
+      try {
+        if (!emailChallengeId) {
+          const result = await apiFetch<{ challenge_id: string }>('/api/v1/auth/email-change/start', { method: 'POST', body: JSON.stringify({ new_email: newEmail.trim(), current_password: emailPassword }) })
+          if (generation !== emailChangeGeneration.current) return
+          setEmailChallengeId(result.challenge_id)
+          notify('验证码已排队发送到新邮箱。', 'success')
+        } else {
+          await apiFetch<void>('/api/v1/auth/email-change/confirm', { method: 'POST', body: JSON.stringify({ challenge_id: emailChallengeId, code: emailCode }) })
+          if (generation !== emailChangeGeneration.current) return
+          clear()
+          navigate('/login?returnTo=%2Fconsole%2Fprofile')
+        }
+      } catch (error) {
+        if (generation !== emailChangeGeneration.current) return
+        warn(error instanceof Error ? error.message : '邮箱变更失败。')
+      }
+    })
   }
 
   return (
@@ -257,8 +300,12 @@ export function ConsoleProfile() {
             currentEmail={user?.email || '—'}
             newEmail={newEmail}
             password={emailPassword}
+            code={emailCode}
+            stage={emailChallengeId ? 'verify' : 'details'}
+            busy={busy}
             onNewEmail={(value) => setNewEmail(value.slice(0, 254))}
             onPassword={setEmailPassword}
+            onCode={setEmailCode}
             onCancel={closeEmailEditor}
             onSubmit={requestEmailChange}
           />

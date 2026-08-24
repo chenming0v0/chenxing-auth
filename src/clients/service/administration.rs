@@ -126,6 +126,52 @@ impl ClientService {
         Ok(clients)
     }
 
+    pub async fn update_with_audit(
+        &self,
+        client_id: &str,
+        input: ClientRegistrationInput,
+        audit_event: crate::audit::AuditEvent,
+    ) -> Result<bool, ClientServiceError> {
+        let registration = validate_client_registration_with_limits(input, &self.limits)?;
+        repository::update_client_with_audit(
+            &self.pool,
+            None,
+            client_id,
+            &registration.client_name,
+            &registration.redirect_uris,
+            &registration.scopes,
+            audit_event,
+        )
+        .await
+        .map_err(|error| match error {
+            repository::AuditedClientMutationError::Database(error) => {
+                ClientServiceError::Database(error)
+            }
+            repository::AuditedClientMutationError::Audit(error) => {
+                tracing::error!(event = "client_update.audit_unavailable", error = %error);
+                ClientServiceError::AuditUnavailable
+            }
+        })
+    }
+
+    pub async fn set_status_with_audit(
+        &self,
+        client_id: &str,
+        status: &str,
+        audit_event: crate::audit::AuditEvent,
+    ) -> Result<bool, ClientServiceError> {
+        validate_status(status)?;
+        repository::set_client_status_with_audit(&self.pool, None, client_id, status, audit_event)
+            .await
+            .map_err(|error| match error {
+                repository::AuditedClientMutationError::Database(error) => ClientServiceError::Database(error),
+                repository::AuditedClientMutationError::Audit(error) => {
+                    tracing::error!(event = "client_status_update.audit_unavailable", error = %error);
+                    ClientServiceError::AuditUnavailable
+                }
+            })
+    }
+
     pub async fn update(
         &self,
         client_id: &str,

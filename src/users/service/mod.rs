@@ -18,17 +18,20 @@ use thiserror::Error;
 use super::{credentials::prepare_dummy_password_hash, domain::RegistrationError, repository};
 use crate::{
     auth_limiter::{AuthFailureLimiter, MissingSourceIpPolicy},
+    config::AuthEncryptionKeyRing,
     sqlx::PgPool,
 };
 
 mod administration;
 mod authentication;
 mod avatar;
+mod email_change;
 mod profile;
 mod registration;
 
 pub use administration::ManagementWriteError;
 pub use avatar::AvatarServiceError;
+pub use email_change::{EmailChangeConfirmation, EmailChangeError, EmailChangeStart};
 
 #[derive(Clone)]
 pub struct UserService {
@@ -42,6 +45,7 @@ pub struct UserService {
     /// `Option` 是构造器兼容：生产路径在 `state.rs` 里必然注入；未注入的服务
     /// 调用 `register` 会 fail-closed（见 `registration::enforce_registration_attempt_limit`）。
     pub(super) registration_attempt_limiter: Option<crate::oauth::rate_limit::QpsRateLimiter>,
+    pub(super) email_encryption_keys: Option<AuthEncryptionKeyRing>,
 }
 
 #[derive(Debug, Error)]
@@ -86,6 +90,8 @@ pub enum UserServiceError {
     EmailDomainNotAllowed,
     #[error("email ownership verification is unavailable")]
     EmailVerificationUnavailable,
+    #[error("a valid invitation code is required")]
+    InvalidInvitationCode,
 }
 
 impl UserService {
@@ -107,6 +113,7 @@ impl UserService {
             limiter,
             missing_source_ip_policy,
             registration_attempt_limiter: None,
+            email_encryption_keys: None,
         }
     }
 
@@ -119,6 +126,11 @@ impl UserService {
         limiter: crate::oauth::rate_limit::QpsRateLimiter,
     ) -> Self {
         self.registration_attempt_limiter = Some(limiter);
+        self
+    }
+
+    pub fn with_email_encryption_keys(mut self, keys: AuthEncryptionKeyRing) -> Self {
+        self.email_encryption_keys = Some(keys);
         self
     }
 }

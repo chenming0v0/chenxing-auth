@@ -197,8 +197,11 @@ jobs:
         with:
           toolchain: 1.94.0
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --fail-under-lines 75
+      # nextest 一测一进程，避免 oauth 代理边界用例改 HTTP_PROXY 污染 sibling。
+      # quality job 已经用 nextest；coverage 必须同一隔离模型，不能退回 cargo test。
+      - run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info --fail-under-lines 75
       - uses: actions/upload-artifact@v4
         with:
           name: rust-coverage
@@ -210,6 +213,9 @@ jobs:
     needs: [quality, coverage]
     runs-on: ubuntu-latest
     environment: apifox
+    # Apifox 的导入 API 会 504。这是文档同步副作用，不是质量门；
+    # 重试之后仍失败时不挡住 dev CI，否则 coverage 已经绿的提交合不进去。
+    continue-on-error: true
     steps:
       - name: Import OpenAPI specification
         env:
@@ -218,6 +224,9 @@ jobs:
           set -euo pipefail
           test -n "$API_FOX_KEY"
           curl --fail-with-body --silent --show-error \
+            --retry 3 \
+            --retry-delay 20 \
+            --retry-all-errors \
             --request POST \
             --url "https://api.apifox.com/v1/projects/8642631/import-openapi?locale=zh-CN" \
             --header "Authorization: Bearer $API_FOX_KEY" \

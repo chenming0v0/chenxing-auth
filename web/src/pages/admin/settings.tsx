@@ -11,6 +11,7 @@ import { SessionLifetimePanel } from './settings/session-lifetime-panel'
 import { SmtpPanel } from './settings/smtp-panel'
 import { IssuerPanel } from './settings/issuer-panel'
 import { RegistrationPanel } from './settings/registration-panel'
+import { InvitationCodesPanel } from './settings/invitation-codes-panel'
 import { useDraftLeaveGuard, useFlashMessage } from './settings/panel'
 
 export function AdminSettings() {
@@ -37,6 +38,7 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
   const [keyResult, setKeyResult] = useState<KeyRotationResponse | null>(null)
   const [busy, setBusy] = useState(false)
   const canManageProviders = Boolean(access.data?.permissions.includes('manage_identity_providers'))
+  const canManageIssuer = Boolean(access.data?.permissions.includes('manage_issuer'))
   const canRotateKeys = Boolean(access.data?.permissions.includes('rotate_keys'))
   /* flash 的引用跨渲染稳定，面板的加载 effect 不会因为消息状态变化而重跑（#268）。 */
   const { flash, message } = useFlashMessage()
@@ -63,7 +65,7 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
   const reportOAuthDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportIssuerDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportRegistrationDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
-  const canManageIssuer = Boolean(access.data?.permissions.includes('manage_issuer'))
+  /* Issuer status is independent from registration settings permission. */
   /* 任一面板有草稿时，路由跳转与刷新/关页前都提示确认。 */
   useDraftLeaveGuard(dirty)
 
@@ -101,6 +103,7 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
       )}
       {canManageIssuer ? <IssuerPanel onMessage={flash} onDirtyChange={reportIssuerDirty} /> : null}
       <RegistrationPanel onMessage={flash} onDirtyChange={reportRegistrationDirty} />
+      <InvitationCodesPanel />
       <HudPanel>
         <h2 className="chenxing-h2 flex items-center gap-2">
           <Icon name="key-round" className="text-[var(--chenxing-cyan)]" size={18} />

@@ -48,7 +48,7 @@ beforeEach(() => {
     // 注册页挂载时先拉公开注册状态；它与表单提交断言无关，独立应答且不计入 requests，
     // 默认按「开放且不要求邮箱验证」返回，保持既有注册用例的行为不变。
     if (path === '/api/v1/auth/registration-status') {
-      return Promise.resolve(jsonResponse({ enabled: true, email_verification_required: false }))
+      return Promise.resolve(jsonResponse({ enabled: true, email_verification_required: false, invitation_code_required: false }))
     }
     const raw = typeof init?.body === 'string' ? init.body : '{}'
     requests.push({ path, body: JSON.parse(raw) as Record<string, unknown> })
@@ -126,6 +126,21 @@ describe('AuthPage 注册页服务条款同意（#89）', () => {
 })
 
 // 注册页公开注册状态三态见 auth-registration-status.test.tsx（本文件的行数上限）。
+
+describe('AuthPage 登录模式选择器（#634）', () => {
+  it('exposes the selected login mode through aria-pressed', () => {
+    render(<AuthPage mode="login" />)
+    const account = screen.getByRole('button', { name: '账号登录' })
+    const auth = screen.getByRole('button', { name: 'Auth 登录' })
+
+    expect(account.getAttribute('aria-pressed')).toBe('true')
+    expect(auth.getAttribute('aria-pressed')).toBe('false')
+
+    fireEvent.click(auth)
+    expect(account.getAttribute('aria-pressed')).toBe('false')
+    expect(auth.getAttribute('aria-pressed')).toBe('true')
+  })
+})
 
 describe('AuthPage 登录页移除失效的 keepLogin 控件（#88）', () => {
   it('登录表单不再渲染「保持登录」复选框', () => {

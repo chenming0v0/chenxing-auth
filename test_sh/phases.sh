@@ -201,9 +201,15 @@ phase_coverage() {
         return 0
     fi
 
+    if ! command -v cargo-nextest >/dev/null 2>&1; then
+        record "覆盖检查" fail 0 "未安装 cargo-nextest，覆盖率检查未执行"
+        err "覆盖率模式需要 cargo-nextest 做进程隔离；未执行的覆盖率门槛不能记为跳过"
+        return 0
+    fi
+
     log="$LOG_DIR/coverage.log"
-    spinner_start "cargo llvm-cov"
-    cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info \
+    spinner_start "cargo llvm-cov nextest"
+    cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info \
         --fail-under-lines 75 >"$log" 2>&1
     status=$?
     spinner_stop

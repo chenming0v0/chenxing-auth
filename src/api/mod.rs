@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::{Request as AxumRequest, State},
-    http::{HeaderMap, Request, header::ACCEPT},
+    http::{HeaderMap, Request, StatusCode, header::ACCEPT},
     middleware::{Next, from_fn, from_fn_with_state},
     response::{IntoResponse, Redirect, Response},
     routing::get,
@@ -34,24 +34,32 @@ pub fn router(state: AppState) -> Router {
     let state_for_middleware = state.clone();
 
     let static_service = static_files::static_service(&state.web_dist);
-    let application = routes::register(Router::new(), request_timeout).route_layer(
-        from_fn_with_state(state_for_middleware.clone(), issuer_gate::require_issuer),
+    // Issuer 门禁在 next.run 之前 await load_raw。超时必须作为更外层的
+    // route_layer 包住门禁，否则 AwaitingIssuer 期间卡住的库查询会绕过预算。
+    let application = timeout::wrap_with_request_timeout(
+        routes::register(Router::new()).route_layer(from_fn_with_state(
+            state_for_middleware.clone(),
+            issuer_gate::require_issuer,
+        )),
+        request_timeout,
     );
     // Bootstrap / issuer 必须在 Issuer 未就绪时仍可访问；鉴权仍由各自 extractor 执行。
     // 超时与 application router 共用同一层，health 有自己的 2 秒预算，不能套进来。
-    let system_api = Router::new()
-        .route("/api/v1/admin/bootstrap/status", get(health::system_status))
-        // 匿名 status 只回答 initialized/uninitialized，不暴露 Issuer 收敛状态。
-        .route(
-            "/api/v1/admin/bootstrap",
-            axum::routing::post(crate::admin::auth_handlers::bootstrap_admin),
-        )
-        .route(
-            "/api/v1/admin/settings/issuer",
-            get(crate::admin::issuer_settings_handlers::get_issuer_setting)
-                .put(crate::admin::issuer_settings_handlers::update_issuer_setting),
-        )
-        .route_layer(timeout::request_timeout_layer(request_timeout));
+    let system_api = timeout::wrap_with_request_timeout(
+        Router::new()
+            .route("/api/v1/admin/bootstrap/status", get(health::system_status))
+            // 匿名 status 只回答 initialized/uninitialized，不暴露 Issuer 收敛状态。
+            .route(
+                "/api/v1/admin/bootstrap",
+                axum::routing::post(crate::admin::auth_handlers::bootstrap_admin),
+            )
+            .route(
+                "/api/v1/admin/settings/issuer",
+                get(crate::admin::issuer_settings_handlers::get_issuer_setting)
+                    .put(crate::admin::issuer_settings_handlers::update_issuer_setting),
+            ),
+        request_timeout,
+    );
     let health = Router::new()
         .route("/health", get(health::health))
         .route("/health/live", get(health::health_live))
@@ -63,6 +71,7 @@ pub fn router(state: AppState) -> Router {
         .fallback_service(static_service)
         .with_state(state)
         .layer(TraceLayer::new_for_http().make_span_with(request_span))
+        .layer(from_fn(map_api_parameter_rejection))
         .layer(from_fn(timeout::map_request_timeout_by_path))
         .layer(from_fn_with_state(
             state_for_middleware.clone(),
@@ -72,6 +81,23 @@ pub fn router(state: AppState) -> Router {
             state_for_middleware,
             apply_security_headers,
         ))
+}
+
+async fn map_api_parameter_rejection(request: AxumRequest, next: Next) -> Response {
+    let is_api = request.uri().path().starts_with("/api/");
+    let response = next.run(request).await;
+    let is_parameter_rejection = matches!(
+        response.status(),
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+    ) && response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_none_or(|value| !value.starts_with("application/json"));
+    if is_api && is_parameter_rejection {
+        return crate::error::parameter_rejection(response.status());
+    }
+    response
 }
 
 async fn apply_security_headers(

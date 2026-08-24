@@ -106,7 +106,24 @@ pub struct ProviderSummary {
     pub client_auth_method: ClientAuthMethod,
     pub pkce_enabled: bool,
     pub status: String,
+    pub state_version: i64,
     pub client_secret_configured: bool,
+}
+
+impl ProviderSummary {
+    /// Same claim-path gate as [`ProviderRecord::claim_mapping`].
+    ///
+    /// Public listing returns summaries, not records. Login must still hide
+    /// providers whose `email_verified_claim` is missing or whose paths cannot
+    /// form a mapping.
+    pub fn claim_mapping(&self) -> Result<ClaimMapping, ProviderValidationError> {
+        ClaimMapping::new(
+            self.subject_claim.clone(),
+            self.email_claim.clone(),
+            self.name_claim.clone(),
+            self.email_verified_claim.clone(),
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -167,6 +184,7 @@ pub struct ProviderRecord {
     pub client_auth_method: ClientAuthMethod,
     pub pkce_enabled: bool,
     pub status: String,
+    pub state_version: i64,
 }
 
 impl fmt::Debug for ProviderRecord {
@@ -188,6 +206,7 @@ impl fmt::Debug for ProviderRecord {
             .field("client_auth_method", &self.client_auth_method)
             .field("pkce_enabled", &self.pkce_enabled)
             .field("status", &self.status)
+            .field("state_version", &self.state_version)
             .finish()
     }
 }
@@ -291,6 +310,7 @@ impl ProviderRecord {
             client_auth_method: self.client_auth_method,
             pkce_enabled: self.pkce_enabled,
             status: self.status.clone(),
+            state_version: self.state_version,
             client_secret_configured: !self.client_secret_ciphertext.is_empty(),
         }
     }

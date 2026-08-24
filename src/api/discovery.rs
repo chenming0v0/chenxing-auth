@@ -139,6 +139,12 @@ pub(super) async fn openid_configuration(
 /// RP 在 `max-age` 内可直接用共享缓存；过期后用 `If-None-Match` 条件请求，
 /// 公钥集合未变则返回 304，避免重复传输完整 JWKS。
 pub(super) async fn jwks(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !state.keys.signing_ready() {
+        return crate::error::service_unavailable(
+            "signing_keys_unavailable",
+            "signing keys are temporarily unavailable",
+        );
+    }
     let body = match serde_json::to_vec(&state.keys.jwks()) {
         Ok(body) => body,
         Err(error) => {

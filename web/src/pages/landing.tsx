@@ -34,6 +34,9 @@ const marqueeItems = [
 
 const typedWords = ['统一身份基座', 'OAuth 2.0 授权码流', 'OIDC Discovery 就绪', 'PKCE 单次授权码', '可轮换签名密钥']
 
+export const LANDING_AUTHORIZATION_CTA_PATH = '/console/playground'
+export const LANDING_TOKEN_ENDPOINT = 'https://auth.clya.top/oauth/token'
+
 /* hero 左栏特性清单：一行一个能力点，配圆形图标（参考站的列表式排版） */
 const heroPoints = [
   { icon: 'shield-check', text: 'OAuth 2.0 授权码流，PKCE 全程保护' },
@@ -137,7 +140,7 @@ export function LandingPage() {
       )}
     >
       {showIntro ? <IntroGate onDone={handleIntroDone} /> : null}
-      <div className="relative z-[var(--chenxing-z-content)]">
+      <div className="relative z-[var(--chenxing-z-content)]" inert={showIntro ? true : undefined} aria-hidden={showIntro || undefined}>
         {/* 参考站式两栏 hero：左侧文案 + 特性清单 + CTA，右侧终端示例卡。
             替代旧版贴底竖排巨字 + 大号轨道 logo 的破格布局。 */}
         <section className="relative flex min-h-screen flex-col justify-center overflow-hidden px-6 pb-24 pt-32 sm:px-10">
@@ -184,7 +187,7 @@ export function LandingPage() {
               </ul>
               <div className="cx-hero-in mt-10 flex flex-wrap items-center gap-3" style={d(1120)}>
                 <Link to="/register" className="chenxing-btn-primary text-base"><Icon name="sparkles" size={16} />创建辰星通行证</Link>
-                <Link to="/oauth/consent" className="chenxing-btn-ghost text-base"><Icon name="zap" size={16} />体验授权流程</Link>
+                <Link to={LANDING_AUTHORIZATION_CTA_PATH} className="chenxing-btn-ghost text-base"><Icon name="zap" size={16} />体验授权流程</Link>
                 <Link to="/console/playground" className="chenxing-btn-ghost text-base"><Icon name="terminal" size={16} />OAuth 连接测试</Link>
               </div>
             </div>
@@ -206,7 +209,7 @@ export function LandingPage() {
                 </div>
                 <pre className="chenxing-mono overflow-x-auto px-5 py-5 text-[11.5px] leading-[1.9] text-[var(--chenxing-muted-foreground)] sm:text-[12.5px]">
                   <code>
-                    <span>$ </span><span className="font-semibold text-[var(--chenxing-cyan)]">curl</span> <span className="text-[var(--chenxing-ice)]">https://auth.clya.top/api/oauth/token</span> \{'\n'}
+                    <span>$ </span><span className="font-semibold text-[var(--chenxing-cyan)]">curl</span> <span className="text-[var(--chenxing-ice)]">{LANDING_TOKEN_ENDPOINT}</span> \{'\n'}
                     {'    '}<span className="text-[var(--chenxing-gold)]">-X</span> POST \{'\n'}
                     {'    '}<span className="text-[var(--chenxing-gold)]">-d</span> <span className="text-[var(--chenxing-ice)]">'grant_type=authorization_code'</span> \{'\n'}
                     {'    '}<span className="text-[var(--chenxing-gold)]">-d</span> <span className="text-[var(--chenxing-ice)]">'code=SplxlO...'</span> \{'\n'}

@@ -106,6 +106,7 @@ pub async fn create_user(
         email: input.email,
         password: input.password,
         display_name: input.display_name,
+        invitation_code: None,
     };
     let (actor_type, actor_id) = actor.audit_fields();
     match state

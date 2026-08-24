@@ -35,6 +35,7 @@ const EMAIL_POLICY: EmailPolicySetting = {
   whitelist_enabled: true,
   alias_restriction_enabled: true,
   allowed_domains: ['corp.example'],
+  generation: 1,
 }
 
 const SMTP: SmtpSetting = {
@@ -66,6 +67,7 @@ const SECURITY_LIMITS: SecurityLimitsSetting = {
 const REGISTRATION: RegistrationSetting = {
   enabled: false,
   email_verification_required: false,
+  invitation_code_required: false,
 }
 
 /* 公开注册面板挂载时会读 Issuer 运行时状态推导闸门；给一个就绪的 Issuer，
@@ -92,6 +94,7 @@ const PROVIDER: OAuthProviderSummary = {
   name_claim: null,
   email_verified_claim: 'email_verified',
   client_auth_method: 'basic',
+  pkce_enabled: true,
 }
 
 let requests: CapturedRequest[] = []

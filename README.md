@@ -167,7 +167,7 @@ src/
 
 审计事件由 `audit_events` 和 `audit_events_archive` 两张表保存。迁移创建的数据库触发器拒绝两张表的 `UPDATE`、`DELETE` 和 `TRUNCATE`；migration/owner role 与 `chenxing_runtime` 分离后，runtime role 对两张审计表没有任何修改权限，归档只通过固定 `search_path` 的最小权限 `SECURITY DEFINER` 函数完成。触发器保留为纵深防御，不再作为唯一边界。归档先复制后删除，且只删除已成功复制的行；归档表本身永久保留并拒绝修改。审计查询会合并两张表。
 
-角色分离必须真的配置出来才成立：PostgreSQL 里表 owner 隐含全部表权限，因此当 `MIGRATION_DATABASE_URL` 缺失、迁移与运行时共用同一角色时，基线里的 `REVOKE` 一行都不生效，审计 append-only 退回只剩触发器一层，而触发器的归档旁路标记是会话级 GUC，任何持有该角色的会话都能设置。`cargo run -- migrate` 因此在连库前先校验角色配置，迁移后再用 `has_table_privilege` 实测运行时角色此刻能不能 `UPDATE`/`DELETE`/`TRUNCATE` 审计表——这个函数把 owner 隐含权限、角色继承和 superuser 旁路都算在内，问的是实际权限而不是迁移文件写了什么。默认策略 `AUDIT_ROLE_SEPARATION=require` 下不满足即拒绝；只有显式设置 `AUDIT_ROLE_SEPARATION=allow-single-role` 才允许单角色部署，且每次 migrate 都会打出强告警。生产环境不得使用该开关。
+角色分离必须真的配置出来才成立：PostgreSQL 里表 owner 隐含全部表权限，因此当 `MIGRATION_DATABASE_URL` 缺失、迁移与运行时共用同一角色时，基线里的 `REVOKE` 一行都不生效，审计 append-only 退回只剩触发器一层，而触发器的归档旁路标记是会话级 GUC，任何持有该角色的会话都能设置。`cargo run -- migrate` 因此在连库前先校验角色配置，迁移后连上 `DATABASE_URL` 声称的运行时角色，用两参数 `has_table_privilege`（绑定 `current_user`）实测这条连接能不能 `UPDATE`/`DELETE`/`TRUNCATE` 审计表，以及能不能 `INSERT` 归档表，并核对 `current_user` / `session_user` 与 URL 用户名一致。不能把 URL 用户名传给三参数形式：代理、`SET ROLE` 或连接 `options` 可以让有效主体变成 owner，目录里那个名字看起来仍然受限。默认策略 `AUDIT_ROLE_SEPARATION=require` 下不满足即拒绝；只有显式设置 `AUDIT_ROLE_SEPARATION=allow-single-role` 才允许单角色部署，且每次 migrate 都会打出强告警。生产环境不得使用该开关。
 
 运行时角色对序列的权限只放开一个对象：`users.id` 的 identity 序列。Owner 初始化要求第一个 Owner 的 `id` 为 1，`bootstrap_owner` 因此在插入前调 `setval`，而 `setval` 在 PostgreSQL 里要求序列的 `UPDATE` 权限；完整基线只授这一个序列。审计表的序列保持只读，append-only 边界不受影响。
 
@@ -206,7 +206,7 @@ bash install.sh
 
 安装器会生成独立部署目录和权限为 `0600` 的 `.env`，并依次拉取辰星认证中枢、
 PostgreSQL 和 Redis 镜像。三个 `docker pull` 的分层下载与解压进度不会隐藏；随后会
-显示数据库迁移、容器启动和就绪检查过程。安装器只以应用容器内的 `GET /health/ready` 返回 200 为准；该端点同时确认数据库、Redis、四个关键后台 worker 和签名密钥同步均就绪，只有 liveness 成功而依赖尚未就绪时不会误报成功。若就绪端点持续失败，超时诊断会输出 Compose 服务状态、应用容器 health 状态和应用日志。默认使用
+显示数据库迁移、容器启动和就绪检查过程。安装器只以应用容器内的 `GET /health/ready` 返回 200 为准；该端点同时确认数据库、Redis、五个关键后台 worker 和签名密钥同步均就绪，只有 liveness 成功而依赖尚未就绪时不会误报成功。若就绪端点持续失败，超时诊断会输出 Compose 服务状态、应用容器 health 状态和应用日志。默认使用
 `ghcr.io/chenming0v0/chenxing-auth:latest`，可通过 `CHENXING_IMAGE` 覆盖。
 
 新实例不要求安装时已经拥有域名，安装器生成的 `.env` 也不包含 `APP_ISSUER`。数据库
@@ -258,3 +258,9 @@ Session payload 使用 AES-256-GCM 并携带 key id。`AUTH_ENCRYPTION_KEY` 保�
 ## 开源协议
 
 本项目采用 [MIT License](LICENSE) 开源。除非另有明确说明，项目中的源代码和文档均按该许可证发布。
+
+## SMTP 邮件投递
+
+邮件投递由应用层 `EmailSender` 抽象提供，生产环境使用 SMTP 适配器，业务用例可以注入 fake sender 做单元测试。SMTP 管理设置中的密码始终以加密密文保存，适配器只在发送边界解密，且不会把密码、邮件正文或验证码写入日志和错误响应。
+
+在管理设置中配置 SMTP Host、Port、Username、From 和加密模式：`ssl_enabled=true` 使用隐式 TLS，`ssl_enabled=false` 使用必需的 STARTTLS。SMTP 未配置、密钥无法解密、发件人无效或连接/投递失败时，发送返回稳定的内部错误，不会报告“已发送”。

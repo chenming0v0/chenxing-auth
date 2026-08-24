@@ -12,7 +12,10 @@ use super::{
     repository::{self, CreateIdentityError},
     secrets::{SecretContext, SecretError, SecretManager},
 };
-use crate::users::domain::{UserId, UserStatus};
+use crate::{
+    audit::{AuditError, AuditEvent},
+    users::domain::{UserId, UserStatus},
+};
 use reqwest::Client;
 use std::fmt;
 use thiserror::Error;
@@ -34,6 +37,12 @@ pub enum ExternalOAuthError {
     Secret(#[from] SecretError),
     #[error("database operation failed: {0}")]
     Database(#[from] crate::sqlx::Error),
+    #[error("audit operation failed: {0}")]
+    Audit(#[from] AuditError),
+    #[error(transparent)]
+    ManagementActor(#[from] crate::users::ManagementActorValidationError),
+    #[error("provider state was modified concurrently")]
+    Conflict,
     #[error("provider was not found")]
     NotFound,
     #[error("provider is disabled")]
@@ -189,42 +198,80 @@ impl ExternalOAuthService {
             .ok_or(ExternalOAuthError::NotFound)
     }
 
-    pub async fn create(
+    pub async fn create_with_audit(
         &self,
         input: ProviderInput,
+        credential: crate::users::ManagementActorCredential,
+        audit_event: AuditEvent,
     ) -> Result<ProviderSummary, ExternalOAuthError> {
         let validated = input.validate(self.policy)?;
         let mut transaction = self.pool.begin().await?;
+        crate::users::repository::management_actor::validate_management_actor_in_transaction(
+            &mut transaction,
+            credential,
+            crate::users::domain::UserPermission::ManageIdentityProviders,
+        )
+        .await?;
         let mut provider =
             repository::insert_provider(&mut transaction, &validated, Vec::new()).await?;
         let ciphertext = self.encrypt_secret(provider.id, validated.client_secret.as_deref())?;
         if !ciphertext.is_empty() {
-            repository::update_client_secret_ciphertext(&mut transaction, provider.id, &ciphertext)
-                .await?;
+            provider.state_version = repository::update_client_secret_ciphertext(
+                &mut transaction,
+                provider.id,
+                &ciphertext,
+            )
+            .await?;
             provider.client_secret_ciphertext = ciphertext;
         }
+        crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
         transaction.commit().await?;
         Ok(provider.summary())
     }
 
-    pub async fn update(
+    pub async fn update_with_audit(
         &self,
         slug: &str,
         input: ProviderInput,
-    ) -> Result<bool, ExternalOAuthError> {
+        expected_version: i64,
+        credential: crate::users::ManagementActorCredential,
+        audit_event: AuditEvent,
+    ) -> Result<ProviderSummary, ExternalOAuthError> {
         let validated = input.validate(self.policy)?;
         let mut transaction = self.pool.begin().await?;
+        crate::users::repository::management_actor::validate_management_actor_in_transaction(
+            &mut transaction,
+            credential,
+            crate::users::domain::UserPermission::ManageIdentityProviders,
+        )
+        .await?;
         let provider = repository::lock_by_slug(&mut transaction, slug)
             .await?
             .ok_or(ExternalOAuthError::NotFound)?;
+        if provider.state_version != expected_version {
+            return Err(ExternalOAuthError::Conflict);
+        }
         let ciphertext = match validated.client_secret.as_deref() {
             Some(secret) => self.encrypt_secret(provider.id, Some(secret))?,
             None => provider.client_secret_ciphertext,
         };
-        let updated =
-            repository::update_provider(&mut transaction, slug, &validated, ciphertext).await?;
+        if !repository::update_provider(
+            &mut transaction,
+            slug,
+            &validated,
+            ciphertext,
+            expected_version,
+        )
+        .await?
+        {
+            return Err(ExternalOAuthError::Conflict);
+        }
+        let provider = repository::lock_by_slug(&mut transaction, slug)
+            .await?
+            .ok_or(ExternalOAuthError::NotFound)?;
+        crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
         transaction.commit().await?;
-        Ok(updated)
+        Ok(provider.summary())
     }
 
     /// 切换 provider 启用状态。
@@ -237,18 +284,42 @@ impl ExternalOAuthService {
     ///   发起请求（Issue #291）。这里拒绝比等到运行时 500 更容易让管理员定位。
     ///
     /// 停用永远允许，否则坏配置会卡在启用状态无法关掉。
-    pub async fn set_status(&self, slug: &str, status: &str) -> Result<bool, ExternalOAuthError> {
+    pub async fn set_status_with_audit(
+        &self,
+        slug: &str,
+        status: &str,
+        expected_version: i64,
+        credential: crate::users::ManagementActorCredential,
+        audit_event: AuditEvent,
+    ) -> Result<i64, ExternalOAuthError> {
         if !matches!(status, "active" | "disabled") {
-            return Ok(false);
+            return Err(ExternalOAuthError::NotFound);
+        }
+        let mut transaction = self.pool.begin().await?;
+        crate::users::repository::management_actor::validate_management_actor_in_transaction(
+            &mut transaction,
+            credential,
+            crate::users::domain::UserPermission::ManageIdentityProviders,
+        )
+        .await?;
+        let provider = repository::lock_by_slug(&mut transaction, slug)
+            .await?
+            .ok_or(ExternalOAuthError::NotFound)?;
+        if provider.state_version != expected_version {
+            return Err(ExternalOAuthError::Conflict);
         }
         if status == "active" {
-            let provider = self.find(slug).await?;
             provider.claim_mapping()?;
             validate_endpoint_url(&provider.authorization_endpoint, self.policy)?;
             validate_endpoint_url(&provider.token_endpoint, self.policy)?;
             validate_endpoint_url(&provider.userinfo_endpoint, self.policy)?;
         }
-        Ok(repository::set_status(&self.pool, slug, status).await?)
+        let version = repository::set_status(&mut transaction, slug, status, expected_version)
+            .await?
+            .ok_or(ExternalOAuthError::Conflict)?;
+        crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
+        transaction.commit().await?;
+        Ok(version)
     }
 
     pub async fn resolve_user(

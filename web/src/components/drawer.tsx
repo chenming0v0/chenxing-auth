@@ -121,6 +121,7 @@ type DrawerProps = {
  */
 export function Drawer({ title, description, onClose, onSubmit, busy = false, footer, children }: DrawerProps) {
   const titleId = useId()
+  const descriptionId = useId()
   const containerRef = useDrawerFocus(onClose, busy)
 
   function requestClose() {
@@ -135,6 +136,7 @@ export function Drawer({ title, description, onClose, onSubmit, busy = false, fo
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={description ? descriptionId : undefined}
         aria-busy={busy || undefined}
         tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
@@ -142,7 +144,7 @@ export function Drawer({ title, description, onClose, onSubmit, busy = false, fo
         <div className="chenxing-drawer-header">
           <div>
             <h2 className="chenxing-h2" id={titleId}>{title}</h2>
-            {description ? <p className="chenxing-caption mt-1">{description}</p> : null}
+            {description ? <p className="chenxing-caption mt-1" id={descriptionId}>{description}</p> : null}
           </div>
           <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={requestClose} disabled={busy}><Icon name="x" size={16} /></button>
         </div>

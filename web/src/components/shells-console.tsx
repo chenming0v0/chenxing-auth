@@ -62,7 +62,9 @@ function BottomNav() {
   const groupItems = (label: string) => navGroups.find((group) => group.label === label)?.items ?? []
   const developer = groupItems('开发者')
   const core = location.pathname.startsWith('/admin')
-    ? [...groupItems('管理'), ...groupItems('系统')]
+    ? [...groupItems('管理'), ...groupItems('系统')].filter((item) => (
+      ['/admin', '/admin/users', '/admin/plans', '/admin/settings'].includes(item.path)
+    ))
     : developer.some((item) => item.path === location.pathname)
       ? developer
       : groupItems('账户')

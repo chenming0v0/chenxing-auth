@@ -1,12 +1,14 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { useLocation, useNavigate } from '../../router'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { replaceUrl, useLocation, useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
 import { apiFetch, type SecurityEnrollmentResult, type SecurityFactorSummary, type SecurityPasskeyStart, type SecurityRemovalResult, type SecurityTotpStart } from '../../api'
 import { assertPublicKeyCredential, decodeCreationOptions, serializeAttestation, supportsWebAuthnCreate, type PasskeyChallenge } from '../../passkey'
+import { useDrawerFocus } from '../../components/drawer'
 import { Badge, Button, HudPanel, Icon, Notice, PasswordField } from '../../components/ui'
+import { useModalFocus } from '../../components/modal'
 import { ExternalIdentities } from './external-identities'
 import type { MessageTone } from './profile-avatar'
-import { SecuritySettings } from './security-settings'
+import { SecuritySettings, type SecurityFactorState } from './security-settings'
 
 type NoticeState = { text: string; tone: MessageTone }
 type TotpState = { phase: 'idle' } | { phase: 'ready'; data: SecurityTotpStart }
@@ -23,8 +25,9 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
   const { clear } = useAuth()
   const navigate = useNavigate()
   const { search } = useLocation()
-  const [summary, setSummary] = useState<SecurityFactorSummary | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [factors, setFactors] = useState<SecurityFactorState>({ status: 'loading' })
+  const factorRequestIdRef = useRef(0)
+  const mountedRef = useRef(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<NoticeState | null>(null)
   const [totp, setTotp] = useState<TotpState>({ phase: 'idle' })
@@ -34,24 +37,34 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
   const [activeTab, setActiveTab] = useState<AccountTab>('bindings')
 
   async function loadFactors(): Promise<void> {
-    setLoading(true)
+    const requestId = ++factorRequestIdRef.current
+    setFactors({ status: 'loading' })
     try {
-      setSummary(await apiFetch<SecurityFactorSummary>('/api/v1/auth/security/factors'))
+      const summary = await apiFetch<SecurityFactorSummary>('/api/v1/auth/security/factors')
+      if (!mountedRef.current || requestId !== factorRequestIdRef.current) return
+      setFactors({ status: 'ready', summary })
     } catch (error) {
+      if (!mountedRef.current || requestId !== factorRequestIdRef.current) return
+      setFactors({ status: 'failed' })
       setNotice({ text: error instanceof Error ? error.message : '登录安全状态加载失败。', tone: 'warning' })
-    } finally {
-      setLoading(false)
     }
   }
 
-  useEffect(() => { void loadFactors() }, [])
+  useEffect(() => {
+    mountedRef.current = true
+    void loadFactors()
+    return () => {
+      mountedRef.current = false
+      factorRequestIdRef.current += 1
+    }
+  }, [])
 
   useEffect(() => {
     const result = new URLSearchParams(search).get('external')
     const error = new URLSearchParams(search).get('external_error')
     if (result === 'linked') show('外部账户已绑定。', 'success')
     else if (error) show(externalBindingErrorMessage(error))
-    if (result || error) window.history.replaceState({}, '', '/console/profile')
+    if (result || error) replaceUrl('/console/profile')
   }, [search])
 
   function show(text: string, tone: MessageTone = 'warning') {
@@ -65,6 +78,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     try {
       const data = await apiFetch<SecurityTotpStart>('/api/v1/auth/security/totp/enrollment/start', {
         method: 'POST',
+        redirectOn401: false,
         body: JSON.stringify({}),
       })
       setTotp({ phase: 'ready', data })
@@ -76,6 +90,28 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     }
   }
 
+  function cancelTotp(): void {
+    if (totp.phase !== 'ready' || busy) {
+      if (totp.phase === 'idle') return
+      setTotp({ phase: 'idle' })
+      setCode('')
+      return
+    }
+    const enrollmentId = totp.data.enrollment_id
+    setBusy('totp-cancel')
+    void apiFetch<{ cancelled: true }>('/api/v1/auth/security/factor/enrollment/cancel', {
+      method: 'POST',
+      redirectOn401: false,
+      body: JSON.stringify({ enrollment_id: enrollmentId, method: 'totp' }),
+    }).then(() => {
+      setTotp({ phase: 'idle' })
+      setCode('')
+    }).catch((error) => {
+      show(error instanceof Error ? error.message : '取消 TOTP 绑定失败，请重试。')
+    }).finally(() => {
+      setBusy(null)
+    })
+  }
   async function confirmTotp(event: FormEvent): Promise<void> {
     event.preventDefault()
     if (busy || !/^\d{6}$/.test(code)) {
@@ -89,6 +125,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     try {
       const result = await apiFetch<SecurityEnrollmentResult>('/api/v1/auth/security/totp/enrollment/confirm', {
         method: 'POST',
+        redirectOn401: false,
         body: JSON.stringify({ enrollment_id: data.enrollment_id, code }),
       })
       setTotp({ phase: 'idle' })
@@ -113,12 +150,28 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     try {
       const start = await apiFetch<SecurityPasskeyStart>('/api/v1/auth/security/passkeys/registration/start', {
         method: 'POST',
+        redirectOn401: false,
         body: JSON.stringify({}),
       })
       const options = decodeCreationOptions(start.options as PasskeyChallenge)
-      const credential = assertPublicKeyCredential(await navigator.credentials.create({ publicKey: options }))
+      let credential: PublicKeyCredential
+      try {
+        credential = assertPublicKeyCredential(await navigator.credentials.create({ publicKey: options }))
+      } catch (error) {
+        if (error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
+          await apiFetch('/api/v1/auth/security/factor/enrollment/cancel', {
+            method: 'POST',
+            redirectOn401: false,
+            body: JSON.stringify({ enrollment_id: start.enrollment_id, method: 'passkey' }),
+          }).catch(() => undefined)
+          show('Passkey 注册已取消，可以立即重试。')
+          return
+        }
+        throw error
+      }
       const result = await apiFetch<SecurityEnrollmentResult>('/api/v1/auth/security/passkeys/registration/finish', {
         method: 'POST',
+        redirectOn401: false,
         body: JSON.stringify({ enrollment_id: start.enrollment_id, credential: serializeAttestation(credential) }),
       })
       show(result.enabled ? 'Passkey 已启用。下次登录可使用此设备验证。' : 'Passkey 尚未启用。', 'success')
@@ -141,6 +194,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     try {
       const result = await apiFetch<SecurityRemovalResult>(`/api/v1/auth/security/factors/${removing}`, {
         method: 'DELETE',
+        redirectOn401: false,
         body: JSON.stringify({ password }),
       })
       setRemoving(null)
@@ -155,8 +209,8 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     }
   }
 
-  const totpEnabled = summary?.totp_enabled ?? false
-  const passkeyCount = summary?.passkey_count ?? 0
+  const summary = factors.status === 'ready' ? factors.summary : null
+  const protectedAccount = summary !== null && (summary.totp_enabled || summary.passkey_count > 0)
   const readyTotp = totp.phase === 'ready' ? totp : null
 
   return (
@@ -173,7 +227,9 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
               <p className="chenxing-caption mt-1">账户绑定、安全设置和身份验证集中在这里管理。</p>
             </div>
           </div>
-          <Badge tone={totpEnabled || passkeyCount > 0 ? 'success' : 'neutral'}>{loading ? '同步中' : totpEnabled || passkeyCount > 0 ? '安全增强已启用' : '基础保护'}</Badge>
+          <Badge tone={factors.status === 'failed' ? 'warning' : protectedAccount ? 'success' : 'neutral'}>
+            {factors.status === 'loading' ? '同步中' : factors.status === 'failed' ? '状态未知' : protectedAccount ? '安全增强已启用' : '基础保护'}
+          </Badge>
         </div>
 
         <div className="mt-5 grid grid-cols-2 gap-1 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)] p-1" role="tablist" aria-label="账户管理">
@@ -189,15 +245,13 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
           ) : (
             <div id="security-settings-panel" role="tabpanel" aria-labelledby="security-settings-tab">
               <SecuritySettings
-                loading={loading}
+                factors={factors}
                 busy={busy}
-                totpEnabled={totpEnabled}
-                passkeyCount={passkeyCount}
                 totpData={readyTotp?.data ?? null}
                 code={code}
                 onCode={setCode}
                 onStartTotp={() => void startTotp()}
-                onCancelTotp={() => { setTotp({ phase: 'idle' }); setCode('') }}
+                onCancelTotp={cancelTotp}
                 onConfirmTotp={(event) => void confirmTotp(event)}
                 onStartPasskey={() => void startPasskey()}
                 onRemove={setRemoving}
@@ -245,12 +299,17 @@ function AccountTabButton({ tab, activeTab, icon, label, onSelect }: {
 }
 
 function RemovalDialog({ method, password, busy, onPassword, onCancel, onConfirm }: { method: 'totp' | 'passkey'; password: string; busy: boolean; onPassword: (value: string) => void; onCancel: () => void; onConfirm: () => void }) {
+  const containerRef = useModalFocus<HTMLElement>(onCancel, {
+    initialFocusSelector: '#remove-factor-password',
+    escapeDisabled: busy,
+  })
+
   return (
     <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-black/70 p-4" role="presentation">
-      <HudPanel as="section" role="dialog" aria-modal="true" aria-labelledby="remove-factor-title" className="relative z-[var(--chenxing-z-dialog)] w-full max-w-md">
-        <div className="flex items-start justify-between gap-4"><div><p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-error)]">// Re-authentication</p><h2 id="remove-factor-title" className="chenxing-h2 mt-2">移除{method === 'totp' ? ' TOTP' : '全部 Passkey'}</h2></div><button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel}><Icon name="x" size={17} /></button></div>
+      <HudPanel ref={containerRef} as="section" role="dialog" aria-modal="true" aria-labelledby="remove-factor-title" tabIndex={-1} className="relative z-[var(--chenxing-z-dialog)] w-full max-w-md">
+        <div className="flex items-start justify-between gap-4"><div><p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-error)]">// Re-authentication</p><h2 id="remove-factor-title" className="chenxing-h2 mt-2">移除{method === 'totp' ? ' TOTP' : '全部 Passkey'}</h2></div><button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel} disabled={busy}><Icon name="x" size={17} /></button></div>
         <p className="chenxing-caption mt-4">这是敏感安全操作。移除后所有活跃会话都会失效，并需要重新登录。请输入当前密码确认身份。</p>
-        <div className="mt-5"><PasswordField label="当前密码" autoComplete="current-password" value={password} onChange={(event) => onPassword(event.target.value)} /></div>
+        <div className="mt-5"><PasswordField id="remove-factor-password" label="当前密码" autoComplete="current-password" value={password} onChange={(event) => onPassword(event.target.value)} /></div>
         <div className="mt-5 flex flex-wrap justify-end gap-3"><Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>取消</Button><Button type="button" variant="danger" icon="trash-2" onClick={onConfirm} disabled={busy}>{busy ? '处理中…' : '确认移除'}</Button></div>
       </HudPanel>
     </div>

@@ -19,6 +19,11 @@ use super::{
     journal, newest_key_id, persistence,
 };
 
+struct DiskCommit {
+    outcome: CommitOutcome,
+    generation: u64,
+}
+
 pub(super) fn revoke_blocking_at(
     manager: &KeyManager,
     key_id: String,
@@ -110,29 +115,36 @@ pub(super) fn revoke_blocking_at(
         materials,
         pending,
     )?;
-    let (next_active_key_id, next_state) = match directory.as_ref() {
-        Some(directory) => snapshot_after_commit(
-            directory,
-            retention,
-            skew_allowance,
-            &planned_active_key_id,
-            planned_state,
-            commit_to_disk(
+    let (next_active_key_id, next_state, generation) = match directory.as_ref() {
+        Some(directory) => {
+            let committed = commit_to_disk(
                 directory,
                 retention,
                 skew_allowance,
                 now,
                 &key_id,
                 &planned_active_key_id,
-            )?,
-        )?,
-        None => (planned_active_key_id, planned_state),
+            )?;
+            let (next_active_key_id, next_state) = snapshot_after_commit(
+                directory,
+                retention,
+                skew_allowance,
+                &planned_active_key_id,
+                planned_state,
+                committed.outcome,
+            )?;
+            (next_active_key_id, next_state, Some(committed.generation))
+        }
+        None => (planned_active_key_id, planned_state, None),
     };
 
-    // 快照选择见 `snapshot_after_commit`：无论磁盘是否立即收敛，这里发布的快照都
-    // 不再包含被吊销的 key，不会把已吊销的密钥留在签发热路径上（Issue #315）。
+    // 先发布不含 revoked kid 的快照，再推进本实例观察到的共享代际。后台同步负责把
+    // 共享目录的健康状态传播到签发热路径；请求本身只读取内存状态，不争抢目录锁。
     let published_key_count = next_state.jwks.keys.len();
     *manager.write_state() = next_state;
+    if let Some(generation) = generation {
+        manager.observe_revocation_generation(generation);
+    }
     Ok(KeyRevocation {
         key_id,
         active_key_id: next_active_key_id,
@@ -207,21 +219,26 @@ fn commit_to_disk(
     now: OffsetDateTime,
     revoked_key_id: &str,
     next_active_key_id: &str,
-) -> Result<CommitOutcome, KeyManagerError> {
+) -> Result<DiskCommit, KeyManagerError> {
     let pending =
         journal::PendingRevocation::new(revoked_key_id.to_owned(), next_active_key_id.to_owned());
-    journal::record(directory, &pending)?;
-    match persistence::load_materials(directory, retention, skew_allowance, now, false) {
-        Ok((active_key_id, key_files)) => Ok(CommitOutcome::Converged(active_key_id, key_files)),
-        Err(error) => {
-            tracing::warn!(
-                key_id = %revoked_key_id,
-                replacement_key_id = %next_active_key_id,
-                error = %error,
-                "revocation committed but the key directory did not converge; \
-                 publishing the planned snapshot and retrying convergence on the next load"
-            );
-            Ok(CommitOutcome::Pending)
-        }
-    }
+    let generation = journal::record(directory, &pending)?;
+    let outcome =
+        match persistence::load_materials(directory, retention, skew_allowance, now, false) {
+            Ok((active_key_id, key_files)) => CommitOutcome::Converged(active_key_id, key_files),
+            Err(error) => {
+                tracing::warn!(
+                    key_id = %revoked_key_id,
+                    replacement_key_id = %next_active_key_id,
+                    error = %error,
+                    "revocation committed but the key directory did not converge; \
+                     publishing the planned snapshot and retrying convergence on the next load"
+                );
+                CommitOutcome::Pending
+            }
+        };
+    Ok(DiskCommit {
+        outcome,
+        generation,
+    })
 }

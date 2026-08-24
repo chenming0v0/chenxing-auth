@@ -56,12 +56,40 @@ impl std::fmt::Debug for KeyMaterial {
 /// 从未退役（记录缺失，通常是升级前就存在的历史目录或刚切换完的 key）视为最新，
 /// 它是最近还在役的那个。
 pub(super) fn newest_key_id(materials: &BTreeMap<String, KeyMaterial>) -> Option<String> {
+    newest_key_id_excluding(materials, None)
+}
+
+/// `newest_key_id` 的过滤版：恢复路径用它跳过尚未到期的 pending key。
+pub(super) fn newest_key_id_excluding(
+    materials: &BTreeMap<String, KeyMaterial>,
+    excluded_key_id: Option<&str>,
+) -> Option<String> {
     materials
         .iter()
+        .filter(|(key_id, _)| Some(key_id.as_str()) != excluded_key_id)
         .max_by(|(_, a), (_, b)| {
             compare_recency(a.retired_at, a.created_at, b.retired_at, b.created_at)
         })
         .map(|(key_id, _)| key_id.clone())
+}
+
+/// 缺 active 指针时选用签发密钥（Issue #655）。
+///
+/// `preferred_key_id` 是上一把真正在役的 key（pending 记录里的 `previous_key_id`，
+/// 或已到期、应当接管的 pending key）。`excluded_key_id` 是窗口未到的 pending key，
+/// 绝不能在恢复时被写成 active。
+pub(super) fn recovery_signing_key_id(
+    materials: &BTreeMap<String, KeyMaterial>,
+    preferred_key_id: Option<&str>,
+    excluded_key_id: Option<&str>,
+) -> Option<String> {
+    if let Some(preferred) = preferred_key_id
+        && Some(preferred) != excluded_key_id
+        && materials.contains_key(preferred)
+    {
+        return Some(preferred.to_owned());
+    }
+    newest_key_id_excluding(materials, excluded_key_id)
 }
 
 /// 两份材料的“最近在役”次序：退役时刻晚者优先；从未退役视为最新；退役时刻

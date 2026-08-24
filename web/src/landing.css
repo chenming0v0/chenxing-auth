@@ -28,6 +28,14 @@
   will-change: transform;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .cx-float {
+    animation: none;
+    transform: none;
+    will-change: auto;
+  }
+}
+
 /* ---------- ghost 按钮反色填充（lamalama 式 hover 反转） ---------- */
 .cx-btn-invert {
   transition: background 0.25s ease, border-color 0.25s ease, color 0.25s ease, transform 0.15s;

@@ -5,6 +5,7 @@ import type {
   PendingAuthorization,
   UserMe,
 } from './api-types'
+import { replaceUrl } from './router'
 
 export type * from './api-types'
 
@@ -56,6 +57,7 @@ const PRE_SESSION_MUTATION_PATHS = new Set([
   '/api/v1/auth/passkeys/authentication/finish',
   '/api/v1/auth/passkeys/discoverable/start',
   '/api/v1/auth/passkeys/discoverable/finish',
+  '/api/v1/auth/security/factor/enrollment/cancel',
 ])
 
 /** 安全错误码文案映射，使用 Map 避免原型链污染（Object 字面量索引可访问 constructor 等原型属性）。 */
@@ -80,6 +82,7 @@ const safeMessages = new Map<string, string>([
   ['username_already_registered', '注册信息无法使用，请检查后重试。'],
   ['invalid_username', '用户名格式不正确，请检查长度和字符。'],
   ['invalid_email', '邮箱格式不正确，请检查输入。'],
+  ['invitation_code_not_found', '邀请码不存在或已失效。'],
   ['password_too_short', '密码长度不足，请设置更长的密码。'],
   ['password_too_long', '密码超出长度上限，请缩短后重试。'],
   ['display_name_too_long', '显示名称超出长度上限，请缩短后重试。'],
@@ -149,8 +152,7 @@ export function loginRecoveryTarget(pathname: string, search: string): string {
 function redirectToLogin(): void {
   if (typeof window === 'undefined' || window.location.pathname === '/login') return
   const target = loginRecoveryTarget(window.location.pathname, window.location.search)
-  window.history.replaceState({}, '', target)
-  window.dispatchEvent(new PopStateEvent('popstate'))
+  replaceUrl(target)
 }
 
 function invalidSuccessResponse(status: number): ApiError {

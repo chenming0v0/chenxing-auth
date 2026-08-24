@@ -18,6 +18,7 @@ use super::domain::{UserId, UserRole, UserStatus};
 use super::email::EmailAddress;
 
 mod avatar;
+pub(crate) mod email_change;
 mod lookup;
 pub(crate) mod management_actor;
 mod owner_bootstrap;
@@ -29,14 +30,15 @@ pub use lookup::{
     find_active_session_epoch, find_credentials_by_email, find_credentials_by_id,
     find_credentials_by_identifier, find_profile_by_id, list_users,
 };
+pub use owner_bootstrap::PublicUserInsertError;
 pub use owner_bootstrap::{
     AuditedUserInsertError, BootstrapOwnerError, BootstrapOwnerOutcome, ManagedUserInsertError,
     bootstrap_owner, insert_public_user, insert_user_after_owner,
     insert_user_after_owner_with_audit, owner_exists,
 };
 pub use role_guard::{
-    AuditedRoleGuardError, OwnerGuardOutcome, set_user_role, set_user_role_with_audit,
-    set_user_status_guarded,
+    AuditedRoleGuardError, AuditedStatusGuardError, OwnerGuardOutcome, set_user_role,
+    set_user_role_with_audit, set_user_status_guarded, set_user_status_guarded_with_audit,
 };
 pub use write::{
     PasswordChangeOutcome, ProfileUpdateRepositoryOutcome, change_password_and_revoke_all,

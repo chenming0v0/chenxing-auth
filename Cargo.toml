@@ -1,10 +1,11 @@
 [package]
 name = "chenxing-auth"
-version = "1.1.11"
+version = "1.1.12"
 edition = "2024"
 description = "天穹辰星 · 辰星认证中枢"
 license = "MIT"
 publish = false
+autotests = false
 
 [dependencies]
 argon2 = "0.5"
@@ -19,6 +20,7 @@ hmac = "0.12"
 # 的邮箱唯一性语义"。default-features 关掉后按需只开 std + compiled_data，
 # 与 url 启用的 feature 集合兼容，不产生第二份编译产物。
 idna = { version = "1.1", default-features = false, features = ["std", "compiled_data"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
 # 头像二次压缩只需要 PNG/JPEG/WebP 解码与 JPEG 编码。关闭 default-features 把
 # 其余格式的解码器排除在攻击面之外：上传字节是不可信输入，每个启用的解码器
 # 都是一份额外的 CVE 暴露面。
@@ -80,3 +82,29 @@ tower = { version = "0.5", features = ["util"] }
 
 [build-dependencies]
 sha2 = "0.10"
+
+# Keep domain integration tests in one crate per subsystem. The explicit paths
+# allow Rust to resolve each crate's child modules from its domain directory.
+[[test]]
+name = "admin"
+path = "tests/admin/mod.rs"
+
+[[test]]
+name = "auth"
+path = "tests/auth/mod.rs"
+
+[[test]]
+name = "identity"
+path = "tests/identity/mod.rs"
+
+[[test]]
+name = "oauth"
+path = "tests/oauth/mod.rs"
+
+[[test]]
+name = "platform"
+path = "tests/platform/mod.rs"
+
+[[test]]
+name = "storage"
+path = "tests/storage/mod.rs"

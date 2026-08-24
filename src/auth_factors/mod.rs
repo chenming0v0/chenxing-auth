@@ -1,10 +1,13 @@
 pub mod crypto;
 pub mod domain;
+mod enrollment_handlers;
 pub mod handlers;
 mod persistence;
+pub mod removal_handlers;
 pub mod repository;
 pub mod security_handlers;
 pub mod service;
 pub mod session;
+mod session_enrollment_types;
 pub mod store;
 pub mod totp;

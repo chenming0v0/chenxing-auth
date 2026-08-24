@@ -1,5 +1,8 @@
 pub mod domain;
 pub mod issuer;
+pub(crate) mod issuer_passkey;
+#[cfg(test)]
+mod issuer_passkey_tests;
 pub mod issuer_runtime;
 #[cfg(test)]
 mod issuer_runtime_tests;
@@ -28,6 +31,7 @@ pub use security_limits_cache::{
 };
 pub use service::{SettingsService, SettingsServiceError};
 pub use session_lifetime::{DEFAULT_SESSION_TTL_SECONDS, SessionLifetimeSetting};
+pub(crate) use smtp::SmtpDeliveryConfig;
 pub use smtp::{SmtpPasswordAction, SmtpSetting, SmtpSettingUpdate};
 
 pub const REGISTRATION_EMAIL_FROM_KEY: &str = "registration_email_from";

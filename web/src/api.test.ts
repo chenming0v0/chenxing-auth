@@ -5,9 +5,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  ApiError, apiFetch, externalLoginErrorMessage, loadAuthorizationRequest, loginRecoveryTarget,
+  ApiError, apiFetch, externalLoginErrorMessage, loginRecoveryTarget,
   parseCsrfToken, safeErrorMessage,
 } from './api'
+import { HISTORY_INDEX, NAVIGATION_EVENT, replaceUrl } from './router'
 
 const SAFE_FALLBACK = '请求未完成，请稍后重试。'
 /** Object.prototype 上真实存在的成员；对象字面量查表时它们会返回 Function/Object。 */
@@ -74,6 +75,7 @@ describe('safeErrorMessage', () => {
   it('prefers the mapped message for known codes', () => {
     expect(safeErrorMessage(401, 'invalid_credentials')).toBe('账号或密码不正确。')
     expect(safeErrorMessage(400, 'passkey_disabled')).toBe('Passkey 登录尚未启用。')
+    expect(safeErrorMessage(404, 'invitation_code_not_found')).toBe('邀请码不存在或已失效。')
     expect(safeErrorMessage(500, 'csrf_invalid')).toBe('请求校验失败，请刷新页面后重试。')
   })
 
@@ -162,7 +164,7 @@ describe('apiFetch', () => {
     document.cookie = '__Host-chenxing_csrf=; Secure; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
     document.cookie = 'chenxing_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
     // 401 重定向的 returnTo 取自当前地址：固定起点让用例互不影响。
-    window.history.replaceState({}, '', '/')
+    replaceUrl('/')
   })
 
   afterEach(() => {
@@ -314,32 +316,43 @@ describe('apiFetch', () => {
   })
 
   it('redirects to the login page on 401 by default', async () => {
-    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {})
+    const replaceState = vi.spyOn(window.history, 'replaceState')
     const dispatchEvent = vi.spyOn(window, 'dispatchEvent')
     fetchMock.mockResolvedValue(stubResponse({ status: 401, body: {} }))
+    const returnTo = encodeURIComponent(`${window.location.pathname}${window.location.search}`)
+    const currentIndex = window.history.state?.[HISTORY_INDEX]
 
     await expect(apiFetch('/api/v1/auth/me')).rejects.toBeInstanceOf(ApiError)
 
-    const returnTo = encodeURIComponent(`${window.location.pathname}${window.location.search}`)
-    expect(replaceState).toHaveBeenCalledWith({}, '', `/login?returnTo=${returnTo}`)
-    // 路由靠 popstate 感知地址变化，缺了这次派发登录页不会渲染。
-    expect(dispatchEvent.mock.calls.some(([event]) => event.type === 'popstate')).toBe(true)
+    expect(replaceState).toHaveBeenCalledWith(
+      expect.objectContaining({ [HISTORY_INDEX]: expect.any(Number) }),
+      '',
+      `/login?returnTo=${returnTo}`,
+    )
+    expect(window.history.state?.[HISTORY_INDEX]).toBe(currentIndex)
+    // URL replacement has its own render notification; it is not a browser traversal.
+    expect(dispatchEvent.mock.calls.some(([event]) => event.type === 'popstate')).toBe(false)
+    expect(dispatchEvent.mock.calls.some(([event]) => event.type === NAVIGATION_EVENT)).toBe(true)
   })
 
   it('hoists request_id out of returnTo when 401 hits an OAuth page (#270)', async () => {
-    window.history.replaceState({}, '', '/oauth/consent?request_id=req-270')
-    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {})
+    replaceUrl('/oauth/consent?request_id=req-270')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
     fetchMock.mockResolvedValue(stubResponse({ status: 401, body: {} }))
 
     await expect(apiFetch('/api/v1/oauth/authorize/requests/req-270')).rejects.toBeInstanceOf(ApiError)
 
     // 登录页只读自己的 request_id 决定登录后是否重新绑定；埋在 returnTo 里读不到，
     // 于是登录成功后直接跳确认页，确认页再次 401 —— 这就是登录循环。
-    expect(replaceState).toHaveBeenCalledWith({}, '', [
-      '/login?returnTo=',
-      encodeURIComponent('/oauth/consent?request_id=req-270'),
-      '&request_id=req-270',
-    ].join(''))
+    expect(replaceState).toHaveBeenCalledWith(
+      expect.objectContaining({ [HISTORY_INDEX]: expect.any(Number) }),
+      '',
+      [
+        '/login?returnTo=',
+        encodeURIComponent('/oauth/consent?request_id=req-270'),
+        '&request_id=req-270',
+      ].join(''),
+    )
   })
 
   it('does not redirect when redirectOn401 is disabled', async () => {
@@ -441,80 +454,5 @@ describe('loginRecoveryTarget', () => {
     const requestId = 'req/with?reserved=1'
     const target = loginRecoveryTarget('/oauth/consent', `?request_id=${encodeURIComponent(requestId)}`)
     expect(new URLSearchParams(target.slice(target.indexOf('?'))).get('request_id')).toBe(requestId)
-  })
-})
-
-describe('loadAuthorizationRequest', () => {
-  let fetchMock: FetchMock
-
-  beforeEach(() => {
-    fetchMock = createFetchMock()
-    vi.stubGlobal('fetch', fetchMock)
-    document.cookie = 'chenxing_csrf=token-abc'
-  })
-
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    vi.restoreAllMocks()
-  })
-
-  const PENDING = {
-    request_id: 'req-270',
-    client_id: 'client-1',
-    client_name: 'Example App',
-    redirect_host: 'client.example.test',
-    scopes: ['openid'],
-    expires_in: 600,
-  }
-
-  it('先绑定再读取，让新会话接管旧绑定', async () => {
-    fetchMock.mockImplementation((_path: string, init?: RequestInit) =>
-      Promise.resolve(init?.method === 'POST'
-        ? stubResponse({ status: 204 })
-        : stubResponse({ status: 200, body: PENDING })))
-
-    await expect(loadAuthorizationRequest('req-270')).resolves.toMatchObject({ request_id: 'req-270' })
-
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/oauth/authorize/requests/req-270/bind')
-    expect(fetchMock.mock.calls[0][1]?.method).toBe('POST')
-    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/oauth/authorize/requests/req-270')
-  })
-
-  it('绑定失败但读取成功时不打断流程', async () => {
-    // holder 缺失等情形下会话可能仍然有效且已绑定，此时读得到就该继续。
-    fetchMock.mockImplementation((_path: string, init?: RequestInit) =>
-      Promise.resolve(init?.method === 'POST'
-        ? stubResponse({ status: 403, body: { code: 'authorization_holder_invalid' } })
-        : stubResponse({ status: 200, body: PENDING })))
-
-    await expect(loadAuthorizationRequest('req-270')).resolves.toMatchObject({ request_id: 'req-270' })
-  })
-
-  it('两步都失败时抛出绑定错误，因为它更能说明真实原因', async () => {
-    fetchMock.mockImplementation((_path: string, init?: RequestInit) =>
-      Promise.resolve(init?.method === 'POST'
-        ? stubResponse({ status: 400, body: { code: 'authorization_request_expired' } })
-        : stubResponse({ status: 401, body: {} })))
-
-    await expect(loadAuthorizationRequest('req-270')).rejects.toMatchObject({
-      status: 400,
-      code: 'authorization_request_expired',
-      message: '授权请求已过期，请重新发起。',
-    })
-  })
-
-  it('绑定与读取都不自动跳登录页，处置权留给调用方', async () => {
-    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {})
-    fetchMock.mockResolvedValue(stubResponse({ status: 401, body: {} }))
-
-    await expect(loadAuthorizationRequest('req-270')).rejects.toMatchObject({ status: 401 })
-    expect(replaceState).not.toHaveBeenCalled()
-  })
-
-  it('对新增的绑定错误码给出可读文案', () => {
-    expect(safeErrorMessage(409, 'authorization_request_conflict'))
-      .toBe('授权请求正在被其他标签页更新，请稍后重试。')
-    expect(safeErrorMessage(403, 'authorization_holder_invalid'))
-      .toBe('这条授权请求不是在当前浏览器发起的，请回到应用重新开始授权。')
   })
 })

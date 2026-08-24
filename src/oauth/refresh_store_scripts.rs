@@ -18,17 +18,20 @@
 /// - `KEYS[2]` client 索引键
 /// - `KEYS[3]` family 索引键（`ARGV[5]` 为空时不使用）
 /// - `KEYS[4]` grant 索引键（user + client）
+/// - `KEYS[5]` token 到 family 的定位键
 /// - `ARGV[1]` token JSON
 /// - `ARGV[2]` 主键 TTL（秒）
 /// - `ARGV[3]` 索引 TTL（秒）
 /// - `ARGV[4]` token_hash
 /// - `ARGV[5]` family_id，空字符串表示旧格式 token，跳过 family 索引
+/// - `ARGV[6]` resolved family_id，用于 token 定位键
 pub const SAVE_WITH_INDEXES_SCRIPT: &str = r#"
 redis.call('SETEX', KEYS[1], ARGV[2], ARGV[1])
 redis.call('SADD', KEYS[2], ARGV[4])
 redis.call('EXPIRE', KEYS[2], ARGV[3])
 redis.call('SADD', KEYS[4], ARGV[4])
 redis.call('EXPIRE', KEYS[4], ARGV[3])
+redis.call('SETEX', KEYS[5], ARGV[3], ARGV[6])
 if ARGV[5] ~= '' then
     redis.call('SADD', KEYS[3], ARGV[4])
     redis.call('EXPIRE', KEYS[3], ARGV[3])
@@ -55,6 +58,8 @@ return 1
 /// - `KEYS[6]` 墓碑键
 /// - `KEYS[7]` 新 family 的撤销墓志键
 /// - `KEYS[8]` grant 索引键（user + client；轮换前后同一个 grant）
+/// - `KEYS[9]` 旧 token 到 family 的定位键
+/// - `KEYS[10]` 新 token 到 family 的定位键
 /// - `ARGV[1]` 预期旧 token JSON（只比较 `value` + `cas_revision`）
 /// - `ARGV[2]` 新 token JSON
 /// - `ARGV[3]` 新主键 TTL（秒）
@@ -65,6 +70,7 @@ return 1
 /// - `ARGV[8]` 墓碑 TTL（秒）
 /// - `ARGV[9]` 旧 family_id，空表示旧格式 token
 /// - `ARGV[10]` 新 family_id，空表示不写 family 索引
+/// - `ARGV[11]` resolved 新 family_id，用于 token 定位键
 ///
 /// 返回 `1` 轮换成功，`0` 表示 CAS 失败（键仍在但值已变：旧 token 已被并发
 /// 消费，必定是重放），`-1` 表示目标 family 已被撤销，不允许再写入任何成员。
@@ -94,6 +100,8 @@ redis.call('EXPIRE', KEYS[3], ARGV[4])
 redis.call('SREM', KEYS[8], ARGV[5])
 redis.call('SADD', KEYS[8], ARGV[6])
 redis.call('EXPIRE', KEYS[8], ARGV[4])
+redis.call('DEL', KEYS[9])
+redis.call('SETEX', KEYS[10], ARGV[4], ARGV[11])
 if ARGV[9] ~= '' then
     redis.call('SREM', KEYS[4], ARGV[5])
     redis.call('EXPIRE', KEYS[4], ARGV[4])
@@ -120,6 +128,7 @@ return 1
 /// - `KEYS[2]` client 索引键
 /// - `KEYS[3]` family 索引键（`ARGV[3]` 为空时不使用）
 /// - `KEYS[4]` grant 索引键（user + client）
+/// - `KEYS[5]` token 到 family 的定位键
 /// - `ARGV[1]` token_hash
 /// - `ARGV[2]` 索引 TTL（秒）
 /// - `ARGV[3]` family_id，空表示旧格式 token
@@ -129,6 +138,7 @@ redis.call('SREM', KEYS[2], ARGV[1])
 redis.call('EXPIRE', KEYS[2], ARGV[2])
 redis.call('SREM', KEYS[4], ARGV[1])
 redis.call('EXPIRE', KEYS[4], ARGV[2])
+redis.call('DEL', KEYS[5])
 if ARGV[3] ~= '' then
     redis.call('SREM', KEYS[3], ARGV[1])
     redis.call('EXPIRE', KEYS[3], ARGV[2])
@@ -147,6 +157,7 @@ return 1
 /// - `KEYS[3]` family 索引键（`ARGV[6]` 为空时不使用）
 /// - `KEYS[4]` 墓碑键
 /// - `KEYS[5]` grant 索引键（user + client）
+/// - `KEYS[6]` token 到 family 的定位键
 /// - `ARGV[1]` 预期 token JSON（只比较 `value` + `cas_revision`）
 /// - `ARGV[2]` token_hash
 /// - `ARGV[3]` 墓碑 JSON
@@ -167,6 +178,7 @@ redis.call('SREM', KEYS[2], ARGV[2])
 redis.call('EXPIRE', KEYS[2], ARGV[5])
 redis.call('SREM', KEYS[5], ARGV[2])
 redis.call('EXPIRE', KEYS[5], ARGV[5])
+redis.call('DEL', KEYS[6])
 if ARGV[6] ~= '' then
     redis.call('SREM', KEYS[3], ARGV[2])
     redis.call('EXPIRE', KEYS[3], ARGV[5])
@@ -199,10 +211,11 @@ return 1
 /// - `KEYS[6]` grant 索引键（user + client）
 /// - `ARGV[1]` token 主键前缀
 /// - `ARGV[2]` 墓碑键前缀
-/// - `ARGV[3]` 墓碑 JSON（`family_revoked` 或 `explicit_revoke`）
-/// - `ARGV[4]` 墓碑 TTL（秒）
-/// - `ARGV[5]` 墓志 TTL（秒），必须覆盖 family 的绝对生命周期上限
-/// - `ARGV[6]` 调用方提交的 token_hash
+/// - `ARGV[3]` token 到 family 的定位键前缀
+/// - `ARGV[4]` 墓碑 JSON（`family_revoked` 或 `explicit_revoke`）
+/// - `ARGV[5]` 墓碑 TTL（秒）
+/// - `ARGV[6]` 墓志 TTL（秒），必须覆盖 family 的绝对生命周期上限
+/// - `ARGV[7]` 调用方提交的 token_hash
 ///
 /// 返回被删除的 token 数量，或 `-1` 表示该 family 此前已被撤销。
 pub const REVOKE_FAMILY_SCRIPT: &str = r#"
@@ -217,16 +230,18 @@ for _, token_hash in ipairs(members) do
     end
     redis.call('SREM', KEYS[2], token_hash)
     redis.call('SREM', KEYS[6], token_hash)
-    redis.call('SETEX', ARGV[2] .. token_hash, ARGV[4], ARGV[3])
+    redis.call('DEL', ARGV[3] .. token_hash)
+    redis.call('SETEX', ARGV[2] .. token_hash, ARGV[5], ARGV[4])
 end
 redis.call('DEL', KEYS[1])
 if redis.call('DEL', KEYS[4]) == 1 then
     removed = removed + 1
 end
-redis.call('SREM', KEYS[2], ARGV[6])
-redis.call('SREM', KEYS[6], ARGV[6])
-redis.call('SETEX', KEYS[5], ARGV[4], ARGV[3])
-redis.call('SETEX', KEYS[3], ARGV[5], ARGV[3])
+redis.call('DEL', ARGV[3] .. ARGV[7])
+redis.call('SREM', KEYS[2], ARGV[7])
+redis.call('SREM', KEYS[6], ARGV[7])
+redis.call('SETEX', KEYS[5], ARGV[5], ARGV[4])
+redis.call('SETEX', KEYS[3], ARGV[6], ARGV[4])
 return removed
 "#;
 
@@ -251,24 +266,45 @@ return removed
 ///
 /// - `KEYS[1]` grant 索引键
 /// - `ARGV[1]` token 主键前缀
-/// - `ARGV[2]` family 索引键前缀
-/// - `ARGV[3]` 墓碑键前缀
-/// - `ARGV[4]` 请求的批大小（脚本内硬限制为最多 128）
-/// - `ARGV[5]` client 索引键
-/// - `ARGV[6]` 墓碑 JSON（`explicit_revoke`）
-/// - `ARGV[7]` 墓碑 TTL（秒）
-/// - `ARGV[8]` family 撤销墓志键前缀
-/// - `ARGV[9]` 墓志 TTL（秒）
+/// - `ARGV[2]` token 到 family 的定位键前缀
+/// - `ARGV[3]` family 索引键前缀
+/// - `ARGV[4]` 墓碑键前缀
+/// - `ARGV[5]` 请求的批大小（脚本内硬限制为最多 128）
+/// - `ARGV[6]` client 索引键
+/// - `ARGV[7]` 墓碑 JSON（`explicit_revoke`）
+/// - `ARGV[8]` 墓碑 TTL（秒）
+/// - `ARGV[9]` family 撤销墓志键前缀
+/// - `ARGV[10]` 墓志 TTL（秒）
 ///
 /// 返回 `{被删除的 token 数量, grant 索引剩余成员数}`。
 pub const REVOKE_GRANT_TOKENS_SCRIPT: &str = r#"
-local batch_size = tonumber(ARGV[4])
+local batch_size = tonumber(ARGV[5])
 if not batch_size or batch_size < 1 then
     return redis.error_reply('ERR invalid grant revoke batch size')
 end
 batch_size = math.min(batch_size, 128)
 local members = redis.call('SRANDMEMBER', KEYS[1], batch_size)
 local tokens = {}
+
+local function find_family_id(token_hash)
+    local mapped_family_id = redis.call('GET', ARGV[2] .. token_hash)
+    if mapped_family_id then
+        return mapped_family_id
+    end
+    -- Tokens written before the per-token mapping was introduced still need
+    -- their real family index removed after the primary key expires.
+    local cursor = '0'
+    repeat
+        local scan_result = redis.call('SCAN', cursor, 'MATCH', ARGV[3] .. '*', 'COUNT', 128)
+        cursor = scan_result[1]
+        for _, family_key in ipairs(scan_result[2]) do
+            if redis.call('SISMEMBER', family_key, token_hash) == 1 then
+                return string.sub(family_key, string.len(ARGV[3]) + 1)
+            end
+        end
+    until cursor == '0'
+    return nil
+end
 
 -- Preflight every payload before destroying anything, so a decode failure
 -- leaves the whole batch retryable instead of half-revoked.
@@ -286,6 +322,9 @@ for _, token_hash in ipairs(members) do
             return redis.error_reply('ERR invalid refresh token family_id')
         end
     end
+    if not family_id or family_id == '' then
+        family_id = find_family_id(token_hash)
+    end
     tokens[#tokens + 1] = {
         hash = token_hash,
         key = token_key,
@@ -301,15 +340,16 @@ for _, token in ipairs(tokens) do
     if not scope or scope == '' then
         scope = 'legacy-token:' .. token.hash
     else
-        redis.call('SREM', ARGV[2] .. scope, token.hash)
+        redis.call('SREM', ARGV[3] .. scope, token.hash)
     end
     -- 墓志必须比任何成员活得久，否则它过期后一次迟到的轮换又能写回该 family。
-    redis.call('SETEX', ARGV[8] .. scope, ARGV[9], ARGV[6])
+    redis.call('SETEX', ARGV[9] .. scope, ARGV[10], ARGV[7])
     if redis.call('DEL', token.key) == 1 then
         removed = removed + 1
     end
-    redis.call('SETEX', ARGV[3] .. token.hash, ARGV[7], ARGV[6])
-    redis.call('SREM', ARGV[5], token.hash)
+    redis.call('DEL', ARGV[2] .. token.hash)
+    redis.call('SETEX', ARGV[4] .. token.hash, ARGV[8], ARGV[7])
+    redis.call('SREM', ARGV[6], token.hash)
 end
 
 -- Removing the grant member is the completion acknowledgement for retries.
@@ -333,20 +373,40 @@ return {removed, redis.call('SCARD', KEYS[1])}
 ///
 /// - `KEYS[1]` client 索引键
 /// - `ARGV[1]` token 主键前缀
-/// - `ARGV[2]` family 索引键前缀
-/// - `ARGV[3]` tombstone 键前缀（清理同 token 的旧 marker）
-/// - `ARGV[4]` 请求的批大小（脚本内硬限制为最多 128）
-/// - `ARGV[5]` grant 索引键前缀（按 payload 里的 user_id + client_id 拼装）
+/// - `ARGV[2]` token 到 family 的定位键前缀
+/// - `ARGV[3]` family 索引键前缀
+/// - `ARGV[4]` tombstone 键前缀（清理同 token 的旧 marker）
+/// - `ARGV[5]` 请求的批大小（脚本内硬限制为最多 128）
+/// - `ARGV[6]` grant 索引键前缀（按 payload 里的 user_id + client_id 拼装）
 ///
 /// 返回 `{被删除的 token 数量, client 索引剩余成员数}`。
 pub const REVOKE_CLIENT_TOKENS_SCRIPT: &str = r#"
-local batch_size = tonumber(ARGV[4])
+local batch_size = tonumber(ARGV[5])
 if not batch_size or batch_size < 1 then
     return redis.error_reply('ERR invalid client revoke batch size')
 end
 batch_size = math.min(batch_size, 128)
 local members = redis.call('SRANDMEMBER', KEYS[1], batch_size)
 local tokens = {}
+
+local function find_family_id(token_hash)
+    local mapped_family_id = redis.call('GET', ARGV[2] .. token_hash)
+    if mapped_family_id then
+        return mapped_family_id
+    end
+    -- Keep pre-upgrade tokens repairable when their primary key has expired.
+    local cursor = '0'
+    repeat
+        local scan_result = redis.call('SCAN', cursor, 'MATCH', ARGV[3] .. '*', 'COUNT', 128)
+        cursor = scan_result[1]
+        for _, family_key in ipairs(scan_result[2]) do
+            if redis.call('SISMEMBER', family_key, token_hash) == 1 then
+                return string.sub(family_key, string.len(ARGV[3]) + 1)
+            end
+        end
+    until cursor == '0'
+    return nil
+end
 
 -- Preflight every selected payload before changing any index or token key.
 for _, token_hash in ipairs(members) do
@@ -369,8 +429,11 @@ for _, token_hash in ipairs(members) do
         local user_id = decoded['user_id']
         local client_id = decoded['client_id']
         if type(user_id) == 'string' and type(client_id) == 'string' then
-            grant_key = ARGV[5] .. user_id .. ':' .. client_id
+            grant_key = ARGV[6] .. user_id .. ':' .. client_id
         end
+    end
+    if not family_id or family_id == '' then
+        family_id = find_family_id(token_hash)
     end
     tokens[#tokens + 1] = {
         hash = token_hash,
@@ -383,7 +446,7 @@ end
 -- A family index error must happen before any selected token is destroyed.
 for _, token in ipairs(tokens) do
     if token.family_id and token.family_id ~= '' then
-        redis.call('SREM', ARGV[2] .. token.family_id, token.hash)
+        redis.call('SREM', ARGV[3] .. token.family_id, token.hash)
     end
 end
 
@@ -392,13 +455,14 @@ for _, token in ipairs(tokens) do
     if redis.call('DEL', token.key) == 1 then
         removed = removed + 1
     end
-    redis.call('DEL', ARGV[3] .. token.hash)
+    redis.call('DEL', ARGV[4] .. token.hash)
 end
 
 for _, token in ipairs(tokens) do
     if token.grant_key then
         redis.call('SREM', token.grant_key, token.hash)
     end
+    redis.call('DEL', ARGV[2] .. token.hash)
 end
 
 -- Removing the client member is the completion acknowledgement for retries.

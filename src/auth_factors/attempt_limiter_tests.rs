@@ -7,8 +7,14 @@ use std::sync::{Arc, Mutex};
 
 use crate::auth_limiter::{
     AuthFailureLimiter, FailureDimension,
-    domain::{AuthLimiterError, FailureRecord, LimiterFuture, commit_reserved_failure},
+    domain::{
+        AuthLimiterError, AuthReservation, FailureRecord, LimiterFuture, commit_reserved_failure,
+    },
 };
+
+fn reservation(dimensions: Vec<crate::auth_limiter::LimiterDimension>) -> AuthReservation {
+    AuthReservation::single(dimensions, AuthReservation::token())
+}
 
 /// 记录收到的调用类型，`record_reserved_failures` 始终返回存储错误以模拟 Redis 故障。
 struct FailingRecordLimiter {
@@ -52,17 +58,14 @@ impl AuthFailureLimiter for FailingRecordLimiter {
     // `record_reserved_failures` 模拟 Redis 存储故障
     fn record_reserved_failures<'a>(
         &'a self,
-        _dimensions: Vec<crate::auth_limiter::LimiterDimension>,
+        _dimensions: AuthReservation,
     ) -> LimiterFuture<'a, FailureRecord> {
         self.calls.lock().unwrap().push("record");
         Box::pin(async { Err(AuthLimiterError::Storage) })
     }
 
     // `release` 成功，记录调用以便断言
-    fn release<'a>(
-        &'a self,
-        _dimensions: Vec<crate::auth_limiter::LimiterDimension>,
-    ) -> LimiterFuture<'a, ()> {
+    fn release<'a>(&'a self, _dimensions: AuthReservation) -> LimiterFuture<'a, ()> {
         self.calls.lock().unwrap().push("release");
         Box::pin(async { Ok(()) })
     }
@@ -117,17 +120,14 @@ impl AuthFailureLimiter for SuccessLimiter {
 
     fn record_reserved_failures<'a>(
         &'a self,
-        _dimensions: Vec<crate::auth_limiter::LimiterDimension>,
+        _dimensions: AuthReservation,
     ) -> LimiterFuture<'a, FailureRecord> {
         self.calls.lock().unwrap().push("record");
         let record = self.record.clone();
         Box::pin(async move { Ok(record) })
     }
 
-    fn release<'a>(
-        &'a self,
-        _dimensions: Vec<crate::auth_limiter::LimiterDimension>,
-    ) -> LimiterFuture<'a, ()> {
+    fn release<'a>(&'a self, _dimensions: AuthReservation) -> LimiterFuture<'a, ()> {
         self.calls.lock().unwrap().push("release");
         Box::pin(async { Ok(()) })
     }
@@ -137,9 +137,12 @@ impl AuthFailureLimiter for SuccessLimiter {
 // #130：record_reserved_failures 失败时必须先归还预留额度再传播错误
 async fn record_failure_releases_reservation_on_storage_error() {
     let limiter = FailingRecordLimiter::new();
-    let dimensions = vec![(FailureDimension::Account, "user@example.com".to_owned())];
+    let reservation = reservation(vec![(
+        FailureDimension::Account,
+        "user@example.com".to_owned(),
+    )]);
 
-    let result = commit_reserved_failure(limiter.as_ref(), dimensions).await;
+    let result = commit_reserved_failure(limiter.as_ref(), reservation).await;
 
     // 原始存储错误必须透传给调用方
     assert!(
@@ -160,9 +163,12 @@ async fn record_failure_releases_reservation_on_storage_error() {
 // 正常路径：记录成功时不触发额外的归还调用
 async fn record_failure_does_not_release_on_success() {
     let limiter = SuccessLimiter::new();
-    let dimensions = vec![(FailureDimension::Account, "user@example.com".to_owned())];
+    let reservation = reservation(vec![(
+        FailureDimension::Account,
+        "user@example.com".to_owned(),
+    )]);
 
-    let result = commit_reserved_failure(limiter.as_ref(), dimensions).await;
+    let result = commit_reserved_failure(limiter.as_ref(), reservation).await;
 
     assert!(result.is_ok(), "expected Ok, got {result:?}");
     let calls = limiter.calls();
@@ -177,9 +183,12 @@ async fn record_failure_does_not_release_on_success() {
 // #186：FailOpen 的未记账成功结果也必须归还 pending reservation。
 async fn unrecorded_fail_open_result_releases_reservation() {
     let limiter = SuccessLimiter::not_recorded();
-    let dimensions = vec![(FailureDimension::Account, "user@example.com".to_owned())];
+    let reservation = reservation(vec![(
+        FailureDimension::Account,
+        "user@example.com".to_owned(),
+    )]);
 
-    let result = commit_reserved_failure(limiter.as_ref(), dimensions).await;
+    let result = commit_reserved_failure(limiter.as_ref(), reservation).await;
 
     let record = result.expect("expected fail-open fallback record");
     assert!(!record.was_recorded());
@@ -198,7 +207,7 @@ async fn retired_key_releases_reservation_without_recording_a_failure() {
         (FailureDimension::SourceIp, "203.0.113.7".to_owned()),
     ];
 
-    super::release_key_unavailable(limiter.as_ref(), dimensions).await;
+    super::release_key_unavailable(limiter.as_ref(), reservation(dimensions)).await;
 
     assert_eq!(
         limiter.calls(),
@@ -220,7 +229,7 @@ async fn missing_factor_releases_reservation_without_recording_a_failure() {
         (FailureDimension::SourceIp, "203.0.113.7".to_owned()),
     ];
 
-    super::release_factor_missing(limiter.as_ref(), dimensions).await;
+    super::release_factor_missing(limiter.as_ref(), reservation(dimensions)).await;
 
     assert_eq!(
         limiter.calls(),

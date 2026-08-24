@@ -112,15 +112,14 @@ async fn evict_overflow_sessions(
          WHERE user_id = $1
            AND revoked_at IS NULL
            AND expires_at > NOW()
-           AND last_seen_at > NOW() - $2
-           AND session_epoch >= $3",
+           AND last_seen_at > NOW() - MAKE_INTERVAL(secs => idle_timeout_seconds)
+           AND session_epoch >= $2",
     )
     .bind(user_id)
-    .bind(store.idle_timeout_interval())
     .bind(session_epoch)
     .fetch_one(&mut **transaction)
     .await?;
-    let max_sessions = i64::try_from(store.policy.max_concurrent_sessions).unwrap_or(i64::MAX);
+    let max_sessions = i64::try_from(store.current_max_concurrent_sessions()).unwrap_or(i64::MAX);
     let revoke_count = active_count
         .saturating_sub(max_sessions.saturating_sub(1))
         .max(0);
@@ -133,14 +132,13 @@ async fn evict_overflow_sessions(
              WHERE user_id = $1
                AND revoked_at IS NULL
                AND expires_at > NOW()
-               AND last_seen_at > NOW() - $2
-               AND session_epoch >= $3
+               AND last_seen_at > NOW() - MAKE_INTERVAL(secs => idle_timeout_seconds)
+               AND session_epoch >= $2
              ORDER BY created_at ASC, id ASC
-             LIMIT $4
+             LIMIT $3
              FOR UPDATE",
         )
         .bind(user_id)
-        .bind(store.idle_timeout_interval())
         .bind(session_epoch)
         .bind(revoke_count)
         .fetch_all(&mut **transaction)
@@ -192,12 +190,20 @@ async fn insert_new_session(
     let mut stored_payload = SessionPayload::from(session);
     stored_payload.id = id;
     let encrypted_payload = store.encrypt_payload(&serde_json::to_vec(&stored_payload)?)?;
+    let idle_timeout_seconds = i64::try_from(
+        session
+            .idle_timeout()
+            .unwrap_or(store.policy.idle_timeout)
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX)
+    .max(1);
     crate::sqlx::query(
         "INSERT INTO user_sessions
              (id, token_hash, user_id, created_at, expires_at, last_seen_at,
-              session_payload, session_epoch)
+              session_payload, session_epoch, idle_timeout_seconds)
          OVERRIDING SYSTEM VALUE
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(id)
     .bind(token_hash)
@@ -207,6 +213,7 @@ async fn insert_new_session(
     .bind(session.last_seen_at)
     .bind(encrypted_payload)
     .bind(session_epoch)
+    .bind(idle_timeout_seconds)
     .execute(&mut **transaction)
     .await?;
     crate::sqlx::query(

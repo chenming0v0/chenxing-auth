@@ -136,9 +136,10 @@ fn redis_failure_dispatch_is_unchanged_by_the_settings_path() {
         "fail-open must not report a limit it could not verify"
     );
     assert!(
-        fail_open
+        !fail_open
             .unavailable_reservation("reserve", &dimensions)
-            .expect("fail-open grants the reservation"),
+            .expect("fail-open grants the reservation")
+            .is_denied(),
     );
     assert!(
         !fail_open

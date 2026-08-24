@@ -4,8 +4,8 @@
 //!
 //! ## 问题（issue #136）
 //!
-//! 测试套件的所有二进制共享同一个开发数据库。`admin_ui_api` / `admin_api` /
-//! `bootstrap_invariant` / `authorization_audit` 在 setup() 里执行
+//! 测试套件的所有目标共享同一个开发数据库。`admin_ui_api` / `admin_api` /
+//! `bootstrap_invariant` / `authorization_audit` 这类测试在 setup() 里执行
 //! `TRUNCATE users RESTART IDENTITY CASCADE`，清空整个 `users` 表。由于
 //! `users` 为空时公开注册返回 409 `owner_bootstrap_required`，其他 20+ 个依赖
 //! owner 存在的二进制在并行时会系统性失败。即使单线程也不能保证顺序，属于
@@ -26,7 +26,7 @@
 //!
 //! - `search_path` 通过 pool 的 `after_connect` 钩子设置到每个连接上。
 //! - `db::migrate()` 在 `search_path` 下建表，`_sqlx_migrations` 元数据也在该
-//!   schema 里，不同二进制的迁移状态互不干扰。
+//!   schema 里，不同测试目标的迁移状态互不干扰。
 //! - 应用层代码全部使用非限定表名（`SELECT * FROM users`，而非 `public.users`），
 //!   因此 `search_path` 切换对应用代码透明。
 //! - 除了验证固定 ID 语义的 `admin_api` / `bootstrap_invariant` 外，测试 schema 的
@@ -41,7 +41,7 @@
 //! ## 使用方法
 //!
 //! ```rust,ignore
-//! #[path = "support/db_isolation.rs"]
+//! #[path = "../support/db_isolation.rs"]
 //! mod db_isolation;
 //!
 //! async fn setup() -> (Router, PgPool, PathBuf) {
@@ -59,7 +59,7 @@ use sha2::{Digest, Sha256};
 
 /// 为测试用例创建隔离的 PgPool，在自己的 schema 里运行迁移。
 ///
-/// `binary_name` 应与 `Cargo.toml` 里的测试二进制名一致。schema 名规则为
+/// `binary_name` 是调用方传入的稳定隔离标签。schema 名规则为
 /// `ctest_{binary_name}_{test_identity}`，非字母数字字符替换为 `_`，最长 63 字节。
 ///
 /// 每次运行都 DROP CASCADE 已存在的 schema，保证迁移状态干净（避免编辑迁移文件时
@@ -103,8 +103,8 @@ pub async fn isolated_pool_with_max_connections(
     // 对运行时角色不成立。
     //
     // 应用 pool 刻意不用运行时角色：`chenxing_runtime` 是集群全局对象，
-    // `database_schema.rs` 里验证审计边界的用例会给它写随机口令，若 39 个测试
-    // 二进制都用这个口令连接，一次轮换就会连带打死并发的其他测试和开发服务器。
+    // `database_schema.rs` 里验证审计边界的用例会给它写随机口令。若并发测试都用
+    // 这个口令连接，一次轮换就会连带打死其他测试和开发服务器。
     // 运行时角色的权限姿态由 `database_schema.rs` 的专用用例单独覆盖。
     let pool = schema_scoped_pool(&owner_url, &schema, max_connections).await;
     chenxing_auth::db::migrate(&pool)
@@ -161,6 +161,11 @@ fn owner_database_url(runtime_url: &str) -> String {
 }
 
 /// 在测试 bootstrap owner 后重新设置用户序列，避免 Redis 中按 user_id 命名的键碰撞。
+///
+/// Owner 引导曾经把序列打回 1（`INITIAL_OWNER_ID`），所以这里必须再跳到测试
+/// 身份派生的高位区间。引导现在保留已分配的 identity：schema 初始化已经把
+/// 序列放到 `user_id_start`，Owner 行占用了那个值。若这里再 `setval(start,
+/// false)`，下一次 `INSERT` 会撞主键，管理端建号被翻成 500 `internal_error`。
 pub async fn isolate_user_ids(database: &PgPool, binary_name: &str) {
     if matches!(binary_name, "admin_api" | "bootstrap_invariant") {
         return;
@@ -168,8 +173,15 @@ pub async fn isolate_user_ids(database: &PgPool, binary_name: &str) {
     let test_identity = current_test_identity();
     let user_id_start =
         user_id_sequence_start(binary_name, &current_execution_identity(&test_identity));
+    let next_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT GREATEST($1::bigint, COALESCE((SELECT MAX(id) FROM users), 0) + 1)",
+    )
+    .bind(user_id_start)
+    .fetch_one(database)
+    .await
+    .expect("db_isolation: compute next user id after owner bootstrap");
     chenxing_auth::sqlx::query("SELECT setval(pg_get_serial_sequence('users', 'id'), $1, false)")
-        .bind(user_id_start)
+        .bind(next_id)
         .execute(database)
         .await
         .expect("db_isolation: reset user id sequence after owner bootstrap");

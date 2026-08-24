@@ -40,6 +40,22 @@ async fn authenticated_save_is_refused_without_metadata() {
     );
 }
 
+/// Issue #646: binding session authentication to a user role requires the
+/// Postgres user row. Missing metadata must not invent a role or reopen a
+/// later `find_profile` TOCTOU.
+#[tokio::test]
+async fn authenticated_lookup_is_refused_without_metadata() {
+    let store = unreachable_store();
+    let error = store
+        .find_authenticated("any-token")
+        .await
+        .expect_err("role binding requires metadata");
+    assert!(
+        matches!(error, SessionStoreError::MetadataUnavailable),
+        "expected the metadata requirement to reject the lookup, got {error}"
+    );
+}
+
 /// 绑定语义是两类登录来源，不是同一件事的强弱版本：`Current` 不携带任何期望值。
 #[test]
 fn epoch_binding_distinguishes_current_from_authenticated() {
@@ -80,8 +96,8 @@ fn session_at(now: OffsetDateTime, ttl: Duration, idle_timeout: Duration) -> Ses
 fn redis_ttl_follows_the_idle_deadline_when_it_is_nearer() {
     let absolute = Duration::from_secs(3_600);
     let idle = Duration::from_secs(600);
-    // `new_at_with_idle_timeout` 已经把 idle 写进会话；生产路径里 `save_bound`
-    // 会用 store policy 覆盖它，这里两者取同一个值，判定等价。
+    // `new_at_with_idle_timeout` 把签发时的 idle 写进会话；查找用这个值，
+    // 不再被 store 启动策略覆盖（#644）。
     let session = session_at(CREATED_AT, absolute, idle);
     let store = store_at(CREATED_AT).with_absolute_ttl(absolute);
 
@@ -133,6 +149,22 @@ fn session_activity_flips_exactly_at_absolute_expiry() {
     let before = SharedClock::fixed(deadline - TimeDuration::seconds(1));
     assert!(session.is_active_at(before.now()));
     assert!(!session.is_active_at(SharedClock::fixed(deadline).now()));
+}
+
+/// 会话自己的 idle 窗口决定 Redis TTL，store 启动策略缩短之后也不能改写已签发会话。
+#[test]
+fn redis_ttl_follows_the_session_idle_not_the_store_policy() {
+    let absolute = Duration::from_secs(3_600);
+    let issued_idle = Duration::from_secs(1_800);
+    let session = session_at(CREATED_AT, absolute, issued_idle);
+    let store = store_at(CREATED_AT)
+        .with_absolute_ttl(absolute)
+        .with_session_policy(Duration::from_secs(60), 5);
+
+    assert_eq!(
+        store.redis_ttl_seconds(&session, absolute, store.clock.now()),
+        1_800
+    );
 }
 
 /// idle 超时同样在截止时刻翻转，且早于绝对过期。

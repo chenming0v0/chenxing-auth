@@ -19,41 +19,88 @@ export function useEntitlements() {
   const [data, setData] = useState<EntitlementsResponse | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const requestId = useRef(0)
   // 返回 Promise 而不是 void：调用方在同一个「重试」动作里串联多个 loader 时
   // 需要知道这一次请求何时结束，否则无法保证重试顺序。
   const load = useCallback((force = false) => {
+    const id = ++requestId.current
     setLoading(true)
     setError('')
     return getEntitlements(force)
-      .then(setData)
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '权益数据加载失败。'))
-      .finally(() => setLoading(false))
+      .then((value) => {
+        if (id !== requestId.current) return
+        setData(value)
+      })
+      .catch((reason: unknown) => {
+        if (id !== requestId.current) return
+        setError(reason instanceof Error ? reason.message : '权益数据加载失败。')
+      })
+      .finally(() => {
+        if (id === requestId.current) setLoading(false)
+      })
   }, [])
-  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    void load()
+    return () => { requestId.current += 1 }
+  }, [load])
   return { data, error, loading, retry: useCallback(() => load(true), [load]) }
+}
+
+/** 与后端 `DEFAULT_OWNED_CLIENT_LIST_LIMIT` 对齐：用户端单页最多 200 条。 */
+const OWNED_CLIENT_PAGE_SIZE = 200
+/**
+ * 无 total 时最多接受这么多「满页」。旧后端忽略 offset 时，重复页检测会先拦住；
+ * 这一上限只防「每页都是不同的 200 条、永远不满」的失控兼容路径。
+ */
+const OWNED_CLIENT_MAX_UNBOUNDED_PAGES = 50
+
+/** 无 total 且分页没有推进时抛给调用方，页面会显示这条文案而不是一直转圈。 */
+export const OWNED_CLIENT_LIST_COMPAT_ERROR =
+  '应用列表分页没有进展：当前接口未返回总数，且连续返回了相同的完整页或已达到兼容分页上限。'
+
+function ownedClientPageKey(items: OwnedOAuthClient[]): string {
+  return items.map((item) => String(item.id)).join(',')
 }
 
 /**
  * 读取当前用户的全部 OAuth Client。接口按 limit/offset 分页，调用方不需要
- * 关心 200 条上限或手动拼接页；响应缺少 total 时仍按短页兼容旧后端。
+ * 关心 200 条上限或手动拼接页。
+ *
+ * 有 total 时按总数收束。缺少 total 时仍按短页兼容旧后端；满页必须推进
+ * （下一页不能是同一组 Client），否则旧接口忽略 offset 会无限请求。
  */
 export async function listAllOwnedOAuthClients(): Promise<OwnedOAuthClient[]> {
-  const limit = 200
   const clients: OwnedOAuthClient[] = []
   let offset = 0
+  let previousPageKey: string | undefined
+  let unboundedPages = 0
 
-  while (true) {
+  for (;;) {
     const path = offset === 0
       ? '/api/v1/auth/oauth-clients'
-      : `/api/v1/auth/oauth-clients?limit=${limit}&offset=${offset}`
+      : `/api/v1/auth/oauth-clients?limit=${OWNED_CLIENT_PAGE_SIZE}&offset=${offset}`
     const response = await apiFetch<OwnedOAuthClientList>(path)
-    clients.push(...response.items)
-    offset += response.items.length
+    const items = response.items
     const total = response.total
-    if (response.items.length < limit || (typeof total === 'number' && offset >= total)) break
-  }
+    const hasTotal = typeof total === 'number'
+    const fullPage = items.length === OWNED_CLIENT_PAGE_SIZE
 
-  return clients
+    if (fullPage && !hasTotal) {
+      const pageKey = ownedClientPageKey(items)
+      if (pageKey === previousPageKey) {
+        throw new Error(OWNED_CLIENT_LIST_COMPAT_ERROR)
+      }
+      unboundedPages += 1
+      if (unboundedPages > OWNED_CLIENT_MAX_UNBOUNDED_PAGES) {
+        throw new Error(OWNED_CLIENT_LIST_COMPAT_ERROR)
+      }
+      previousPageKey = pageKey
+    }
+
+    clients.push(...items)
+    offset += items.length
+    if (!fullPage || (hasTotal && offset >= total)) return clients
+  }
 }
 
 export type AccountSummary = {
@@ -72,6 +119,7 @@ const EMPTY_SUMMARY: AccountSummary = { clients: [], sessions: [], apps: [] }
  */
 export function useAccountSummary() {
   const [data, setData] = useState<AccountSummary>(EMPTY_SUMMARY)
+  const [hasData, setHasData] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const requestId = useRef(0)
@@ -87,6 +135,7 @@ export function useAccountSummary() {
     ]).then(([clientResponse, sessionResponse, appResponse]) => {
       if (id !== requestId.current) return
       setData({ clients: clientResponse, sessions: sessionResponse.items, apps: appResponse.items })
+      setHasData(true)
       setError('')
     }).catch((reason: unknown) => {
       if (id !== requestId.current) return
@@ -102,7 +151,7 @@ export function useAccountSummary() {
     return () => { requestId.current += 1 }
   }, [load])
 
-  return { data, error, loading, retry: load }
+  return { data, error, loading, hasData, retry: load }
 }
 
 /**

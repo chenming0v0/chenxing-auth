@@ -2,13 +2,15 @@ use axum::{
     Router,
     routing::{delete, get, post},
 };
-use std::time::Duration;
 
 use crate::{
     admin::auth_handlers::create_admin,
     admin::factor_handlers::{auth_factor_key_health, reset_user_totp_factor, user_auth_factors},
     admin::handlers::{
         create_client, disable_client, enable_client, list_clients, rotate_secret, update_client,
+    },
+    admin::invitation_code_handlers::{
+        create_invitation_codes, disable_invitation_code, list_invitation_codes,
     },
     admin::key_handlers::{revoke_signing_key, rotate_signing_key},
     admin::management_handlers::{
@@ -41,10 +43,10 @@ use crate::{
         start_passkey_registration, start_totp_setup,
     },
     auth_factors::security_handlers::{
-        confirm_security_totp_enrollment, current_security_factors,
-        finish_security_passkey_registration, remove_security_passkey_factor,
-        remove_security_totp_factor, start_security_passkey_registration,
-        start_security_totp_enrollment,
+        cancel_security_factor_enrollment, confirm_security_totp_enrollment,
+        current_security_factors, finish_security_passkey_registration,
+        remove_security_passkey_factor, remove_security_totp_factor,
+        start_security_passkey_registration, start_security_totp_enrollment,
     },
     oauth::handlers::{authorize, authorize_post, token},
     oauth::providers::handlers::{
@@ -62,6 +64,7 @@ use crate::{
         current_user_avatar, delete_current_user_avatar, upload_current_user_avatar,
     },
     users::avatar_image::MAX_UPLOAD_BYTES,
+    users::email_change_handlers::{confirm_email_change, start_email_change},
     users::entitlements_handlers::current_entitlements,
     users::handlers::{login_user, register_user, registration_status, revoke_session},
     users::oauth_client_handlers::{
@@ -77,7 +80,7 @@ use crate::{
 
 use super::discovery::{jwks, openid_configuration};
 
-pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> Router<AppState> {
+pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
     router
         .route(
             "/.well-known/openid-configuration",
@@ -142,6 +145,11 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
                 .delete(delete_current_user_avatar)
                 .route_layer(axum::extract::DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
         )
+        .route("/api/v1/auth/email-change/start", post(start_email_change))
+        .route(
+            "/api/v1/auth/email-change/confirm",
+            post(confirm_email_change),
+        )
         .route("/api/v1/auth/password", post(change_current_user_password))
         .route("/api/v1/auth/entitlements", get(current_entitlements))
         .route("/api/v1/auth/security-events", get(list_security_events))
@@ -161,6 +169,10 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
         .route(
             "/api/v1/auth/security/totp/enrollment/start",
             post(start_security_totp_enrollment),
+        )
+        .route(
+            "/api/v1/auth/security/factor/enrollment/cancel",
+            post(cancel_security_factor_enrollment),
         )
         .route(
             "/api/v1/auth/security/totp/enrollment/confirm",
@@ -226,6 +238,14 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
         .route(
             "/api/v1/admin/settings/registration",
             get(get_registration_setting).put(update_registration_setting),
+        )
+        .route(
+            "/api/v1/admin/registration-invitation-codes",
+            get(list_invitation_codes).post(create_invitation_codes),
+        )
+        .route(
+            "/api/v1/admin/registration-invitation-codes/{id}/disable",
+            post(disable_invitation_code),
         )
         .route(
             "/api/v1/admin/settings/passkey",
@@ -348,7 +368,4 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
             "/api/v1/admin/keys/{key_id}/revoke",
             axum::routing::post(revoke_signing_key),
         )
-        // Health probes have their own 2s dependency budget. The static fallback may
-        // stream files, so neither should inherit this handler-future timeout.
-        .route_layer(super::timeout::request_timeout_layer(request_timeout))
 }

@@ -299,6 +299,71 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "runtime migration ledger boundary",
             include_str!("../../migrations/0032_runtime_migration_ledger_boundary.sql"),
         ),
+        (
+            33,
+            "registration invitation codes",
+            include_str!("../../migrations/0033_registration_invitation_codes.sql"),
+        ),
+        (
+            34,
+            "user email change challenges",
+            include_str!("../../migrations/0034_user_email_change_challenges.sql"),
+        ),
+        (
+            35,
+            "session outbox claim fence",
+            include_str!("../../migrations/0035_session_outbox_claim_fence.sql"),
+        ),
+        (
+            36,
+            "revoke runtime archive insert",
+            include_str!("../../migrations/0036_revoke_runtime_archive_insert.sql"),
+        ),
+        (
+            37,
+            "revoked access tokens",
+            include_str!("../../migrations/0037_revoked_access_tokens.sql"),
+        ),
+        (
+            38,
+            "jsonb oauth consent shapes",
+            include_str!("../../migrations/0038_jsonb_oauth_consent_shapes.sql"),
+        ),
+        (
+            39,
+            "session issued idle timeout",
+            include_str!("../../migrations/0039_session_issued_idle_timeout.sql"),
+        ),
+        (
+            40,
+            "oauth client auth method secret",
+            include_str!("../../migrations/0040_oauth_client_auth_method_secret.sql"),
+        ),
+        (
+            41,
+            "email change attempt budget",
+            include_str!("../../migrations/0041_email_change_attempt_budget.sql"),
+        ),
+        (
+            42,
+            "fix email change attempt budget",
+            include_str!("../../migrations/0042_email_change_attempt_budget_fix.sql"),
+        ),
+        (
+            43,
+            "email outbox",
+            include_str!("../../migrations/0043_email_outbox.sql"),
+        ),
+        (
+            44,
+            "oauth provider state version",
+            include_str!("../../migrations/0044_oauth_provider_state_version.sql"),
+        ),
+        (
+            45,
+            "email security alert outbox",
+            include_str!("../../migrations/0045_email_security_alert_outbox.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

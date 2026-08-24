@@ -11,6 +11,7 @@ use crate::{
     consents::ConsentService,
     db::Database,
     keys::{KeyManager, KeyManagerError},
+    notifications::{EmailOutbox, EmailSender, SmtpEmailSender},
     oauth::providers::{
         endpoint_policy::EndpointPolicy,
         secret_migration::{SecretMigrationError, migrate_persisted_credentials},
@@ -27,7 +28,10 @@ use crate::{
     plans::service::PlanService,
     redis_client::RedisClient,
     sessions::store::SessionStore,
-    settings::{IssuerRuntime, SecurityLimitsSetting, SettingsService, issuer::IssuerRecord},
+    settings::{
+        IssuerRuntime, SecurityLimitsSetting, SessionLifetimeSetting, SettingsService,
+        issuer::IssuerRecord,
+    },
     users::service::UserService,
     web_dist::{WebDistError, WebDistRoot},
     workers::{WorkerContext, WorkerHealth},
@@ -72,6 +76,8 @@ pub struct AppState {
     pub audit: AuditService,
     pub factors: AuthFactorService,
     pub external_oauth: ExternalOAuthService,
+    pub email_sender: Arc<dyn EmailSender>,
+    pub email_outbox: EmailOutbox,
     pub external_login_states: ExternalLoginStateStore,
 }
 
@@ -85,6 +91,8 @@ pub enum StateError {
     Database(#[from] crate::db::DbError),
     #[error("issuer configuration could not be resolved: {0}")]
     Issuer(#[from] crate::settings::IssuerSettingError),
+    #[error("settings initialization failed: {0}")]
+    Settings(#[from] crate::settings::SettingsServiceError),
     #[error("redis configuration is invalid: {0}")]
     Redis(#[from] redis::RedisError),
     #[error("key manager initialization failed: {0}")]
@@ -183,6 +191,12 @@ impl AppState {
     ///
     /// 用途是集成测试：先用 `new_with_pool` 建好状态，再换成固定时钟驱动
     /// 授权码、Refresh Token、Session 和 MFA 的到期边界。
+    pub fn with_email_sender(mut self, sender: Arc<dyn EmailSender>) -> Self {
+        self.email_sender = sender.clone();
+        self.email_outbox = self.email_outbox.clone().with_sender(sender);
+        self
+    }
+
     pub fn with_clock(mut self, clock: SharedClock) -> Self {
         self.authorization_codes = self.authorization_codes.clone().with_clock(clock.clone());
         self.refresh_tokens = self.refresh_tokens.clone().with_clock(clock.clone());
@@ -293,7 +307,15 @@ impl AppState {
             &config.webauthn_origin,
             SecurityLimitsSetting::from(&config.security_limits),
         )
+        .with_session_lifetime_default(SessionLifetimeSetting::from_boot_config(
+            config.session_ttl_seconds,
+            config.session_idle_timeout_seconds,
+        ))
         .with_issuer_runtime(issuer.clone());
+        let session_lifetime = settings
+            .session_lifetime()
+            .await
+            .map_err(StateError::Settings)?;
 
         // 安全阈值从 SettingsService 读取。稳态下命中它的进程内缓存，认证热路径不再
         // 逐次查询 `app_settings`（#300）；管理接口写入后主动刷新该缓存，因此同一进程
@@ -311,10 +333,13 @@ impl AppState {
             config.auth_encryption_keys.clone(),
         )
         .with_keyspace(config.redis_keyspace.clone())
+        // idle 只给并发上限和 Redis-only 旧载荷兜底。生产查找用会话行上
+        // 签发时写入的 idle_timeout_seconds（#644），不读启动配置。
         .with_session_policy(
-            Duration::from_secs(config.session_idle_timeout_seconds),
+            Duration::from_secs(session_lifetime.session_idle_timeout_seconds),
             config.session_max_concurrent_sessions,
         )
+        .with_runtime_policy(settings.session_lifetime_runtime())
         .with_absolute_ttl(Duration::from_secs(crate::config::MAX_SESSION_TTL_SECONDS))
         .with_clock(clock.clone());
         // 先于 users 构造：公开注册的按 IP 尝试配额复用这个限流器实例。
@@ -325,7 +350,8 @@ impl AppState {
             config.missing_source_ip_policy,
         )
         // 公开注册的按 IP 尝试配额复用同一个 QPS 限流器（作用域 key 独立）。
-        .with_registration_attempt_limiter(qps.clone());
+        .with_registration_attempt_limiter(qps.clone())
+        .with_email_encryption_keys(config.auth_encryption_keys.clone());
         let factors = AuthFactorService::new_with_source_ip_policy_and_keyspace(
             database.clone(),
             redis.clone(),
@@ -366,6 +392,12 @@ impl AppState {
         let audit = AuditService::new(database.clone()).with_clock(clock.clone());
         // 复用已加载的 secret_manager，避免第二次 load_or_generate 创建独立副本。
         // 出网边界策略来自配置（Issue #343）：回环/明文例外默认关闭。
+        let email_sender: Arc<dyn EmailSender> = Arc::new(SmtpEmailSender::new(settings.clone()));
+        let email_outbox = EmailOutbox::new(
+            database.clone(),
+            config.auth_encryption_keys.clone(),
+            email_sender.clone(),
+        );
         let external_oauth = ExternalOAuthService::new(
             database.clone(),
             secret_manager,
@@ -403,6 +435,8 @@ impl AppState {
             factors,
             external_oauth,
             external_login_states,
+            email_sender,
+            email_outbox,
         })
     }
 

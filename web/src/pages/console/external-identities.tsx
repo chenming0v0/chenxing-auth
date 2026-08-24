@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiFetch, type ExternalIdentity, type ExternalIdentityListResponse, type PublicExternalProvider } from '../../api'
+import { useModalFocus } from '../../components/modal'
 import { Badge, Button, HudPanel, Icon, PasswordField } from '../../components/ui'
+import { safeRedirectTarget } from '../../safe-redirect'
 import type { MessageTone } from './profile-avatar'
 
 type NoticeState = { text: string; tone: MessageTone }
@@ -23,26 +25,51 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
   const [identities, setIdentities] = useState<ExternalIdentity[]>([])
   const [providers, setProviders] = useState<PublicExternalProvider[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [unlinking, setUnlinking] = useState<ExternalIdentity | null>(null)
   const [password, setPassword] = useState('')
+  const loadRequestIdRef = useRef(0)
+  const loadInFlightRef = useRef(false)
+  const mountedRef = useRef(false)
 
-  async function load(): Promise<void> {
+  const load = useCallback(async (): Promise<void> => {
+    if (!mountedRef.current || loadInFlightRef.current) return
+    const requestId = ++loadRequestIdRef.current
+    loadInFlightRef.current = true
     setLoading(true)
-    try {
-      const [identityResponse, providerResponse] = await Promise.all([
-        apiFetch<ExternalIdentityListResponse>('/api/v1/auth/external-identities'),
-        apiFetch<PublicExternalProvider[]>('/api/v1/auth/external-providers', { redirectOn401: false }),
-      ])
-      setIdentities(Array.isArray(identityResponse.items) ? identityResponse.items : [])
-      setProviders(providerResponse.filter(isProvider))
-    } catch (error) {
-      onNotice({ text: error instanceof Error ? error.message : '外部账户状态加载失败。', tone: 'warning' })
-    } finally {
-      setLoading(false)
-    }
-  }
+    const [identityResult, providerResult] = await Promise.allSettled([
+      apiFetch<ExternalIdentityListResponse>('/api/v1/auth/external-identities'),
+      apiFetch<PublicExternalProvider[]>('/api/v1/auth/external-providers', { redirectOn401: false }),
+    ])
+    if (!mountedRef.current || requestId !== loadRequestIdRef.current) return
 
-  useEffect(() => { void load() }, [])
+    const errors: string[] = []
+    if (identityResult.status === 'fulfilled') {
+      setIdentities(Array.isArray(identityResult.value.items) ? identityResult.value.items : [])
+    } else {
+      errors.push(identityResult.reason instanceof Error ? identityResult.reason.message : '已绑定身份加载失败。')
+    }
+    if (providerResult.status === 'fulfilled') {
+      setProviders(providerResult.value.filter(isProvider))
+    } else {
+      errors.push(providerResult.reason instanceof Error ? providerResult.reason.message : '可用身份源加载失败。')
+    }
+    const message = errors.length ? errors.join(' ') : null
+    setLoadError(message)
+    if (message) onNotice({ text: message, tone: 'warning' })
+    loadInFlightRef.current = false
+    setLoading(false)
+  }, [onNotice])
+
+  useEffect(() => {
+    mountedRef.current = true
+    void load()
+    return () => {
+      mountedRef.current = false
+      loadInFlightRef.current = false
+      loadRequestIdRef.current += 1
+    }
+  }, [load])
 
   const bindings = useMemo(() => mergeProviderBindings(providers, identities), [providers, identities])
   const boundCount = bindings.filter((binding) => binding.identity).length + 1
@@ -55,8 +82,9 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
       const result = await apiFetch<ExternalBindingStart>(`/api/v1/auth/external-identities/${encodeURIComponent(slug)}/bind`, {
         method: 'POST',
       })
-      if (!isExternalBindingStart(result)) throw new Error('外部授权入口不可用，请稍后重试。')
-      window.location.assign(result.authorization_url)
+      const target = bindingRedirectTarget(result)
+      if (!target) throw new Error('外部授权入口不可用，请稍后重试。')
+      window.location.assign(target)
     } catch (error) {
       onNotice({ text: error instanceof Error ? error.message : '无法开始外部账户绑定。', tone: 'warning' })
       onBusy(null)
@@ -74,7 +102,8 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
     onNotice(null)
     try {
       await apiFetch<void>(`/api/v1/auth/external-identities/${encodeURIComponent(identity.provider)}`, {
-        method: 'DELETE', body: JSON.stringify({ password }),
+        method: 'DELETE',
+        redirectOn401: false, body: JSON.stringify({ password }),
       })
       setIdentities((current) => current.filter((item) => item.provider !== identity.provider))
       setUnlinking(null)
@@ -140,7 +169,14 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
         ))}
       </div>
 
-      {!loading && bindings.length === 0 ? (
+      {loadError ? (
+        <div className="mt-4 flex items-start gap-2 border-t border-[var(--chenxing-border)] pt-4">
+          <Icon name="circle-alert" size={16} className="mt-0.5 shrink-0 text-[var(--chenxing-warning)]" />
+          <p className="chenxing-caption">登录身份暂时不可用。{loadError} <button type="button" className="chenxing-link ml-2" disabled={loading} onClick={() => void load()}>重试</button></p>
+        </div>
+      ) : null}
+
+      {!loading && !loadError && bindings.length === 0 ? (
         <div className="mt-4 flex items-start gap-2 border-t border-[var(--chenxing-border)] pt-4">
           <Icon name="info" size={16} className="mt-0.5 shrink-0 text-[var(--chenxing-muted-foreground)]" />
           <p className="chenxing-caption">管理员尚未启用其他登录身份。启用新的 OAuth/OIDC 提供方后，本列表会自动扩展。</p>
@@ -214,18 +250,23 @@ function UnlinkDialog({ identity, password, busy, onPassword, onCancel, onConfir
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const containerRef = useModalFocus<HTMLElement>(onCancel, {
+    initialFocusSelector: '#unlink-external-password',
+    escapeDisabled: busy,
+  })
+
   return (
     <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-black/70 p-4" role="presentation">
-      <HudPanel as="section" role="dialog" aria-modal="true" aria-labelledby="unlink-external-title" className="relative z-[var(--chenxing-z-dialog)] w-full max-w-md">
+      <HudPanel ref={containerRef} as="section" role="dialog" aria-modal="true" aria-labelledby="unlink-external-title" tabIndex={-1} className="relative z-[var(--chenxing-z-dialog)] w-full max-w-md">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-error)]">// Re-authentication</p>
             <h2 id="unlink-external-title" className="chenxing-h2 mt-2">解除 {identity.provider_name}</h2>
           </div>
-          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel}><Icon name="x" size={17} /></button>
+          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel} disabled={busy}><Icon name="x" size={17} /></button>
         </div>
         <p className="chenxing-caption mt-4">这是敏感安全操作。请输入当前密码确认身份，外部账户不会再用于登录。</p>
-        <div className="mt-5"><PasswordField label="当前密码" autoComplete="current-password" value={password} onChange={(event) => onPassword(event.target.value)} /></div>
+        <div className="mt-5"><PasswordField id="unlink-external-password" label="当前密码" autoComplete="current-password" value={password} onChange={(event) => onPassword(event.target.value)} /></div>
         <div className="mt-5 flex flex-wrap justify-end gap-3">
           <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>取消</Button>
           <Button type="button" variant="danger" icon="unlink" onClick={onConfirm} disabled={busy}>{busy ? '处理中…' : '确认解除绑定'}</Button>
@@ -251,10 +292,10 @@ function mergeProviderBindings(providers: PublicExternalProvider[], identities: 
   return bindings
 }
 
-function isExternalBindingStart(value: unknown): value is ExternalBindingStart {
-  if (typeof value !== 'object' || value === null) return false
+function bindingRedirectTarget(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return null
   const candidate = value as { authorization_url?: unknown }
-  return typeof candidate.authorization_url === 'string' && candidate.authorization_url.length > 0
+  return typeof candidate.authorization_url === 'string' ? safeRedirectTarget(candidate.authorization_url) : null
 }
 
 function isProvider(provider: PublicExternalProvider): boolean {

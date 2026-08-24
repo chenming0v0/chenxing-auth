@@ -1,5 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import type { OAuthProviderInput, OAuthProviderSummary } from '../../../api'
+import { useModalFocus } from '../../../components/modal'
 import { Button, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '../../../components/ui'
 import { SelectField } from '../../../components/select'
 import { useDirtyReport } from './panel'
@@ -18,6 +19,7 @@ export type ProviderForm = {
   name_claim: string
   email_verified_claim: string
   client_auth_method: 'basic' | 'request_body'
+  pkce_enabled: boolean
   enabled: boolean
 }
 
@@ -35,6 +37,7 @@ const emptyForm: ProviderForm = {
   name_claim: 'name',
   email_verified_claim: 'email_verified',
   client_auth_method: 'basic',
+  pkce_enabled: true,
   enabled: true,
 }
 
@@ -97,6 +100,7 @@ function toForm(provider?: OAuthProviderSummary | null): ProviderForm {
     name_claim: provider.name_claim || '',
     email_verified_claim: provider.email_verified_claim || '',
     client_auth_method: provider.client_auth_method === 'request_body' ? 'request_body' : 'basic',
+    pkce_enabled: provider.pkce_enabled ?? true,
     enabled: provider.status === 'active',
   }
 }
@@ -115,6 +119,7 @@ export function toInput(form: ProviderForm): OAuthProviderInput {
     name_claim: form.name_claim.trim() || null,
     email_verified_claim: form.email_verified_claim.trim(),
     client_auth_method: form.client_auth_method,
+    pkce_enabled: form.pkce_enabled,
   }
   if (form.client_secret.trim()) input.client_secret = form.client_secret
   return input
@@ -153,6 +158,11 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
     onClose()
   }
 
+  const containerRef = useModalFocus<HTMLElement>(requestClose, {
+    initialFocusSelector: '#oauth-provider-name',
+    escapeDisabled: busy,
+  })
+
   function applyTemplate(next: string) {
     setTemplate(next)
     const preset = templates[next] || {}
@@ -181,10 +191,10 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
 
   return (
     <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-[rgba(2,4,10,0.72)] px-4 py-8 backdrop-blur-md">
-      <HudPanel as="form" className="w-full max-w-lg max-h-[90vh] overflow-y-auto" onSubmit={submit}>
+      <HudPanel ref={containerRef} as="form" role="dialog" aria-modal="true" aria-labelledby="oauth-provider-dialog-title" tabIndex={-1} className="w-full max-w-lg max-h-[90vh] overflow-y-auto" onSubmit={submit}>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="chenxing-h2 flex items-center gap-2">
+            <h2 id="oauth-provider-dialog-title" className="chenxing-h2 flex items-center gap-2">
               <Icon name="link" className="text-[var(--chenxing-cyan)]" size={18} />
               {title}
             </h2>
@@ -218,7 +228,7 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
             />
           ) : null}
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="显示名称 *" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如: 企业 GitLab" required />
+            <Field id="oauth-provider-name" label="显示名称 *" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如: 企业 GitLab" required />
             <Field label="Slug *" value={form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value })} placeholder="例如: gitlab" required disabled={Boolean(editing)} />
           </div>
           <Field label="Client ID *" value={form.client_id} onChange={(event) => setForm({ ...form, client_id: event.target.value })} placeholder="从提供商控制台复制" required />
@@ -264,6 +274,12 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
               { value: 'basic', label: 'basic' },
               { value: 'request_body', label: 'request_body' },
             ]}
+          />
+          <ToggleRow
+            title="启用 PKCE"
+            checked={form.pkce_enabled}
+            disabled={busy}
+            onChange={(pkce_enabled) => setForm({ ...form, pkce_enabled })}
           />
           {editing?.callback_uri ? <Field label="Callback URI" value={editing.callback_uri} readOnly /> : null}
         </fieldset>

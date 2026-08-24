@@ -1,15 +1,22 @@
 use super::domain::{UserId, UserPermission, UserRole, UserStatus};
 use crate::sqlx::PgPool;
 
-/// Credential that authorizes a high-risk management write (Issue #493).
+/// Credential that authorizes a high-risk management write (Issues #493 / #647).
 ///
-/// A browser request carries the generation of the exact Session Cookie that authenticated it.
-/// The write transaction locks that user and rechecks status, role, and generation before touching
-/// the target. The deployment `ADMIN_TOKEN` is deliberately separate: it has no user row or
-/// Session generation and follows explicit system-actor semantics.
+/// A browser request carries the identity and generation of the exact Session Cookie that
+/// authenticated it. The write transaction locks that user **and** that `user_sessions` row,
+/// then rechecks status, role, generation, and revocation before touching the target.
+/// Single-session logout sets `revoked_at` without advancing `users.session_epoch`, so the
+/// row identity is the only way to see that the Cookie is dead. The deployment `ADMIN_TOKEN`
+/// is deliberately separate: it has no user row or Session and follows explicit system-actor
+/// semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagementActorCredential {
-    UserSession { user_id: UserId, generation: i64 },
+    UserSession {
+        user_id: UserId,
+        session_id: i64,
+        generation: i64,
+    },
     SystemToken,
 }
 

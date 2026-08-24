@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import { apiFetch, type IssuerSettingResponse, type UpdateIssuerSetting } from '../../../api'
 import { Button, Field, HudPanel, Icon, Notice } from '../../../components/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
@@ -35,6 +35,8 @@ export function IssuerPanel(props: SettingsPanelProps) {
   const [savedValue, setSavedValue] = useState('')
   const [setting, setSetting] = useState<IssuerSettingResponse | null>(null)
   const [busy, setBusy] = useState(false)
+  const draftRef = useRef({ value, savedValue })
+  draftRef.current = { value, savedValue }
   const [validationError, setValidationError] = useState<string | null>(null)
 
   const { loading, failed, reload } = useSettingsResource<IssuerSettingResponse>({
@@ -44,8 +46,11 @@ export function IssuerPanel(props: SettingsPanelProps) {
     apply: (next) => {
       const nextValue = next.persisted?.value ?? next.loaded?.value ?? ''
       setSetting(next)
-      setValue(nextValue)
-      setSavedValue(nextValue)
+      const draftIsClean = draftRef.current.value === draftRef.current.savedValue
+      if (draftIsClean) {
+        setValue(nextValue)
+        setSavedValue(nextValue)
+      }
       setValidationError(null)
     },
   })

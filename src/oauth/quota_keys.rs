@@ -3,8 +3,17 @@ use time::{Date, Month, OffsetDateTime, Time};
 use super::OAuthQuotaError;
 use crate::redis_keyspace::RedisKeyspace;
 
+/// 待退台账 ZSET：member = reservation id，score = 授权码过期时刻（Unix 毫秒）。
+pub(super) const PENDING_REFUNDS_ZSET: &str = "chenxing:oauth:quota:refund-pending";
+
 pub(super) fn reservation_key(period_key: &str) -> String {
     format!("{period_key}:reservations")
+}
+
+pub(super) fn reservation_record_key(keyspace: &RedisKeyspace, reservation_id: &str) -> String {
+    keyspace.key(&format!(
+        "chenxing:oauth:quota:reservation:{reservation_id}"
+    ))
 }
 
 pub(super) fn period_keys(
@@ -40,4 +49,31 @@ pub(super) fn period_keys(
         next_day,
         next_month,
     ))
+}
+
+/// Merge the two on-disk score formats fairly so a full modern queue cannot
+/// starve upgrade-era legacy reservations. Legacy entries lead each pair to
+/// guarantee progress even when the batch is filled on every pass.
+pub(super) fn fair_merge_due(
+    modern: Vec<String>,
+    legacy: Vec<String>,
+    batch_size: usize,
+) -> Vec<String> {
+    let mut due = Vec::with_capacity(batch_size);
+    let mut modern_index = 0;
+    let mut legacy_index = 0;
+    while due.len() < batch_size && (modern_index < modern.len() || legacy_index < legacy.len()) {
+        if let Some(reservation_id) = legacy.get(legacy_index) {
+            due.push(reservation_id.clone());
+            legacy_index += 1;
+        }
+        if due.len() >= batch_size {
+            break;
+        }
+        if let Some(reservation_id) = modern.get(modern_index) {
+            due.push(reservation_id.clone());
+            modern_index += 1;
+        }
+    }
+    due
 }

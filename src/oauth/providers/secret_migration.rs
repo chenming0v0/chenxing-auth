@@ -30,8 +30,12 @@ pub async fn migrate_persisted_credentials(
         if let Some(migrated) =
             secrets.migrate_legacy_for(SecretContext::Provider(provider_id), &ciphertext)?
         {
-            repository::update_client_secret_ciphertext(&mut transaction, provider_id, &migrated)
-                .await?;
+            let _ = repository::update_client_secret_ciphertext(
+                &mut transaction,
+                provider_id,
+                &migrated,
+            )
+            .await?;
         }
     }
 
