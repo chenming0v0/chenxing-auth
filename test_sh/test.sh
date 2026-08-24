@@ -57,7 +57,7 @@ usage() {
       --full            完整测试套件（等价 nextest --all-features）
       --gate            完整验证链：格式 / 全量检查 / 测试 / clippy / 覆盖 / 审计 / 行数 / 清理
       --clippy          只跑 cargo clippy -D warnings
-      --coverage        只跑覆盖率门槛（cargo llvm-cov，行覆盖 75%）
+      --coverage        只跑覆盖率门槛（cargo llvm-cov nextest，行覆盖 75%）
       --audit           只跑 cargo audit
   -E, --filter EXPR     nextest filterset 表达式
 

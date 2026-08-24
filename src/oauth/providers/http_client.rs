@@ -50,7 +50,7 @@ mod tests {
     use super::*;
 
     /// 构造本身必须成功：它在 `ExternalOAuthService::new` 里是启动路径的一部分。
-    /// 代理是否真的被禁用由 `tests/oauth_provider_proxy_boundary.rs` 用真实连接证明。
+    /// 代理是否真的被禁用由 `tests/oauth/provider_proxy_boundary.rs` 用真实连接证明。
     #[test]
     fn provider_client_builds() {
         build_provider_http_client(EndpointPolicy::PRODUCTION).expect("provider http client");

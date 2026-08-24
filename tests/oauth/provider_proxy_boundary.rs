@@ -17,14 +17,69 @@
 //! 判定不用「计数器 + 事后读」，而是把 `accept()` 和请求放进同一个 `select!`：
 //! 谁先完成谁说明真相。计数器要依赖后台任务被调度到，在单线程运行时下时序不稳。
 //!
-//! 环境变量在建任何客户端之前设置，且这个测试二进制里只有本用例读写 environ。
+//! 环境变量在建任何客户端之前设置。收口成 `oauth` 二进制后，本用例与 sibling
+//! 测试共享进程，因此必须在 Drop 时把 environ 恢复原状；否则 `cargo test` /
+//! `cargo llvm-cov` 会把后续 reqwest 默认客户端打到已经关掉的代理端口。
 
-use std::{net::SocketAddr, time::Duration};
+use std::{ffi::OsString, net::SocketAddr, time::Duration};
 
 use chenxing_auth::oauth::providers::{
     endpoint_policy::EndpointPolicy, http_client::build_provider_http_client,
 };
 use tokio::net::TcpListener;
+
+/// 把代理相关环境变量改完后必须还原。`Drop` 覆盖成功路径和 panic 路径。
+struct ProxyEnvGuard {
+    http_proxy: Option<OsString>,
+    https_proxy: Option<OsString>,
+    all_proxy: Option<OsString>,
+    no_proxy: Option<OsString>,
+    no_proxy_lower: Option<OsString>,
+}
+
+impl ProxyEnvGuard {
+    fn apply(proxy_url: &str) -> Self {
+        let guard = Self {
+            http_proxy: std::env::var_os("HTTP_PROXY"),
+            https_proxy: std::env::var_os("HTTPS_PROXY"),
+            all_proxy: std::env::var_os("ALL_PROXY"),
+            no_proxy: std::env::var_os("NO_PROXY"),
+            no_proxy_lower: std::env::var_os("no_proxy"),
+        };
+        // SAFETY: 见 `apply` 调用点的注释。这里只负责写入，还原走 `Drop`。
+        unsafe {
+            std::env::set_var("HTTP_PROXY", proxy_url);
+            std::env::set_var("HTTPS_PROXY", proxy_url);
+            std::env::set_var("ALL_PROXY", proxy_url);
+            std::env::remove_var("NO_PROXY");
+            std::env::remove_var("no_proxy");
+        }
+        guard
+    }
+}
+
+impl Drop for ProxyEnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: 只写回 `apply` 保存的快照；前提与 `apply` 相同。
+        unsafe {
+            restore_env("HTTP_PROXY", self.http_proxy.take());
+            restore_env("HTTPS_PROXY", self.https_proxy.take());
+            restore_env("ALL_PROXY", self.all_proxy.take());
+            restore_env("NO_PROXY", self.no_proxy.take());
+            restore_env("no_proxy", self.no_proxy_lower.take());
+        }
+    }
+}
+
+unsafe fn restore_env(key: &str, value: Option<OsString>) {
+    // SAFETY: 调用方持有与 `apply` 相同的 environ 互斥前提；这里只是写回快照。
+    unsafe {
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+}
 
 /// 代理环境变量指向的目标主机。`.invalid` 是 RFC 2606 保留 TLD，保证不存在真实
 /// 解析结果：不走代理时解析必然失败，用例不依赖外网可达性。
@@ -98,17 +153,13 @@ async fn provider_client_ignores_system_proxy_environment() {
         .expect("bind proxy listener");
     let proxy_address: SocketAddr = listener.local_addr().expect("proxy listener address");
     let proxy_url = format!("http://{proxy_address}");
-    // SAFETY: 此刻进程内没有其他线程读写环境变量——运行时是 current_thread，
-    // 本测试二进制里只有本用例访问 environ，且设置发生在建任何客户端之前。
-    // Rust 2024 起 `set_var` 需要 `unsafe`，正是为了让这个前提显式写出来。
-    unsafe {
-        std::env::set_var("HTTP_PROXY", &proxy_url);
-        std::env::set_var("HTTPS_PROXY", &proxy_url);
-        std::env::set_var("ALL_PROXY", &proxy_url);
-        // NO_PROXY 是运维旁路，不能让它替被测代码把边界撑住。
-        std::env::remove_var("NO_PROXY");
-        std::env::remove_var("no_proxy");
-    }
+    // SAFETY: 本用例必须改进程 environ 才能证明生产客户端忽略系统代理。
+    // 运行时是 current_thread，设置发生在建任何客户端之前。`oauth` 二进制里
+    // 还有 sibling 测试会并发读 `DATABASE_URL` 等变量，所以 `set_var` 在
+    // `cargo test` 下仍与其它线程形成数据竞争；CI coverage 改走 nextest
+    // 后每个用例独立进程，这个竞争在 CI 上不存在。`ProxyEnvGuard` 保证
+    // 本进程在用例结束后不把死代理留给后续测试。
+    let _guard = ProxyEnvGuard::apply(&proxy_url);
 
     // 对照：默认 builder 采纳环境变量里的代理，必须命中监听器。
     let control = reqwest::Client::builder().build().expect("control client");

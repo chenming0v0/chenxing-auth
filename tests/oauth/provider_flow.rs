@@ -475,6 +475,7 @@ async fn custom_provider_registers_reuses_identity_and_rejects_state_replay() {
     let authorize_location = location(&response);
     let authorize_response = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .build()
         .expect("mock client")
         .get(&authorize_location)
@@ -537,6 +538,7 @@ async fn custom_provider_registers_reuses_identity_and_rejects_state_replay() {
     let second_location = location(&response);
     let second_authorize = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .build()
         .expect("mock client")
         .get(&second_location)
@@ -717,6 +719,7 @@ async fn custom_provider_does_not_auto_link_existing_email() {
     let state_cookie = set_cookie(&response, EXTERNAL_STATE_COOKIE_PREFIX);
     let authorize_response = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .build()
         .expect("mock client")
         .get(location(&response))
@@ -784,6 +787,7 @@ async fn run_external_login_with_cookies(
     let state_cookie = set_cookie(&response, EXTERNAL_STATE_COOKIE_PREFIX);
     let authorize_response = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .build()
         .expect("mock client")
         .get(location(&response))

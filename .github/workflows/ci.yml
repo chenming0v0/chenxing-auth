@@ -197,8 +197,11 @@ jobs:
         with:
           toolchain: 1.94.0
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --fail-under-lines 75
+      # nextest 一测一进程，避免 oauth 代理边界用例改 HTTP_PROXY 污染 sibling。
+      # quality job 已经用 nextest；coverage 必须同一隔离模型，不能退回 cargo test。
+      - run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info --fail-under-lines 75
       - uses: actions/upload-artifact@v4
         with:
           name: rust-coverage

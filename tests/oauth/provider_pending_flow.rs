@@ -269,6 +269,7 @@ async fn begin_external_login(router: &Router, slug: &str, request_id: &str) -> 
     let state_cookie = set_cookie(&response, "chenxing_external_oauth_state_");
     let authorize_response = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .build()
         .expect("mock client")
         .get(location(&response))

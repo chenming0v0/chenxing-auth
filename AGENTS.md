@@ -155,7 +155,7 @@ CHENXING_TEST_ROLE=orchestrator ./test_sh/test.sh --full
 
 `test_sh/prune_target.py` 依据 Cargo 自己报告的 `compiler-artifact` 清单判定哪些产物还活着，只删陈旧配置的残留。受限编译（`--lib` / `--test`）下退化为同名去重，并用 mtime 窗口保留同一次构建的多个合法产物。
 
-`--coverage` 会用独立的 `target/llvm-cov-target` 从零重编译，运行器在覆盖率阶段结束后顺带剪枝该目录。
+`--coverage` 会用独立的 `target/llvm-cov-target` 从零重编译，并通过 `cargo llvm-cov nextest` 按进程隔离跑用例（与 quality job 同一模型，避免共享进程里的 `HTTP_PROXY` 泄漏），运行器在覆盖率阶段结束后顺带剪枝该目录。
 
 #### 会执行用例的裸 Cargo 命令
 
