@@ -124,6 +124,8 @@ pub struct ClientRegistrationInput {
     pub logo_uri: Option<String>,
     #[serde(default)]
     pub client_uri: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 pub type ClientUpdateInput = ClientRegistrationInput;
@@ -135,6 +137,7 @@ pub struct ValidatedClientRegistration {
     pub scopes: Vec<String>,
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -167,6 +170,8 @@ pub enum ClientRegistrationError {
     InvalidLogoUri,
     #[error("client URI is invalid")]
     InvalidClientUri,
+    #[error("description is invalid")]
+    InvalidDescription,
 }
 
 pub fn validate_client_registration(
@@ -228,6 +233,7 @@ pub fn validate_client_registration_with_limits(
     let scopes = deduplicate(scopes);
     let logo_uri = crate::clients::presentation::validate_logo_uri(input.logo_uri)?;
     let client_uri = crate::clients::presentation::validate_client_uri(input.client_uri)?;
+    let description = crate::clients::presentation::validate_description(input.description)?;
 
     Ok(ValidatedClientRegistration {
         client_name,
@@ -235,6 +241,7 @@ pub fn validate_client_registration_with_limits(
         scopes,
         logo_uri,
         client_uri,
+        description,
     })
 }
 

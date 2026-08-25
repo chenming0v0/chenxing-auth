@@ -115,6 +115,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
             scopes: vec!["openid".to_owned(), "profile".to_owned()],
             logo_uri: None,
             client_uri: None,
+            description: None,
         },
         client_id.clone(),
         ClientCredential::SecretBasic("client-secret-hash".to_owned()),
@@ -152,6 +153,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
                 scopes: vec!["openid".to_owned()],
                 logo_uri: None,
                 client_uri: None,
+                description: None,
             },
         )
         .await
@@ -461,6 +463,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         scopes: vec!["openid".to_owned()],
         logo_uri: None,
         client_uri: None,
+        description: None,
     };
     client_repository::insert_owned_client(
         &pool,
@@ -614,6 +617,7 @@ async fn owned_client_creation_reloads_quota_after_a_barriered_plan_downgrade() 
         scopes: vec!["openid".to_owned()],
         logo_uri: None,
         client_uri: None,
+        description: None,
     };
     client_repository::insert_owned_client(
         &pool,

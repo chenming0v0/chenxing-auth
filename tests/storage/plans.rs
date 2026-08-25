@@ -1396,6 +1396,7 @@ fn service_client_input(label: &str) -> ClientRegistrationInput {
         scopes: vec!["openid".to_owned()],
         logo_uri: None,
         client_uri: None,
+        description: None,
     }
 }
 

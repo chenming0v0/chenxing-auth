@@ -23,6 +23,7 @@ impl ClientService {
             owner_user_id: client.owner_user_id,
             logo_uri: client.logo_uri,
             client_uri: client.client_uri,
+            description: client.description,
         }))
     }
 }

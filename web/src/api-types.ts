@@ -107,6 +107,7 @@ export type OwnedOAuthClient = {
   auth_method: ClientAuthMethod
   logo_uri: string | null
   client_uri: string | null
+  description?: string | null
 }
 
 export type OwnedOAuthClientList = { items: OwnedOAuthClient[]; total?: number }
@@ -121,6 +122,7 @@ export type ClientInput = {
   scopes: string[]
   logo_uri?: string | null
   client_uri?: string | null
+  description?: string | null
 }
 /** 创建请求在 ClientInput 上附加认证方式。auth_method 创建后不可改。 */
 export type ClientCreateInput = ClientInput & { auth_method: ClientAuthMethod }
@@ -131,6 +133,7 @@ export type AuthorizedOAuthApp = {
   updated_at: string
   logo_uri?: string | null
   client_uri?: string | null
+  description?: string | null
 }
 export type AuthorizedOAuthAppList = { items: AuthorizedOAuthApp[] }
 
@@ -387,6 +390,7 @@ export type PendingAuthorization = {
   expires_in: number
   logo_uri?: string | null
   client_uri?: string | null
+  description?: string | null
 }
 export type AuthorizationDecisionResponse = {
   decision: 'approve' | 'deny'

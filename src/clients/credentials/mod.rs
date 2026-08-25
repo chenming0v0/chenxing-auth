@@ -215,6 +215,7 @@ mod tests {
             scopes: vec!["openid".to_owned()],
             logo_uri: None,
             client_uri: None,
+            description: None,
         }
         .into();
         assert_eq!(request.auth_method, ClientAuthMethod::Basic);

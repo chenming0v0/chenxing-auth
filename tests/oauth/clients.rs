@@ -10,6 +10,7 @@ fn client_registration_accepts_exact_https_redirect_uri() {
         scopes: vec!["openid".to_owned(), "profile".to_owned()],
         logo_uri: None,
         client_uri: None,
+        description: None,
     })
     .expect("valid client registration");
 
@@ -28,6 +29,7 @@ fn client_registration_rejects_http_redirect_uri() {
         scopes: vec!["openid".to_owned()],
         logo_uri: None,
         client_uri: None,
+        description: None,
     })
     .expect_err("production client must use HTTPS");
 
@@ -42,6 +44,7 @@ fn client_registration_rejects_open_redirect_uri() {
         scopes: vec!["openid".to_owned()],
         logo_uri: None,
         client_uri: None,
+        description: None,
     })
     .expect_err("wildcard redirect must be rejected");
 

@@ -18,6 +18,7 @@ pub(super) struct OwnedClientResponse {
     pub(super) auth_method: &'static str,
     pub(super) logo_uri: Option<String>,
     pub(super) client_uri: Option<String>,
+    pub(super) description: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -81,6 +82,7 @@ pub(super) async fn owned_registered_response(
             auth_method: client.auth_method.as_str(),
             logo_uri: client.logo_uri,
             client_uri: client.client_uri,
+            description: client.description,
         },
         client_secret: client.client_secret,
     })

@@ -61,6 +61,7 @@ pub struct NewClient {
     pub auth_method: ClientAuthMethod,
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug)]
@@ -79,6 +80,7 @@ pub struct StoredClient {
     pub owner_user_id: Option<UserId>,
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug)]
@@ -93,6 +95,7 @@ pub struct ListedClient {
     pub auth_method: ClientAuthMethod,
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -125,9 +128,10 @@ type ClientRow = (
     String,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
-const LIST_COLUMNS: &str = "id, client_id, client_name, redirect_uris, scopes, status, owner_user_id, auth_method, logo_uri, client_uri";
+const LIST_COLUMNS: &str = "id, client_id, client_name, redirect_uris, scopes, status, owner_user_id, auth_method, logo_uri, client_uri, description";
 
 fn to_listed_client(row: ClientRow) -> ListedClient {
     let (
@@ -141,6 +145,7 @@ fn to_listed_client(row: ClientRow) -> ListedClient {
         auth_method,
         logo_uri,
         client_uri,
+        description,
     ) = row;
     ListedClient {
         id,
@@ -154,6 +159,7 @@ fn to_listed_client(row: ClientRow) -> ListedClient {
             .expect("oauth_clients.auth_method is constrained to ClientAuthMethod"),
         logo_uri,
         client_uri,
+        description,
     }
 }
 
@@ -172,8 +178,8 @@ where
 {
     crate::sqlx::query_scalar(
         "INSERT INTO oauth_clients
-          (client_id, client_name, client_secret_hash, redirect_uris, scopes, auth_method, status, created_at, owner_user_id, logo_uri, client_uri)
-          VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10)
+          (client_id, client_name, client_secret_hash, redirect_uris, scopes, auth_method, status, created_at, owner_user_id, logo_uri, client_uri, description)
+          VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11)
           RETURNING id",
     )
     .bind(client_id)
@@ -186,6 +192,7 @@ where
     .bind(owner_user_id)
     .bind(&registration.logo_uri)
     .bind(&registration.client_uri)
+    .bind(&registration.description)
     .fetch_one(executor)
     .await
 }
@@ -219,6 +226,7 @@ pub async fn insert_client(
         auth_method: credential.auth_method(),
         logo_uri: registration.logo_uri,
         client_uri: registration.client_uri,
+        description: registration.description,
     })
 }
 
@@ -254,6 +262,7 @@ where
         auth_method: credential.auth_method(),
         logo_uri: registration.logo_uri,
         client_uri: registration.client_uri,
+        description: registration.description,
     };
     crate::audit::repository::insert_with(&mut *transaction, &audit_event(&client))
         .await
@@ -266,14 +275,14 @@ pub async fn find_client_by_id(
     pool: &PgPool,
     client_id: &str,
 ) -> Result<Option<StoredClient>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (String, String, Json<Vec<String>>, Json<Vec<String>>, String, Option<UserId>, Option<String>, Option<String>)>(
-        "SELECT client_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri FROM oauth_clients WHERE client_id = $1",
+    crate::sqlx::query_as::<_, (String, String, Json<Vec<String>>, Json<Vec<String>>, String, Option<UserId>, Option<String>, Option<String>, Option<String>)>(
+        "SELECT client_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri, description FROM oauth_clients WHERE client_id = $1",
     )
     .bind(client_id)
     .fetch_optional(pool)
     .await
     .map(|record| {
-        record.map(|(client_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri)| StoredClient {
+        record.map(|(client_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri, description)| StoredClient {
             client_id,
             client_name,
             redirect_uris: redirect_uris.0,
@@ -282,6 +291,7 @@ pub async fn find_client_by_id(
             owner_user_id,
             logo_uri,
             client_uri,
+            description,
         })
     })
 }

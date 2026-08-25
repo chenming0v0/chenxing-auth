@@ -39,6 +39,7 @@ fn authorization_code_from_request(
             owner_user_id: None,
             logo_uri: None,
             client_uri: None,
+            description: None,
         },
         AuthorizationRequest {
             client_id: CLIENT_ID.to_owned(),

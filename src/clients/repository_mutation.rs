@@ -13,7 +13,7 @@ pub async fn update_client_with_audit(
 ) -> Result<bool, AuditedClientMutationError> {
     let mut transaction = pool.begin().await?;
     let result = crate::sqlx::query(
-        "UPDATE oauth_clients SET client_name = $3, redirect_uris = $4, scopes = $5, logo_uri = $6, client_uri = $7
+        "UPDATE oauth_clients SET client_name = $3, redirect_uris = $4, scopes = $5, logo_uri = $6, client_uri = $7, description = $8
          WHERE client_id = $1 AND ($2::bigint IS NULL OR owner_user_id = $2)",
     )
     .bind(client_id)
@@ -23,6 +23,7 @@ pub async fn update_client_with_audit(
     .bind(serde_json::to_value(&registration.scopes).expect("scopes are serializable"))
     .bind(&registration.logo_uri)
     .bind(&registration.client_uri)
+    .bind(&registration.description)
     .execute(&mut *transaction)
     .await?;
     if result.rows_affected() != 1 {
@@ -67,7 +68,7 @@ pub async fn update_client(
     registration: &ValidatedClientRegistration,
 ) -> Result<bool, crate::sqlx::Error> {
     let result = crate::sqlx::query(
-        "UPDATE oauth_clients SET client_name = $3, redirect_uris = $4, scopes = $5, logo_uri = $6, client_uri = $7
+        "UPDATE oauth_clients SET client_name = $3, redirect_uris = $4, scopes = $5, logo_uri = $6, client_uri = $7, description = $8
          WHERE client_id = $1 AND ($2::bigint IS NULL OR owner_user_id = $2)",
     )
     .bind(client_id)
@@ -77,6 +78,7 @@ pub async fn update_client(
     .bind(serde_json::to_value(&registration.scopes).expect("scopes are serializable"))
     .bind(&registration.logo_uri)
     .bind(&registration.client_uri)
+    .bind(&registration.description)
     .execute(pool)
     .await?;
     Ok(result.rows_affected() == 1)

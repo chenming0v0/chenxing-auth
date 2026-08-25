@@ -242,6 +242,7 @@ fn to_summary(client: repository::ListedClient) -> ClientSummary {
         auth_method: client.auth_method,
         logo_uri: client.logo_uri,
         client_uri: client.client_uri,
+        description: client.description,
     }
 }
 

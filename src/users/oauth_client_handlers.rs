@@ -470,6 +470,7 @@ async fn add_quota(
             auth_method: client.auth_method.as_str(),
             logo_uri: client.logo_uri,
             client_uri: client.client_uri,
+            description: client.description,
         });
     }
     Ok(items)

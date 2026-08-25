@@ -80,6 +80,7 @@ async fn seed_user_and_client(
             scopes: vec!["openid".to_owned(), "profile".to_owned()],
             logo_uri: None,
             client_uri: None,
+            description: None,
         },
         client_id.clone(),
         ClientCredential::SecretBasic("client-secret-hash".to_owned()),

@@ -94,6 +94,7 @@ pub struct RegisteredClientSecret {
     pub auth_method: ClientAuthMethod,
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 impl fmt::Debug for RegisteredClientSecret {
@@ -111,6 +112,7 @@ impl fmt::Debug for RegisteredClientSecret {
             .field("auth_method", &self.auth_method)
             .field("logo_uri", &self.logo_uri)
             .field("client_uri", &self.client_uri)
+            .field("description", &self.description)
             .finish()
     }
 }
@@ -134,6 +136,7 @@ pub struct ClientSummary {
     pub auth_method: ClientAuthMethod,
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Serialize)]

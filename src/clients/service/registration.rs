@@ -256,6 +256,7 @@ impl ClientService {
             client_secret,
             logo_uri: persisted.value.logo_uri,
             client_uri: persisted.value.client_uri,
+            description: persisted.value.description,
         })
     }
 }
@@ -301,5 +302,6 @@ fn registered_client_secret(
         auth_method: client.auth_method,
         logo_uri: client.logo_uri,
         client_uri: client.client_uri,
+        description: client.description,
     }
 }

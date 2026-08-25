@@ -120,6 +120,7 @@ pub async fn inspect_authorization_request(
             expires_in,
             logo_uri: client.logo_uri,
             client_uri: client.client_uri,
+            description: client.description,
         }),
     )
         .into_response()

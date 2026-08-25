@@ -168,6 +168,7 @@ impl MockConsentRepository {
                 updated_at: OffsetDateTime::UNIX_EPOCH,
                 logo_uri: None,
                 client_uri: None,
+                description: None,
             })
             .collect()
     }

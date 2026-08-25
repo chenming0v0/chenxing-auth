@@ -11,6 +11,7 @@ pub(super) struct PendingRequestResponse {
     pub(super) expires_in: u64,
     pub(super) logo_uri: Option<String>,
     pub(super) client_uri: Option<String>,
+    pub(super) description: Option<String>,
 }
 
 impl fmt::Debug for PendingRequestResponse {
@@ -25,6 +26,7 @@ impl fmt::Debug for PendingRequestResponse {
             .field("expires_in", &self.expires_in)
             .field("logo_uri", &self.logo_uri)
             .field("client_uri", &self.client_uri)
+            .field("description", &self.description)
             .finish()
     }
 }

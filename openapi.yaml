@@ -3449,6 +3449,11 @@ components:
         updated_at: { type: string, format: date-time }
         logo_uri: { type: string, format: uri, nullable: true }
         client_uri: { type: string, format: uri, nullable: true }
+        description:
+          type: string
+          nullable: true
+          maxLength: 512
+          description: 可选应用描述，展示在授权确认页和已授权应用列表；空白或省略表示未设置
     AuthorizedOAuthAppList:
       type: object
       required: [items]
@@ -3491,6 +3496,11 @@ components:
           format: uri
           nullable: true
           description: RFC 7591 可选主页 URL，仅 HTTPS；缺省不影响授权
+        description:
+          type: string
+          nullable: true
+          maxLength: 512
+          description: 可选应用描述，展示在开发者控制台和授权确认页；空白或省略表示未设置
     OwnedOAuthClientList:
       type: object
       required: [items, total]
@@ -3634,6 +3644,11 @@ components:
         expires_in: { type: integer, format: int64, example: 600 }
         logo_uri: { type: string, format: uri, nullable: true }
         client_uri: { type: string, format: uri, nullable: true }
+        description:
+          type: string
+          nullable: true
+          maxLength: 512
+          description: 可选应用描述，展示在授权确认页；空白或省略表示未设置
     AuthorizationDecisionInput:
       type: object
       required: [decision]
@@ -4298,6 +4313,11 @@ components:
           nullable: true
           maxLength: 2048
           description: 可选 HTTPS 主页 URL。空白或省略表示未设置；更新时传空字符串可清除。
+        description:
+          type: string
+          nullable: true
+          maxLength: 512
+          description: 可选应用描述，展示在开发者控制台和授权确认页；空白或省略表示未设置；更新时传空字符串可清除。服务端 trim，最长 512 字符，拒绝除换行/回车/制表外的控制字符。
     ClientSummary:
       allOf:
         - $ref: '#/components/schemas/ClientInput'
@@ -4313,6 +4333,7 @@ components:
               enum: [client_secret_basic, client_secret_post, none]
             logo_uri: { type: string, format: uri, nullable: true }
             client_uri: { type: string, format: uri, nullable: true }
+            description: { type: string, nullable: true, maxLength: 512 }
     RegisteredClient:
       allOf:
         - $ref: '#/components/schemas/ClientSummary'

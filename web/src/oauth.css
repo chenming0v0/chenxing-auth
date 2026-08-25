@@ -82,6 +82,13 @@
          因此 mt-* 工具类无法覆盖 .oauth-copy 的 margin: 0，间距在此以语义类表达 */
       /* 标题下方的引导语（选择账号页） */
       .oauth-copy.is-lead { margin-top: 16px; }
+      /* 应用自己填写的描述：标题下、身份锚点上。开发者可控文案，不是安全信号，
+         不要做成带边框或盾牌的块，避免看起来像服务端校验结果。 */
+      .oauth-copy.is-app-desc {
+        margin-top: 12px;
+        font-size: 0.85rem;
+        overflow-wrap: anywhere;
+      }
       /* 账号列表下方的隐私政策/服务条款说明 */
       .oauth-copy.is-legal {
         margin-top: 18px;

@@ -50,6 +50,7 @@ struct RegisteredClientResponse {
     client_secret: Option<String>,
     logo_uri: Option<String>,
     client_uri: Option<String>,
+    description: Option<String>,
 }
 
 impl fmt::Debug for RegisteredClientResponse {
@@ -67,6 +68,7 @@ impl fmt::Debug for RegisteredClientResponse {
             )
             .field("logo_uri", &self.logo_uri)
             .field("client_uri", &self.client_uri)
+            .field("description", &self.description)
             .finish()
     }
 }
@@ -83,6 +85,7 @@ struct ClientSummary {
     auth_method: &'static str,
     logo_uri: Option<String>,
     client_uri: Option<String>,
+    description: Option<String>,
 }
 
 pub async fn create_client(
@@ -156,6 +159,7 @@ pub async fn create_client(
                 client_secret: client.client_secret,
                 logo_uri: client.logo_uri,
                 client_uri: client.client_uri,
+                description: client.description,
             }),
         )
             .into_response(),
@@ -205,6 +209,7 @@ pub async fn list_clients(
                         auth_method: client.auth_method.as_str(),
                         logo_uri: client.logo_uri,
                         client_uri: client.client_uri,
+                        description: client.description,
                     })
                     .collect::<Vec<_>>(),
             ),

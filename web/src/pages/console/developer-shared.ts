@@ -1,7 +1,3 @@
-export function splitValues(value: string): string[] {
-  return value.split(/[\n, ]+/).map((item) => item.trim()).filter(Boolean)
-}
-
 export function newIdempotencyKey(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()

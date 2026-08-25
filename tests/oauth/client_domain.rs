@@ -15,6 +15,7 @@ fn client_registration_trims_and_deduplicates_scopes() {
         scopes: vec![" openid ".to_owned(), "openid".to_owned()],
         logo_uri: None,
         client_uri: None,
+        description: None,
     })
     .expect("valid client registration");
 
@@ -39,6 +40,7 @@ fn client_registration_enforces_configured_collection_limits() {
             scopes: vec!["openid".to_owned()],
             logo_uri: None,
             client_uri: None,
+            description: None,
         },
         &limits,
     )
@@ -52,6 +54,7 @@ fn client_registration_enforces_configured_collection_limits() {
             scopes: vec!["s".repeat(17)],
             logo_uri: None,
             client_uri: None,
+            description: None,
         },
         &limits,
     )
@@ -67,6 +70,7 @@ fn client_registration_rejects_scope_outside_server_allowlist() {
         scopes: vec!["admin".to_owned()],
         logo_uri: None,
         client_uri: None,
+        description: None,
     })
     .expect_err("unknown scopes must be rejected");
 
@@ -85,6 +89,7 @@ fn client_registration_accepts_explicitly_configured_custom_scope() {
             scopes: vec!["project:read".to_owned()],
             logo_uri: None,
             client_uri: None,
+            description: None,
         },
         &limits,
     )
@@ -103,6 +108,7 @@ fn client_registration_rejects_boundary_overflows_and_large_json_values() {
         scopes: vec!["openid".to_owned()],
         logo_uri: None,
         client_uri: None,
+        description: None,
     })
     .expect_err("redirect URI collection must be bounded");
     assert_eq!(error, ClientRegistrationError::TooManyRedirectUris);
@@ -127,6 +133,7 @@ fn client_registration_rejects_boundary_overflows_and_large_json_values() {
         scopes: vec!["scope".to_owned(); DEFAULT_MAX_SCOPES + 1],
         logo_uri: None,
         client_uri: None,
+        description: None,
     })
     .expect_err("scope collection must be bounded");
     assert_eq!(error, ClientRegistrationError::TooManyScopes);
@@ -137,6 +144,7 @@ fn client_registration_rejects_boundary_overflows_and_large_json_values() {
         scopes: vec!["界".repeat(DEFAULT_MAX_SCOPE_LENGTH + 1)],
         logo_uri: None,
         client_uri: None,
+        description: None,
     })
     .expect_err("Unicode scope length must be bounded by characters");
     assert_eq!(error, ClientRegistrationError::ScopeTooLong);
@@ -150,6 +158,7 @@ fn client_registration_rejects_redirect_uri_with_userinfo() {
         scopes: vec!["openid".to_owned()],
         logo_uri: None,
         client_uri: None,
+        description: None,
     })
     .expect_err("redirect URI userinfo must be rejected");
 

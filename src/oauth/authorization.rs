@@ -50,6 +50,7 @@ pub struct RegisteredClient {
     pub owner_user_id: Option<UserId>,
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq)]

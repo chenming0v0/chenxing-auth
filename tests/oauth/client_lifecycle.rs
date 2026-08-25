@@ -10,6 +10,7 @@ fn client_update_uses_the_same_strict_registration_rules() {
         scopes: vec!["openid".to_owned(), "profile".to_owned()],
         logo_uri: None,
         client_uri: None,
+        description: None,
     })
     .expect("valid update");
 

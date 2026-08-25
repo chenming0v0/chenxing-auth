@@ -1,13 +1,34 @@
 //! RFC 7591 / OIDC DCR 展示元数据校验。
 //!
-//! `logo_uri` 和 `client_uri` 只给同意屏看，不参与令牌交换。服务端只校验 URL
-//! 形态，不拉取内容，避免把用户可控地址变成 SSRF。
+//! `logo_uri`、`client_uri` 和 `description` 只给同意屏和开发者控制台看，
+//! 不参与令牌交换。URI 字段只校验形态，不拉取内容，避免把用户可控地址变成 SSRF。
 
 use url::Url;
 
 use super::domain::ClientRegistrationError;
 
 pub const MAX_PRESENTATION_URI_LENGTH: usize = 2_048;
+pub const MAX_DESCRIPTION_LENGTH: usize = 512;
+
+pub fn validate_description(
+    value: Option<String>,
+) -> Result<Option<String>, ClientRegistrationError> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > MAX_DESCRIPTION_LENGTH
+        || trimmed
+            .chars()
+            .any(|ch| ch.is_control() && ch != '\n' && ch != '\r' && ch != '\t')
+    {
+        return Err(ClientRegistrationError::InvalidDescription);
+    }
+    Ok(Some(trimmed.to_owned()))
+}
 
 pub fn validate_logo_uri(value: Option<String>) -> Result<Option<String>, ClientRegistrationError> {
     validate_https_uri(value, PresentationField::Logo)
@@ -72,6 +93,20 @@ mod tests {
         assert_eq!(validate_logo_uri(Some(String::new())).unwrap(), None);
         assert_eq!(validate_logo_uri(Some("   ".to_owned())).unwrap(), None);
         assert_eq!(validate_client_uri(Some("\t".to_owned())).unwrap(), None);
+        assert_eq!(validate_description(None).unwrap(), None);
+        assert_eq!(validate_description(Some("  \n".to_owned())).unwrap(), None);
+    }
+
+    #[test]
+    fn description_is_trimmed_and_bounded() {
+        assert_eq!(
+            validate_description(Some("  Agent Router 公益站  ".to_owned())).unwrap(),
+            Some("Agent Router 公益站".to_owned())
+        );
+        assert_eq!(
+            validate_description(Some("x".repeat(MAX_DESCRIPTION_LENGTH + 1))).unwrap_err(),
+            ClientRegistrationError::InvalidDescription
+        );
     }
 
     #[test]

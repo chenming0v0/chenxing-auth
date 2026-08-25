@@ -10,16 +10,19 @@ import {
 import { Drawer } from '../../components/drawer'
 import { SelectField } from '../../components/select'
 import { Button, Field, HudPanel, Icon, Notice, TextAreaField } from '../../components/ui'
+import { DEFAULT_SELECTED_SCOPES } from '../../oauth-permissions'
 import { useMutationLock } from '../../use-mutation-lock'
 import {
   findInvalidRedirectUri,
   httpsUriProblem,
   newIdempotencyKey,
   REDIRECT_URI_RULE_MESSAGE,
-  splitValues,
 } from './developer-shared'
+import { PermissionChecklist } from './permission-checklist'
+import { RedirectUriList, type RedirectUriListHandle } from './redirect-uri-list'
 
 const NAME_MAX = 128
+const DESCRIPTION_MAX = 512
 const CONFIDENTIAL_AUTH_OPTIONS = [
   { value: 'client_secret_basic', label: 'HTTP Basic（client_secret_basic）' },
   { value: 'client_secret_post', label: '请求体（client_secret_post）' },
@@ -29,35 +32,38 @@ type AppKind = 'confidential' | 'public'
 
 type FormState = {
   name: string
+  description: string
   logoUri: string
   clientUri: string
   kind: AppKind
   authMethod: Exclude<ClientAuthMethod, 'none'>
-  redirectUris: string
-  scopes: string
+  redirectUris: string[]
+  scopes: string[]
 }
 
-type FieldKey = 'name' | 'logoUri' | 'clientUri' | 'redirectUris' | 'scopes'
+type FieldKey = 'name' | 'description' | 'logoUri' | 'clientUri' | 'redirectUris' | 'scopes'
 type FieldErrors = Partial<Record<FieldKey, string>>
 
 const FIELD_ID: Record<FieldKey, string> = {
   name: 'app-register-name',
+  description: 'app-register-description',
   logoUri: 'app-register-logo-uri',
   clientUri: 'app-register-client-uri',
   redirectUris: 'app-register-redirect-uris',
   scopes: 'app-register-scopes',
 }
-const FIELD_ORDER: FieldKey[] = ['name', 'logoUri', 'clientUri', 'redirectUris', 'scopes']
+const FIELD_ORDER: FieldKey[] = ['name', 'description', 'logoUri', 'clientUri', 'redirectUris', 'scopes']
 
 function emptyForm(): FormState {
   return {
     name: '',
+    description: '',
     logoUri: '',
     clientUri: '',
     kind: 'confidential',
     authMethod: 'client_secret_basic',
-    redirectUris: '',
-    scopes: 'openid profile',
+    redirectUris: [],
+    scopes: [...DEFAULT_SELECTED_SCOPES],
   }
 }
 
@@ -65,12 +71,13 @@ function formFromClient(client: OwnedOAuthClient): FormState {
   return {
     ...emptyForm(),
     name: client.client_name,
+    description: client.description ?? '',
     logoUri: client.logo_uri ?? '',
     clientUri: client.client_uri ?? '',
     kind: client.auth_method === 'none' ? 'public' : 'confidential',
     authMethod: client.auth_method === 'none' ? 'client_secret_basic' : client.auth_method,
-    redirectUris: client.redirect_uris.join('\n'),
-    scopes: client.scopes.join(' '),
+    redirectUris: [...client.redirect_uris],
+    scopes: [...client.scopes],
   }
 }
 
@@ -91,24 +98,34 @@ function validate(form: FormState): FieldErrors {
   if (!name) errors.name = '请填写应用名称。'
   else if (Array.from(name).length > NAME_MAX) errors.name = `应用名称最多 ${NAME_MAX} 个字符。`
 
+  if (Array.from(form.description.trim()).length > DESCRIPTION_MAX) {
+    errors.description = `应用描述最多 ${DESCRIPTION_MAX} 个字符。`
+  }
+
   const logoError = optionalHttpsError(form.logoUri, true)
   if (logoError) errors.logoUri = logoError
   const homeError = optionalHttpsError(form.clientUri, true)
   if (homeError) errors.clientUri = homeError
 
-  const redirectUris = splitValues(form.redirectUris)
-  if (!redirectUris.length) errors.redirectUris = '请填写至少一个 Redirect URI。'
+  if (!form.redirectUris.length) errors.redirectUris = '请至少添加一个 Redirect URI。'
   else {
-    const invalid = findInvalidRedirectUri(redirectUris)
+    const invalid = findInvalidRedirectUri(form.redirectUris)
     if (invalid) errors.redirectUris = `「${invalid.value}」${invalid.reason}。${REDIRECT_URI_RULE_MESSAGE}`
   }
 
-  if (!splitValues(form.scopes).length) errors.scopes = '请填写至少一个 Scope。'
+  if (!form.scopes.length) errors.scopes = '请至少选择一项权限。'
   return errors
 }
 
 function authMethodOf(form: FormState): ClientAuthMethod {
   return form.kind === 'public' ? 'none' : form.authMethod
+}
+
+function previewCaption(form: FormState, creating: boolean, errors: FieldErrors): string {
+  const description = form.description.trim()
+  if (description) return description
+  if (creating && form.clientUri.trim() && !errors.clientUri) return form.clientUri.trim()
+  return '无 Logo 时，同意页使用名称首字'
 }
 
 export function AppRegisterDrawer({
@@ -128,6 +145,7 @@ export function AppRegisterDrawer({
   const [message, setMessage] = useState('')
   const [logoFailed, setLogoFailed] = useState(false)
   const createIdempotencyRef = useRef<{ fingerprint: string; key: string } | null>(null)
+  const redirectUrisRef = useRef<RedirectUriListHandle>(null)
   const { busy, run } = useMutationLock()
   const kindLabelId = useId()
   const previewLogo = form.logoUri.trim()
@@ -149,7 +167,15 @@ export function AppRegisterDrawer({
   async function submit(event: FormEvent) {
     event.preventDefault()
     setMessage('')
-    const nextErrors = validate(form)
+    const flushed = redirectUrisRef.current?.commitDraft()
+    const redirectUris = flushed?.uris ?? form.redirectUris
+    const nextForm = { ...form, redirectUris }
+    const nextErrors = validate(nextForm)
+    if (flushed?.error) {
+      setErrors({ ...nextErrors, redirectUris: undefined })
+      document.getElementById(FIELD_ID.redirectUris)?.focus()
+      return
+    }
     setErrors(nextErrors)
     if (Object.values(nextErrors).some(Boolean)) {
       focusFirstError(nextErrors)
@@ -158,10 +184,11 @@ export function AppRegisterDrawer({
 
     const input: ClientInput = {
       client_name: form.name.trim(),
-      redirect_uris: splitValues(form.redirectUris),
-      scopes: splitValues(form.scopes),
+      redirect_uris: redirectUris,
+      scopes: form.scopes,
       logo_uri: form.logoUri.trim() || null,
       client_uri: form.clientUri.trim() || null,
+      description: form.description.trim() || null,
     }
     await run(async () => {
       try {
@@ -196,7 +223,7 @@ export function AppRegisterDrawer({
   return (
     <Drawer
       title={editing ? '编辑应用' : '注册新应用'}
-      description="服务端负责校验 Redirect URI、Scope、认证方式和配额。"
+      description="登记应用身份、回调地址，以及授权时向用户申请的权限。"
       onClose={onClose}
       onSubmit={(event) => void submit(event)}
       busy={busy}
@@ -224,9 +251,7 @@ export function AppRegisterDrawer({
           )}
           <div className="min-w-0">
             <p className="chenxing-body truncate text-sm font-semibold">{form.name.trim() || '未命名应用'}</p>
-            <p className="chenxing-caption mt-0.5 truncate">
-              {creating && form.clientUri.trim() && !errors.clientUri ? form.clientUri.trim() : '无 Logo 时，同意页使用名称首字'}
-            </p>
+            <p className="chenxing-caption mt-0.5 truncate">{previewCaption(form, creating, errors)}</p>
           </div>
         </div>
         <Field
@@ -240,32 +265,41 @@ export function AppRegisterDrawer({
           errorText={errors.name}
           hint={`最多 ${NAME_MAX} 个字符，将出现在授权确认页。`}
         />
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field
-            label="Logo URL（选填）"
-            id={FIELD_ID.logoUri}
-            icon="image"
-            type="url"
-            inputMode="url"
-            placeholder="https://app.example.com/logo.png"
-            value={form.logoUri}
-            onChange={(event) => update('logoUri', event.target.value)}
-            errorText={errors.logoUri}
-            hint="仅 HTTPS 图片地址，不支持本地上传。同意页会展示这张图；留空则使用名称首字。"
-          />
-          <Field
-            label="应用主页（选填）"
-            id={FIELD_ID.clientUri}
-            icon="globe"
-            type="url"
-            inputMode="url"
-            placeholder="https://app.example.com"
-            value={form.clientUri}
-            onChange={(event) => update('clientUri', event.target.value)}
-            errorText={errors.clientUri}
-            hint="仅 HTTPS。用于同意页展示应用来源，不参与授权校验。"
-          />
-        </div>
+        <TextAreaField
+          label="应用描述（选填）"
+          id={FIELD_ID.description}
+          placeholder="一句话说明这个应用是做什么的"
+          value={form.description}
+          onChange={(event) => update('description', event.target.value)}
+          errorText={errors.description}
+          rows={3}
+          className="!min-h-20"
+          hint={`最多 ${DESCRIPTION_MAX} 个字符，将出现在授权确认页。`}
+        />
+        <Field
+          label="Logo URL（选填）"
+          id={FIELD_ID.logoUri}
+          icon="image"
+          type="url"
+          inputMode="url"
+          placeholder="https://app.example.com/logo.png"
+          value={form.logoUri}
+          onChange={(event) => update('logoUri', event.target.value)}
+          errorText={errors.logoUri}
+          hint="仅 HTTPS 图片地址，不支持本地上传。同意页会展示这张图；留空则使用名称首字。"
+        />
+        <Field
+          label="应用主页（选填）"
+          id={FIELD_ID.clientUri}
+          icon="globe"
+          type="url"
+          inputMode="url"
+          placeholder="https://app.example.com"
+          value={form.clientUri}
+          onChange={(event) => update('clientUri', event.target.value)}
+          errorText={errors.clientUri}
+          hint="仅 HTTPS。用于同意页展示应用来源，不参与授权校验。"
+        />
       </HudPanel>
 
       {creating ? (
@@ -322,24 +356,19 @@ export function AppRegisterDrawer({
 
       <HudPanel className="space-y-4 !p-5">
         <p className="chenxing-label !mb-0">回调与权限</p>
-        <TextAreaField
-          label="Redirect URI"
+        <RedirectUriList
+          ref={redirectUrisRef}
           id={FIELD_ID.redirectUris}
-          placeholder="每行一个严格匹配的 URI"
-          value={form.redirectUris}
-          onChange={(event) => update('redirectUris', event.target.value)}
-          required
+          uris={form.redirectUris}
+          onChange={(uris) => update('redirectUris', uris)}
           errorText={errors.redirectUris}
-          hint={REDIRECT_URI_RULE_MESSAGE}
+          disabled={busy}
         />
-        <TextAreaField
-          label="Scope"
+        <PermissionChecklist
           id={FIELD_ID.scopes}
-          value={form.scopes}
-          onChange={(event) => update('scopes', event.target.value)}
-          required
+          selected={form.scopes}
+          onChange={(scopes) => update('scopes', scopes)}
           errorText={errors.scopes}
-          hint="用空格、逗号或换行分隔。默认 allowlist：openid、profile、email。"
         />
       </HudPanel>
     </Drawer>

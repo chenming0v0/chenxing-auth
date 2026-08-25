@@ -13,6 +13,7 @@ fn client() -> RegisteredClient {
         owner_user_id: None,
         logo_uri: None,
         client_uri: None,
+        description: None,
     }
 }
 

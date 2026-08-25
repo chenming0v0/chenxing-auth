@@ -49,6 +49,7 @@ async fn revocation_handler_rejects_unknown_hint_and_accepts_supported_hints() {
             scopes: vec!["openid".to_owned()],
             logo_uri: None,
             client_uri: None,
+            description: None,
         })
         .await
         .expect("test client");
