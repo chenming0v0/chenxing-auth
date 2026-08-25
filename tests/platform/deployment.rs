@@ -3,7 +3,7 @@ use std::path::Path;
 const BUILD_WORKFLOW: &str = include_str!("../../.github/workflows/build.yml");
 const CI_WORKFLOW: &str = include_str!("../../.github/workflows/ci.yml");
 const INSTALL_SCRIPT: &str = include_str!("../../deploy/install.sh");
-const REMOTE_INSTALL_SCRIPT: &str = include_str!("../../install.sh");
+const REMOTE_INSTALL_SCRIPT: &str = include_str!("../../manage.sh");
 const PRODUCTION_COMPOSE: &str = include_str!("../../docker-compose.prod.yml");
 const REDIS_CRASH_RECOVERY_SCRIPT: &str = include_str!("../../test_sh/redis_crash_recovery.sh");
 const TEST_RUNNER_CONTRACT_SCRIPT: &str = include_str!("../../test_sh/test_runner_contract.sh");
@@ -450,8 +450,8 @@ fn signing_failures_map_to_oauth_unavailable_and_gate_readiness() {
 #[test]
 fn ci_validates_the_remote_installer_without_weakening_coverage() {
     for marker in [
-        "bash -n install.sh",
-        "bash install.sh --prepare-only",
+        "bash -n manage.sh",
+        "bash \"$remote_install_dir/manage.sh\" --prepare-only",
         "chenxing-remote-install",
         "config --quiet",
         "--fail-under-lines 75",
@@ -918,6 +918,8 @@ fn remote_installer_uses_published_images_and_keeps_download_progress_visible() 
         "docker pull \"$REDIS_IMAGE\"",
         "compose run --rm migrate",
         "compose up -d app",
+        "MANAGER_NAME=\"manage.sh\"",
+        "--debug",
         "Owner 在管理设置中写入固定的 HTTPS Issuer",
         "PostgreSQL app_settings",
         "--prepare-only",
@@ -1064,7 +1066,7 @@ fn source_installer_keeps_legacy_issuer_checks_and_documents_protected_bootstrap
 fn deployment_files_are_present_at_repository_root() {
     assert!(Path::new(".github/workflows/build.yml").is_file());
     assert!(Path::new("deploy/install.sh").is_file());
-    assert!(Path::new("install.sh").is_file());
+    assert!(Path::new("manage.sh").is_file());
     assert!(Path::new("docker-compose.prod.yml").is_file());
     assert!(Path::new("Dockerfile").is_file());
     assert!(Path::new("Dockerfile.runtime").is_file());
@@ -1537,4 +1539,19 @@ fn production_app_requires_the_migration_job_to_finish_successfully() {
         main.contains("db::verify_schema_current(&startup_database).await?;"),
         "the web process must reject a stale migration ledger before constructing application state"
     );
+}
+
+#[test]
+fn remote_manager_pulls_the_release_before_running_migrations() {
+    let script = REMOTE_INSTALL_SCRIPT.replace("\\r\\n", "\\n");
+    let pull_at = script
+        .find("docker pull \"$CHENXING_IMAGE\"")
+        .expect("published installer must pull the app image");
+    let migrate_at = script
+        .find("run --rm migrate")
+        .expect("remote installer must run the migration job");
+    let start_at = script
+        .find("compose up -d app")
+        .expect("remote manager must start the app after migration");
+    assert!(pull_at < migrate_at && migrate_at < start_at);
 }

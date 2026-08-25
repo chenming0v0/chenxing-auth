@@ -200,14 +200,33 @@ src/
 推荐在一台已经安装 Docker Engine 和 Docker Compose v2 的服务器上直接下载安装器：
 
 ```bash
-wget -O install.sh https://raw.githubusercontent.com/chenming0v0/chenxing-auth/releases/install.sh
-bash install.sh
+mkdir -p /root/chenxing-auth
+cd /root/chenxing-auth
+wget -O manage.sh https://raw.githubusercontent.com/chenming0v0/chenxing-auth/releases/manage.sh
+bash ./manage.sh --debug
 ```
 
 安装器会生成独立部署目录和权限为 `0600` 的 `.env`，并依次拉取辰星认证中枢、
 PostgreSQL 和 Redis 镜像。三个 `docker pull` 的分层下载与解压进度不会隐藏；随后会
 显示数据库迁移、容器启动和就绪检查过程。安装器只以应用容器内的 `GET /health/ready` 返回 200 为准；该端点同时确认数据库、Redis、五个关键后台 worker 和签名密钥同步均就绪，只有 liveness 成功而依赖尚未就绪时不会误报成功。若就绪端点持续失败，超时诊断会输出 Compose 服务状态、应用容器 health 状态和应用日志。默认使用
-`ghcr.io/chenming0v0/chenxing-auth:latest`，可通过 `CHENXING_IMAGE` 覆盖。
+`ghcr.io/chenming0v0/chenxing-auth:latest`，可通过 `CHENXING_IMAGE` 覆盖。升级已有部署也必须
+重新运行同一安装器，不能只执行 `docker compose pull app && docker compose up -d app`：安装器会
+先拉取应用镜像，再用同一镜像执行 `migrate`，迁移成功后才启动 Web 服务。
+
+`manage.sh` 以自身所在目录作为部署目录，因此可以放在 `/root/chenxing-auth`、`/opt/chenxing-auth`
+或其他绝对路径下，从任何工作目录调用都不会写错位置。该目录长期只保留三个文件：`.env`、
+`compose.yml` 和 `manage.sh`。后续升级仍然执行同一个命令：
+
+```bash
+cd /root/chenxing-auth
+bash ./manage.sh --debug
+```
+
+已有 `.env` 时，`manage.sh` 会自动从同一 raw 地址把最新版下载到当前部署目录的隐藏临时文件，
+语法校验后由新版本执行升级，结束后删除临时文件。升级失败会停止在迁移或启动阶段；`--debug`
+只输出脱敏的 Compose 状态、镜像、健康状态和最近日志，不会输出 `.env` 或展开后的 Compose
+配置。脚本不会删除目录中已有的未知文件；全新部署本身不在项目目录保存数据库、Redis、密钥或
+临时备份，它们分别使用 Docker named volume。
 
 新实例不要求安装时已经拥有域名，安装器生成的 `.env` 也不包含 `APP_ISSUER`。数据库
 尚未写入 Issuer 时，进程进入保护模式：`/health*` 健康检查、静态前端和首个 Owner
