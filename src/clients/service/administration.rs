@@ -137,9 +137,7 @@ impl ClientService {
             &self.pool,
             None,
             client_id,
-            &registration.client_name,
-            &registration.redirect_uris,
-            &registration.scopes,
+            &registration,
             audit_event,
         )
         .await
@@ -178,15 +176,7 @@ impl ClientService {
         input: ClientRegistrationInput,
     ) -> Result<bool, ClientServiceError> {
         let registration = validate_client_registration_with_limits(input, &self.limits)?;
-        Ok(repository::update_client(
-            &self.pool,
-            None,
-            client_id,
-            &registration.client_name,
-            &registration.redirect_uris,
-            &registration.scopes,
-        )
-        .await?)
+        Ok(repository::update_client(&self.pool, None, client_id, &registration).await?)
     }
 
     pub async fn update_for_user(
@@ -196,15 +186,10 @@ impl ClientService {
         input: ClientRegistrationInput,
     ) -> Result<bool, ClientServiceError> {
         let registration = validate_client_registration_with_limits(input, &self.limits)?;
-        Ok(repository::update_client(
-            &self.pool,
-            Some(owner_user_id),
-            client_id,
-            &registration.client_name,
-            &registration.redirect_uris,
-            &registration.scopes,
+        Ok(
+            repository::update_client(&self.pool, Some(owner_user_id), client_id, &registration)
+                .await?,
         )
-        .await?)
     }
 
     pub async fn set_status(
@@ -254,6 +239,9 @@ fn to_summary(client: repository::ListedClient) -> ClientSummary {
         scopes: client.scopes,
         status: client.status,
         owner_user_id: client.owner_user_id,
+        auth_method: client.auth_method,
+        logo_uri: client.logo_uri,
+        client_uri: client.client_uri,
     }
 }
 

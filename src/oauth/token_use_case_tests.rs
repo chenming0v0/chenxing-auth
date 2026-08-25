@@ -37,6 +37,8 @@ fn authorization_code_from_request(
             redirect_uris: vec![registered_redirect_uri.to_owned()],
             scopes: vec!["openid".to_owned()],
             owner_user_id: None,
+            logo_uri: None,
+            client_uri: None,
         },
         AuthorizationRequest {
             client_id: CLIENT_ID.to_owned(),

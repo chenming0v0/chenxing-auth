@@ -254,6 +254,8 @@ impl ClientService {
             scopes: persisted.value.scopes,
             auth_method,
             client_secret,
+            logo_uri: persisted.value.logo_uri,
+            client_uri: persisted.value.client_uri,
         })
     }
 }
@@ -297,5 +299,7 @@ fn registered_client_secret(
         redirect_uris: client.redirect_uris,
         scopes: client.scopes,
         auth_method: client.auth_method,
+        logo_uri: client.logo_uri,
+        client_uri: client.client_uri,
     }
 }

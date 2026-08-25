@@ -113,6 +113,8 @@ async fn postgres_repositories_round_trip_users_and_clients() {
             client_name: "Storage Client".to_owned(),
             redirect_uris: vec!["https://storage.example/callback".to_owned()],
             scopes: vec!["openid".to_owned(), "profile".to_owned()],
+            logo_uri: None,
+            client_uri: None,
         },
         client_id.clone(),
         ClientCredential::SecretBasic("client-secret-hash".to_owned()),
@@ -144,9 +146,13 @@ async fn postgres_repositories_round_trip_users_and_clients() {
             &pool,
             None,
             &client_id,
-            "Updated Client",
-            &["https://storage.example/new-callback".to_owned()],
-            &["openid".to_owned()],
+            &ValidatedClientRegistration {
+                client_name: "Updated Client".to_owned(),
+                redirect_uris: vec!["https://storage.example/new-callback".to_owned()],
+                scopes: vec!["openid".to_owned()],
+                logo_uri: None,
+                client_uri: None,
+            },
         )
         .await
         .expect("update client")
@@ -453,6 +459,8 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         client_name: "Owned Client".to_owned(),
         redirect_uris: vec!["https://owned.example/callback".to_owned()],
         scopes: vec!["openid".to_owned()],
+        logo_uri: None,
+        client_uri: None,
     };
     client_repository::insert_owned_client(
         &pool,
@@ -604,6 +612,8 @@ async fn owned_client_creation_reloads_quota_after_a_barriered_plan_downgrade() 
         client_name: "Quota race client".to_owned(),
         redirect_uris: vec!["https://quota-race.example/callback".to_owned()],
         scopes: vec!["openid".to_owned()],
+        logo_uri: None,
+        client_uri: None,
     };
     client_repository::insert_owned_client(
         &pool,

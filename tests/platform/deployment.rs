@@ -1141,11 +1141,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         DB_MODULE
             .contains("include_str!(\"../../migrations/0045_email_security_alert_outbox.sql\")")
     );
+    assert!(
+        DB_MODULE.contains("include_str!(\"../../migrations/0046_oauth_client_presentation.sql\")")
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        45
+        46
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1189,14 +1192,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 45);
+    assert_eq!(migrations.len(), 46);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0045_email_security_alert_outbox.sql")
+        Some("0046_oauth_client_presentation.sql")
     );
     let versions = migrations
         .iter()
@@ -1207,7 +1210,7 @@ fn database_uses_forward_only_transactional_migration_history() {
                 .expect("migration filename starts with a version prefix")
         })
         .collect::<Vec<_>>();
-    assert_eq!(versions, (1..=45).collect::<Vec<_>>());
+    assert_eq!(versions, (1..=46).collect::<Vec<_>>());
 
     assert_eq!(
         DATABASE_BASELINE.matches("CREATE TABLE ").count(),

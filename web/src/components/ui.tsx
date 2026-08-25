@@ -2,7 +2,7 @@ import { createElement, forwardRef, useEffect, useId, useRef, useState } from 'r
 import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
 import {
   Activity, AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Box, CalendarClock, Check, ChevronDown,
-  ChevronsUpDown, Circle, CircleAlert, Code2, Copy, Crown, Database, Download, ExternalLink, Eye, EyeOff, Fingerprint,
+  ChevronsUpDown, Circle, CircleAlert, Code2, Copy, Crown, Database, Download, ExternalLink, Eye, EyeOff, Fingerprint, Image as ImageIcon,
   FlaskConical, Gauge, Globe, Globe2, Info, KeyRound, LayoutDashboard, LayoutGrid, Layers, Link2, Lock, LockKeyhole,
   LogIn, LogOut, Mail, Menu, MoreHorizontal, Pencil, Plus, Power, Receipt, RefreshCw, Rocket, RotateCcw, Save, Search,
   Send, Server, Settings, Settings2, Shield, ShieldAlert, ShieldCheck, Sparkles, Star, Store, Terminal, Trash2, Unlink,
@@ -18,7 +18,7 @@ const icons: Record<string, LucideIcon> = {
   'chevron-down': ChevronDown, 'chevrons-up-down': ChevronsUpDown, circle: Circle, 'circle-alert': CircleAlert,
   'code-2': Code2, copy: Copy, crown: Crown, database: Database, download: Download, 'external-link': ExternalLink,
   eye: Eye, 'eye-off': EyeOff, fingerprint: Fingerprint, 'flask-conical': FlaskConical, gauge: Gauge, github: Code2, globe: Globe, 'globe-2': Globe2,
-  info: Info, 'key-round': KeyRound, 'layout-dashboard': LayoutDashboard, 'layout-grid': LayoutGrid, layers: Layers,
+  image: ImageIcon, info: Info, 'key-round': KeyRound, 'layout-dashboard': LayoutDashboard, 'layout-grid': LayoutGrid, layers: Layers,
   link: Link2, lock: Lock, 'lock-keyhole': LockKeyhole, 'log-in': LogIn, 'log-out': LogOut, mail: Mail, menu: Menu,
   'more-horizontal': MoreHorizontal, pencil: Pencil, plus: Plus, power: Power, receipt: Receipt, 'refresh-cw': RefreshCw,
   rocket: Rocket, 'rotate-ccw': RotateCcw, save: Save, search: Search, send: Send, server: Server, settings: Settings,
@@ -280,19 +280,38 @@ export function PasswordField({ label, icon, hint, error, errorText, autoComplet
   )
 }
 
-type TextAreaFieldProps = TextareaHTMLAttributes<HTMLTextAreaElement> & { label: string; hint?: string }
+type TextAreaFieldProps = TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  label: string
+  hint?: string
+  error?: boolean
+  errorText?: string
+}
 
-export function TextAreaField({ label, hint, className = '', ...props }: TextAreaFieldProps) {
+export function TextAreaField({ label, hint, error, errorText, className = '', ...props }: TextAreaFieldProps) {
   const autoId = useId()
   const inputId = props.id ?? autoId
   const messageId = `${inputId}-message`
+  const invalid = Boolean(errorText) || error
   // 与 Field 同一套关联方式：提示不进无障碍名称，只作为 describedby 说明。
-  const describedBy = [props['aria-describedby'], hint ? messageId : undefined].filter(Boolean).join(' ') || undefined
+  const describedBy = [props['aria-describedby'], errorText || hint ? messageId : undefined].filter(Boolean).join(' ') || undefined
   return (
     <div>
       <label className="chenxing-label" htmlFor={inputId}>{label}</label>
-      <textarea className={`chenxing-field min-h-28 resize-y ${className}`} {...props} id={inputId} aria-describedby={describedBy} />
-      {hint ? <small className="chenxing-caption mt-1.5 block" id={messageId}>{hint}</small> : null}
+      <textarea
+        className={`chenxing-field min-h-28 resize-y ${invalid ? 'chenxing-field-error' : ''} ${className}`}
+        {...props}
+        id={inputId}
+        aria-describedby={describedBy}
+        aria-invalid={invalid || undefined}
+      />
+      {errorText ? (
+        <small className="chenxing-field-message" id={messageId}>
+          <Icon name="circle-alert" size={13} className="shrink-0" />
+          {errorText}
+        </small>
+      ) : hint ? (
+        <small className="chenxing-caption mt-1.5 block" id={messageId}>{hint}</small>
+      ) : null}
     </div>
   )
 }

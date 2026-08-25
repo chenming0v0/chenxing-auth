@@ -181,8 +181,8 @@ impl ConsentRepository for PgConsentRepository {
     ) -> Result<Vec<AuthorizedApp>, crate::sqlx::Error> {
         // 软删除后的记录不再展示给用户：撤销事实保留在库中供审计，
         // 但「已授权应用」列表只包含当前生效的授权。
-        let rows = crate::sqlx::query_as::<_, (String, String, Json<Vec<String>>, OffsetDateTime)>(
-            "SELECT oc.client_id, oc.client_name, c.scopes, c.updated_at
+        let rows = crate::sqlx::query_as::<_, (String, String, Json<Vec<String>>, OffsetDateTime, Option<String>, Option<String>)>(
+            "SELECT oc.client_id, oc.client_name, c.scopes, c.updated_at, oc.logo_uri, oc.client_uri
              FROM user_consents c
              JOIN oauth_clients oc ON oc.id = c.client_id
              WHERE c.user_id = $1 AND c.revoked_at IS NULL
@@ -194,11 +194,15 @@ impl ConsentRepository for PgConsentRepository {
         Ok(rows
             .into_iter()
             .map(
-                |(client_id, client_name, Json(scopes), updated_at)| AuthorizedApp {
-                    client_id,
-                    client_name,
-                    scopes,
-                    updated_at,
+                |(client_id, client_name, Json(scopes), updated_at, logo_uri, client_uri)| {
+                    AuthorizedApp {
+                        client_id,
+                        client_name,
+                        scopes,
+                        updated_at,
+                        logo_uri,
+                        client_uri,
+                    }
                 },
             )
             .collect())

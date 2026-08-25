@@ -78,6 +78,8 @@ async fn seed_user_and_client(
             client_name: "Consent Client".to_owned(),
             redirect_uris: vec!["https://consent.example/callback".to_owned()],
             scopes: vec!["openid".to_owned(), "profile".to_owned()],
+            logo_uri: None,
+            client_uri: None,
         },
         client_id.clone(),
         ClientCredential::SecretBasic("client-secret-hash".to_owned()),

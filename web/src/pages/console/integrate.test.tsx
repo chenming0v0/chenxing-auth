@@ -47,6 +47,9 @@ const CLIENT: OwnedOAuthClient = {
   scopes: ['openid'],
   status: 'active' as const,
   quota: { daily_limit: null, daily_used: 0, monthly_limit: null, monthly_used: 0 },
+  auth_method: 'client_secret_basic',
+  logo_uri: null,
+  client_uri: null,
 }
 
 const OLD_CLIENT: OwnedOAuthClient = {
@@ -238,6 +241,29 @@ describe('IntegratePage Redirect URI guidance', () => {
       path === '/api/v1/auth/oauth-clients' && init?.method === 'POST')
     expect(createCall).toBeTruthy()
     expect(createCall?.[1]?.headers).toEqual({ 'Idempotency-Key': expect.any(String) })
+    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({ auth_method: 'client_secret_basic' })
+  })
+
+  it('shows a public-client notice when create response omits the secret', async () => {
+    apiFetchMock.mockImplementation((path, init) => {
+      if (path === '/api/v1/auth/oauth-clients' && init?.method === 'POST') {
+        return Promise.resolve({ ...CLIENT, client_id: 'cx-public', auth_method: 'none' })
+      }
+      if (path === '/api/v1/auth/oauth-clients' && init === undefined) {
+        return Promise.resolve({ items: [] })
+      }
+      return Promise.resolve(undefined)
+    })
+    render(<IntegratePage />)
+    fireEvent.click(screen.getAllByRole('button', { name: '注册新应用' })[0])
+    fireEvent.click(screen.getByRole('radio', { name: /公开客户端/ }))
+    fireEvent.change(screen.getByLabelText('应用名称'), { target: { value: '星尘 SPA' } })
+    fireEvent.change(screen.getByLabelText('Redirect URI'), { target: { value: 'https://spa.example.com/cb' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建应用' }))
+
+    expect(await screen.findByText('公开客户端已创建')).toBeTruthy()
+    expect(screen.getByText('cx-public')).toBeTruthy()
+    expect(screen.queryByLabelText('复制 Client Secret')).toBeNull()
   })
 
   it('reuses a retry key for Secret rotation', async () => {

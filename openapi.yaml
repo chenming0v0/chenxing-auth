@@ -3447,6 +3447,8 @@ components:
         client_name: { type: string, description: OAuth 应用显示名称 }
         scopes: { type: array, items: { type: string } }
         updated_at: { type: string, format: date-time }
+        logo_uri: { type: string, format: uri, nullable: true }
+        client_uri: { type: string, format: uri, nullable: true }
     AuthorizedOAuthAppList:
       type: object
       required: [items]
@@ -3466,7 +3468,7 @@ components:
         monthly_used: { type: integer, format: int64 }
     OwnedOAuthClient:
       type: object
-      required: [id, client_id, client_name, redirect_uris, scopes, status, quota]
+      required: [id, client_id, client_name, redirect_uris, scopes, status, quota, auth_method]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         client_id: { type: string }
@@ -3475,6 +3477,20 @@ components:
         scopes: { type: array, items: { type: string } }
         status: { type: string, enum: [active, disabled] }
         quota: { $ref: '#/components/schemas/QuotaSnapshot' }
+        auth_method:
+          type: string
+          description: Client 认证方式；`none` 表示公开客户端（SPA/移动端），不签发 Secret
+          enum: [client_secret_basic, client_secret_post, none]
+        logo_uri:
+          type: string
+          format: uri
+          nullable: true
+          description: RFC 7591 可选展示元数据。HTTPS 图片 URL，服务端不拉取；缺省时同意页使用应用名首字
+        client_uri:
+          type: string
+          format: uri
+          nullable: true
+          description: RFC 7591 可选主页 URL，仅 HTTPS；缺省不影响授权
     OwnedOAuthClientList:
       type: object
       required: [items, total]
@@ -3616,6 +3632,8 @@ components:
         redirect_host: { type: string }
         scopes: { type: array, items: { type: string } }
         expires_in: { type: integer, format: int64, example: 600 }
+        logo_uri: { type: string, format: uri, nullable: true }
+        client_uri: { type: string, format: uri, nullable: true }
     AuthorizationDecisionInput:
       type: object
       required: [decision]
@@ -4264,15 +4282,37 @@ components:
           maxItems: 32
           description: 服务端仅接受 OAUTH_CLIENT_ALLOWED_SCOPES allowlist 中的 scope；默认 allowlist 为 openid、profile、email。
           items: { type: string, minLength: 1, maxLength: 64 }
+        auth_method:
+          type: string
+          enum: [client_secret_basic, client_secret_post, none]
+          description: 仅创建时生效，缺省为 client_secret_basic。更新请求忽略此字段，创建后不可改认证方式。
+        logo_uri:
+          type: string
+          format: uri
+          nullable: true
+          maxLength: 2048
+          description: 可选 HTTPS 图片 URL。空白或省略表示未设置；更新时传空字符串可清除。服务端不拉取该地址。
+        client_uri:
+          type: string
+          format: uri
+          nullable: true
+          maxLength: 2048
+          description: 可选 HTTPS 主页 URL。空白或省略表示未设置；更新时传空字符串可清除。
     ClientSummary:
       allOf:
         - $ref: '#/components/schemas/ClientInput'
         - type: object
+          required: [id, client_id, status, auth_method]
           properties:
             id: { type: integer, format: int64, minimum: 1 }
             client_id: { type: string }
             status: { type: string }
             owner_user_id: { type: integer, format: int64, minimum: 1, nullable: true }
+            auth_method:
+              type: string
+              enum: [client_secret_basic, client_secret_post, none]
+            logo_uri: { type: string, format: uri, nullable: true }
+            client_uri: { type: string, format: uri, nullable: true }
     RegisteredClient:
       allOf:
         - $ref: '#/components/schemas/ClientSummary'

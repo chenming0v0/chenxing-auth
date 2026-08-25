@@ -8,6 +8,8 @@ fn client_update_uses_the_same_strict_registration_rules() {
         client_name: "更新后的项目".to_owned(),
         redirect_uris: vec!["https://project.example/new-callback".to_owned()],
         scopes: vec!["openid".to_owned(), "profile".to_owned()],
+        logo_uri: None,
+        client_uri: None,
     })
     .expect("valid update");
 

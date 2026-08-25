@@ -93,6 +93,9 @@ export type QuotaSnapshot = {
   monthly_used: number
 }
 
+/** 与令牌端点 `token_endpoint_auth_methods_supported` 对齐；`none` 为公开客户端，不签发 Secret。 */
+export type ClientAuthMethod = 'client_secret_basic' | 'client_secret_post' | 'none'
+
 export type OwnedOAuthClient = {
   id: number
   client_id: string
@@ -101,17 +104,33 @@ export type OwnedOAuthClient = {
   scopes: string[]
   status: string
   quota: QuotaSnapshot
+  auth_method: ClientAuthMethod
+  logo_uri: string | null
+  client_uri: string | null
 }
 
 export type OwnedOAuthClientList = { items: OwnedOAuthClient[]; total?: number }
-export type RegisteredOwnedOAuthClient = OwnedOAuthClient & { client_secret: string }
+export type RegisteredOwnedOAuthClient = OwnedOAuthClient & {
+  /** 公开客户端（auth_method = none）不签发，字段整体省略。 */
+  client_secret?: string
+}
 export type ClientSecretResponse = { client_id: string; client_secret: string }
-export type ClientInput = { client_name: string; redirect_uris: string[]; scopes: string[] }
+export type ClientInput = {
+  client_name: string
+  redirect_uris: string[]
+  scopes: string[]
+  logo_uri?: string | null
+  client_uri?: string | null
+}
+/** 创建请求在 ClientInput 上附加认证方式。auth_method 创建后不可改。 */
+export type ClientCreateInput = ClientInput & { auth_method: ClientAuthMethod }
 export type AuthorizedOAuthApp = {
   client_id: string
   client_name: string
   scopes: string[]
   updated_at: string
+  logo_uri?: string | null
+  client_uri?: string | null
 }
 export type AuthorizedOAuthAppList = { items: AuthorizedOAuthApp[] }
 
@@ -173,6 +192,7 @@ export type ClientSummary = ClientInput & {
   client_id: string
   status: string
   owner_user_id?: number | null
+  auth_method: ClientAuthMethod
 }
 export type AuditEvent = {
   id?: number
@@ -365,6 +385,8 @@ export type PendingAuthorization = {
   redirect_host: string
   scopes: string[]
   expires_in: number
+  logo_uri?: string | null
+  client_uri?: string | null
 }
 export type AuthorizationDecisionResponse = {
   decision: 'approve' | 'deny'

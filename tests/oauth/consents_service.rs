@@ -166,6 +166,8 @@ impl MockConsentRepository {
                 client_name: format!("{} name", record.client_id),
                 scopes: record.scopes.clone(),
                 updated_at: OffsetDateTime::UNIX_EPOCH,
+                logo_uri: None,
+                client_uri: None,
             })
             .collect()
     }

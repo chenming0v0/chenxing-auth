@@ -9,6 +9,8 @@ pub(super) struct PendingRequestResponse {
     pub(super) redirect_host: String,
     pub(super) scopes: Vec<String>,
     pub(super) expires_in: u64,
+    pub(super) logo_uri: Option<String>,
+    pub(super) client_uri: Option<String>,
 }
 
 impl fmt::Debug for PendingRequestResponse {
@@ -21,6 +23,8 @@ impl fmt::Debug for PendingRequestResponse {
             .field("redirect_host", &self.redirect_host)
             .field("scopes", &self.scopes)
             .field("expires_in", &self.expires_in)
+            .field("logo_uri", &self.logo_uri)
+            .field("client_uri", &self.client_uri)
             .finish()
     }
 }

@@ -420,3 +420,11 @@
   background: rgba(255, 255, 255, 0.02);
   border-color: var(--chenxing-border);
 }
+.cx-factor-option.is-selected {
+  border-color: rgba(103, 232, 249, 0.55);
+  background: var(--chenxing-cyan-soft);
+}
+.cx-factor-option.is-selected:hover {
+  border-color: rgba(103, 232, 249, 0.7);
+  background: var(--chenxing-cyan-soft);
+}

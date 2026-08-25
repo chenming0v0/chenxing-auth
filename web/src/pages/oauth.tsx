@@ -67,6 +67,22 @@ function appMark(name?: string) {
   return (name || 'A').trim().slice(0, 1).toUpperCase()
 }
 
+function ClientMark({ name, logoUri }: { name?: string; logoUri?: string | null }) {
+  const [failed, setFailed] = useState(false)
+  const src = logoUri?.trim()
+  if (src && !failed) {
+    return (
+      <img
+        src={src}
+        alt=""
+        className="oauth-app-mark is-logo"
+        onError={() => setFailed(true)}
+      />
+    )
+  }
+  return <div className="oauth-app-mark" aria-hidden="true">{appMark(name)}</div>
+}
+
 /**
  * 把当前地址换成同路径的无查询版本（#196）。
  * OAuth 流程里的 request_id / code / state / error 等参数完成使命后就不该继续留在
@@ -110,7 +126,7 @@ function OAuthAccountContent({ requestId }: { requestId: string | null }) {
         </div>
         <div className="oauth-card-body">
           <div>
-            <div className="oauth-app-mark" aria-hidden="true">{appMark(pending?.client_name)}</div>
+            <ClientMark name={pending?.client_name} logoUri={pending?.logo_uri} />
             <h1 className="oauth-title">选择账号</h1>
             <p className="oauth-copy is-lead">
               以继续使用
@@ -221,7 +237,7 @@ function OAuthConsentContent({ requestId }: { requestId: string | null }) {
         </div>
         <div className="oauth-card-body">
           <div>
-            <div className="oauth-app-mark" aria-hidden="true">{appMark(pending?.client_name)}</div>
+            <ClientMark name={pending?.client_name} logoUri={pending?.logo_uri} />
             <h1 className="oauth-title">
               「{pending?.client_name || '接入应用'}」想要访问<br />你的辰星通行证
             </h1>

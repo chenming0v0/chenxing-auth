@@ -213,6 +213,8 @@ mod tests {
             client_name: "Legacy".to_owned(),
             redirect_uris: vec!["https://legacy.example/cb".to_owned()],
             scopes: vec!["openid".to_owned()],
+            logo_uri: None,
+            client_uri: None,
         }
         .into();
         assert_eq!(request.auth_method, ClientAuthMethod::Basic);
