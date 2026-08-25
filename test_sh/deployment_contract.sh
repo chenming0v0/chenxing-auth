@@ -17,11 +17,16 @@ assert_private_mode() {
 
 external_key='external-value-must-not-be-used'
 export AUTH_ENCRYPTION_KEY="$external_key"
-CHENXING_INSTALL_DIR="$WORK_DIR/install" CHENXING_PORT=8080 \
-    bash "$ROOT_DIR/install.sh" --prepare-only >/dev/null
+mkdir -p "$WORK_DIR/install"
+cp "$ROOT_DIR/manage.sh" "$WORK_DIR/install/manage.sh"
+CHENXING_PORT=8080 bash "$WORK_DIR/install/manage.sh" --prepare-only >/dev/null
 
 env_file="$WORK_DIR/install/.env"
 compose_file="$WORK_DIR/install/compose.yml"
+manager_file="$WORK_DIR/install/manage.sh"
+[[ -f "$manager_file" ]]
+[[ "$(find "$WORK_DIR/install" -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')" == '.env compose.yml manage.sh ' ]]
+[[ "$(stat -c '%a' "$manager_file")" == 700 ]]
 actual_key="$(awk -F= '$1 == "AUTH_ENCRYPTION_KEY" { print substr($0, index($0, "=") + 1); exit }' "$env_file")"
 ring="$(awk -F= '$1 == "AUTH_ENCRYPTION_KEYS" { print substr($0, index($0, "=") + 1); exit }' "$env_file")"
 [[ -n "$actual_key" && "$actual_key" != "$external_key" ]]
@@ -34,7 +39,7 @@ done
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     unset AUTH_ENCRYPTION_KEY
     config="$(docker compose --env-file "$env_file" -f "$compose_file" config --format json)"
-    python -c '
+    python3 -c '
 import json, sys
 data = json.load(sys.stdin)
 app = data["services"]["app"]
@@ -50,6 +55,51 @@ assert "migrate" in data["services"]
 assert "chenxing" in str(data["services"]["migrate"]["environment"]["MIGRATION_DATABASE_URL"])
 ' <<< "$config"
 fi
+
+# Existing deployments upgrade by running the same file again. Fake the raw
+# download and Docker boundary to prove the temporary copy is removed.
+upgrade_root="$WORK_DIR/upgrade"
+mkdir -p "$upgrade_root"
+cp "$ROOT_DIR/manage.sh" "$upgrade_root/manage.sh"
+cp "$env_file" "$upgrade_root/.env"
+upgrade_bin="$WORK_DIR/upgrade-bin"
+mkdir -p "$upgrade_bin"
+cat > "$upgrade_bin/curl" <<'FAKE_CURL'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+output=''
+while (($#)); do
+    if [[ "$1" == -o ]]; then
+        output="$2"
+        shift 2
+    else
+        shift
+    fi
+done
+cp "${FAKE_MANAGER_SOURCE:?}" "$output"
+FAKE_CURL
+cat > "$upgrade_bin/docker" <<'FAKE_DOCKER_UPGRADE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "${1:-}" == compose ]]; then
+    shift
+    command_line="$*"
+    case "$command_line" in
+        *" config --quiet"*) exit 0 ;;
+        *" exec -T postgres pg_isready"*) exit 0 ;;
+        *" run --rm migrate"*) exit 0 ;;
+        *" exec -T app curl"*) exit 0 ;;
+        *" up "*) exit 0 ;;
+        *" ps"*) exit 0 ;;
+        *) exit 0 ;;
+    esac
+fi
+if [[ "${1:-}" == info || "${1:-}" == version || "${1:-}" == pull ]]; then exit 0; fi
+FAKE_DOCKER_UPGRADE
+chmod 755 "$upgrade_bin/curl" "$upgrade_bin/docker"
+FAKE_MANAGER_SOURCE="$ROOT_DIR/manage.sh" PATH="$upgrade_bin:$PATH" \
+    bash "$upgrade_root/manage.sh" >/dev/null
+[[ "$(find "$upgrade_root" -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')" == '.env compose.yml manage.sh ' ]]
 
 # Exercise the source installer upgrade path with a minimal temporary checkout.
 # The fake Docker implementation records whether `up` was reached and reports
@@ -71,7 +121,11 @@ if [[ "${1:-}" == compose ]]; then
         *" port app 3000"*) printf '%s\n' '0.0.0.0:8080' ;;
         *" exec -T postgres pg_isready"*) exit 0 ;;
         *)
-            [[ "$command_line" == *" up "* ]] && printf '%s\n' up >> "${FAKE_DOCKER_MARKER:?}"
+            if [[ "$command_line" == *" run --rm --build migrate"* || "$command_line" == *" run --rm migrate"* ]]; then
+                printf '%s\n' migrate >> "${FAKE_DOCKER_MARKER:?}"
+            elif [[ "$command_line" == *" up "* ]]; then
+                printf '%s\n' up >> "${FAKE_DOCKER_MARKER:?}"
+            fi
             exit 0
             ;;
     esac
@@ -116,7 +170,7 @@ FAKE_DOCKER_MARKER="$marker" FAKE_DOCKER_PROJECT="$legacy_project" \
     PATH="$fake_bin:$PATH" bash -c 'hash -r; exec bash "$1"' _ "$source_root/deploy/install.sh" >/dev/null
 assert_private_mode "$source_root/.env"
 grep -q "^COMPOSE_PROJECT_NAME=${legacy_project}$" "$source_root/.env"
-grep -q '^up$' "$marker"
+[[ "$(tr '\n' ' ' < "$marker")" == 'migrate up ' ]]
 
 moved_root="$WORK_DIR/moved-source"
 mkdir -p "$moved_root/deploy"

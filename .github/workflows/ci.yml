@@ -71,6 +71,7 @@ jobs:
             rm -rf "$remote_install_dir"
           }
           trap cleanup_validation_files EXIT
+          bash -n manage.sh
           bash -n install.sh
           bash -n deploy/install.sh
           bash -n test_sh/deployment_contract.sh
@@ -81,8 +82,9 @@ jobs:
           cp .env.example .env
           sed -i 's/^REDIS_NAMESPACE=$/REDIS_NAMESPACE=ci-validation/' .env
           APP_PORT=8080 docker compose --env-file .env -f docker-compose.prod.yml config --quiet
-          CHENXING_INSTALL_DIR="$remote_install_dir" CHENXING_PORT=3000 \
-            bash install.sh --prepare-only
+          mkdir -p "$remote_install_dir"
+          cp manage.sh "$remote_install_dir/manage.sh"
+          CHENXING_PORT=3000 bash "$remote_install_dir/manage.sh" --prepare-only
           docker compose --env-file "$remote_install_dir/.env" \
             -f "$remote_install_dir/compose.yml" config --quiet
       - name: Verify Redis credential state survives a crash
