@@ -227,6 +227,31 @@ describe('OAuthConsentPage 不可伪造身份锚点（#199）', () => {
     expect(screen.getByText(/正是你要授权的应用/)).toBeTruthy()
     expect(screen.getByText(/应用名称可被自定义/)).toBeTruthy()
   })
+
+  it('有应用描述时显示在标题下、身份锚点上，且不进入锚点组', async () => {
+    window.history.replaceState({}, '', '/oauth/consent?request_id=req-123')
+    vi.stubGlobal('fetch', () => Promise.resolve(jsonResponse({
+      ...PENDING,
+      description: '一句话说明这个应用是做什么的',
+    })))
+
+    render(<OAuthConsentPage />)
+
+    expect(await screen.findByText('一句话说明这个应用是做什么的')).toBeTruthy()
+    const identity = screen.getByRole('group', { name: /接入应用身份/ })
+    expect(identity.textContent).not.toContain('一句话说明这个应用是做什么的')
+    expect(document.querySelector('.oauth-copy.is-app-desc')?.textContent).toBe('一句话说明这个应用是做什么的')
+  })
+
+  it('没有应用描述时不渲染空的描述块', async () => {
+    window.history.replaceState({}, '', '/oauth/consent?request_id=req-123')
+    vi.stubGlobal('fetch', () => Promise.resolve(jsonResponse(PENDING)))
+
+    render(<OAuthConsentPage />)
+
+    await screen.findByRole('group', { name: /接入应用身份/ })
+    expect(document.querySelector('.oauth-copy.is-app-desc')).toBeNull()
+  })
 })
 
 /**

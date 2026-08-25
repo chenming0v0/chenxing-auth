@@ -19,10 +19,13 @@ fn default_allowed_scopes() -> Vec<String> {
         .collect()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ClientAuthMethod {
+    #[serde(rename = "client_secret_basic")]
     Basic,
+    #[serde(rename = "client_secret_post")]
     Post,
+    #[serde(rename = "none")]
     None,
 }
 
@@ -117,6 +120,12 @@ pub struct ClientRegistrationInput {
     pub client_name: String,
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
+    #[serde(default)]
+    pub logo_uri: Option<String>,
+    #[serde(default)]
+    pub client_uri: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 pub type ClientUpdateInput = ClientRegistrationInput;
@@ -126,6 +135,9 @@ pub struct ValidatedClientRegistration {
     pub client_name: String,
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
+    pub logo_uri: Option<String>,
+    pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -154,6 +166,12 @@ pub enum ClientRegistrationError {
     UnsupportedScope,
     #[error("scope is invalid")]
     InvalidScope,
+    #[error("logo URI is invalid")]
+    InvalidLogoUri,
+    #[error("client URI is invalid")]
+    InvalidClientUri,
+    #[error("description is invalid")]
+    InvalidDescription,
 }
 
 pub fn validate_client_registration(
@@ -213,11 +231,17 @@ pub fn validate_client_registration_with_limits(
     // Duplicate values are accepted and normalized in first-seen order.
     let redirect_uris = deduplicate(redirect_uris);
     let scopes = deduplicate(scopes);
+    let logo_uri = crate::clients::presentation::validate_logo_uri(input.logo_uri)?;
+    let client_uri = crate::clients::presentation::validate_client_uri(input.client_uri)?;
+    let description = crate::clients::presentation::validate_description(input.description)?;
 
     Ok(ValidatedClientRegistration {
         client_name,
         redirect_uris,
         scopes,
+        logo_uri,
+        client_uri,
+        description,
     })
 }
 

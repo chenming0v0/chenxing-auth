@@ -120,6 +120,9 @@ where
                 created_at,
                 owner_user_id,
                 auth_method: credential.auth_method(),
+                logo_uri: registration.logo_uri,
+                client_uri: registration.client_uri,
+                description: registration.description,
             };
             crate::audit::repository::insert_with(&mut *transaction, &audit_event(&client)).await?;
             let value = PersistedClientCreateResult {
@@ -129,6 +132,9 @@ where
                 redirect_uris: client.redirect_uris,
                 scopes: client.scopes,
                 auth_method: client.auth_method.as_str().to_owned(),
+                logo_uri: client.logo_uri,
+                client_uri: client.client_uri,
+                description: client.description,
             };
             complete_operation(&mut transaction, context, &value).await?;
             transaction.commit().await?;

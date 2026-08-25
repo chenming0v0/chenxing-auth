@@ -92,6 +92,9 @@ pub struct RegisteredClientSecret {
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
     pub auth_method: ClientAuthMethod,
+    pub logo_uri: Option<String>,
+    pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 impl fmt::Debug for RegisteredClientSecret {
@@ -107,6 +110,9 @@ impl fmt::Debug for RegisteredClientSecret {
             .field("redirect_uris", &self.redirect_uris)
             .field("scopes", &self.scopes)
             .field("auth_method", &self.auth_method)
+            .field("logo_uri", &self.logo_uri)
+            .field("client_uri", &self.client_uri)
+            .field("description", &self.description)
             .finish()
     }
 }
@@ -127,6 +133,10 @@ pub struct ClientSummary {
     pub scopes: Vec<String>,
     pub status: String,
     pub owner_user_id: Option<UserId>,
+    pub auth_method: ClientAuthMethod,
+    pub logo_uri: Option<String>,
+    pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Serialize)]

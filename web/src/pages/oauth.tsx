@@ -12,6 +12,7 @@ import {
 import { OAuthShell } from '../components/shells'
 import { BrandMark, HudPanel, Icon, Notice } from '../components/ui'
 import { initialOf } from '../data'
+import { permissionMeta } from '../oauth-permissions'
 import { safeRedirectTarget } from '../safe-redirect'
 
 function useRequestId(): string | null {
@@ -67,6 +68,22 @@ function appMark(name?: string) {
   return (name || 'A').trim().slice(0, 1).toUpperCase()
 }
 
+function ClientMark({ name, logoUri }: { name?: string; logoUri?: string | null }) {
+  const [failed, setFailed] = useState(false)
+  const src = logoUri?.trim()
+  if (src && !failed) {
+    return (
+      <img
+        src={src}
+        alt=""
+        className="oauth-app-mark is-logo"
+        onError={() => setFailed(true)}
+      />
+    )
+  }
+  return <div className="oauth-app-mark" aria-hidden="true">{appMark(name)}</div>
+}
+
 /**
  * 把当前地址换成同路径的无查询版本（#196）。
  * OAuth 流程里的 request_id / code / state / error 等参数完成使命后就不该继续留在
@@ -77,14 +94,6 @@ function appMark(name?: string) {
 function scrubLocationQuery(): void {
   if (!window.location.search) return
   replaceUrl(window.location.pathname)
-}
-
-function scopeMeta(scope: string): { title: string; desc: string } {
-  if (scope === 'openid') return { title: '身份标识', desc: '获取你的唯一辰星 ID，用于识别账户身份' }
-  if (scope === 'profile') return { title: '基本资料', desc: '查看你的昵称、头像与公开个人信息' }
-  if (scope === 'email') return { title: '电子邮箱', desc: '读取与你账号关联的邮箱地址' }
-  if (scope === 'offline_access') return { title: '离线访问', desc: '在你离线时刷新访问令牌' }
-  return { title: scope, desc: '应用请求的额外权限范围' }
 }
 
 export function OAuthAccountPage() {
@@ -110,7 +119,7 @@ function OAuthAccountContent({ requestId }: { requestId: string | null }) {
         </div>
         <div className="oauth-card-body">
           <div>
-            <div className="oauth-app-mark" aria-hidden="true">{appMark(pending?.client_name)}</div>
+            <ClientMark name={pending?.client_name} logoUri={pending?.logo_uri} />
             <h1 className="oauth-title">选择账号</h1>
             <p className="oauth-copy is-lead">
               以继续使用
@@ -221,14 +230,18 @@ function OAuthConsentContent({ requestId }: { requestId: string | null }) {
         </div>
         <div className="oauth-card-body">
           <div>
-            <div className="oauth-app-mark" aria-hidden="true">{appMark(pending?.client_name)}</div>
+            <ClientMark name={pending?.client_name} logoUri={pending?.logo_uri} />
             <h1 className="oauth-title">
               「{pending?.client_name || '接入应用'}」想要访问<br />你的辰星通行证
             </h1>
+            {pending?.description?.trim() ? (
+              <p className="oauth-copy is-app-desc">{pending.description.trim()}</p>
+            ) : null}
             {/* #199：不可伪造身份锚点。redirect_host / client_id 来自服务端校验的
                 授权请求与注册数据，应用无法自行伪造；与应用名分层：名称留在标题
                 大字号里，身份锚点用等宽小字号 + 「服务端校验」标签独立成组，
-                窄屏下 host 可任意断行，不撑破卡片。 */}
+                窄屏下 host 可任意断行，不撑破卡片。
+                应用描述是开发者自己写的，放在标题下、锚点上，不得做成安全信号。 */}
             {pending ? (
               <div className="oauth-identity" role="group" aria-label="接入应用身份，由服务端校验">
                 <span className="oauth-identity-icon" aria-hidden="true"><Icon name="shield-check" size={15} /></span>
@@ -257,7 +270,7 @@ function OAuthConsentContent({ requestId }: { requestId: string | null }) {
                 <div className="mt-5">
                   <div className="mb-2 text-[13px] font-medium text-[var(--chenxing-muted-foreground)]">授权后将获得以下权限</div>
                   {pending.scopes.map((scope) => {
-                    const meta = scopeMeta(scope)
+                    const meta = permissionMeta(scope)
                     return (
                       <div className="oauth-scope" key={scope}>
                         <span className="oauth-scope-icon" aria-hidden="true"><Icon name="check" size={12} /></span>

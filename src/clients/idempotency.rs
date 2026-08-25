@@ -37,6 +37,12 @@ pub(crate) struct PersistedClientCreateResult {
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
     pub auth_method: String,
+    #[serde(default)]
+    pub logo_uri: Option<String>,
+    #[serde(default)]
+    pub client_uri: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +112,9 @@ impl ClientIdempotencyContext {
         fingerprint.strings(&registration.redirect_uris);
         fingerprint.strings(&registration.scopes);
         fingerprint.string(auth_method.as_str());
+        fingerprint.string(registration.logo_uri.as_deref().unwrap_or(""));
+        fingerprint.string(registration.client_uri.as_deref().unwrap_or(""));
+        fingerprint.string(registration.description.as_deref().unwrap_or(""));
         Self {
             actor_scope,
             key,
@@ -217,6 +226,9 @@ mod tests {
             client_name: "Example".to_owned(),
             redirect_uris: vec!["https://example.com/cb".to_owned()],
             scopes: vec!["openid".to_owned(), "profile".to_owned()],
+            logo_uri: None,
+            client_uri: None,
+            description: None,
         }
     }
 

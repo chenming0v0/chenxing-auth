@@ -15,14 +15,16 @@ pub(super) struct OwnedClientResponse {
     pub(super) scopes: Vec<String>,
     pub(super) status: String,
     pub(super) quota: QuotaSnapshot,
+    pub(super) auth_method: &'static str,
+    pub(super) logo_uri: Option<String>,
+    pub(super) client_uri: Option<String>,
+    pub(super) description: Option<String>,
 }
 
 #[derive(Serialize)]
 pub(super) struct RegisteredOwnedClientResponse {
     #[serde(flatten)]
     pub(super) client: OwnedClientResponse,
-    /// Client 认证方式；`none` 表示公开客户端，响应不含 client_secret。
-    pub(super) auth_method: &'static str,
     /// 公开客户端（SPA / 移动端）不签发 secret，此时该字段整体省略（Issue #66）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) client_secret: Option<String>,
@@ -32,7 +34,6 @@ impl fmt::Debug for RegisteredOwnedClientResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RegisteredOwnedClientResponse")
             .field("client", &self.client)
-            .field("auth_method", &self.auth_method)
             .field(
                 "client_secret",
                 &self.client_secret.as_ref().map(|_| "<redacted>"),
@@ -78,8 +79,11 @@ pub(super) async fn owned_registered_response(
             scopes: client.scopes,
             status: "active".to_owned(),
             quota,
+            auth_method: client.auth_method.as_str(),
+            logo_uri: client.logo_uri,
+            client_uri: client.client_uri,
+            description: client.description,
         },
-        auth_method: client.auth_method.as_str(),
         client_secret: client.client_secret,
     })
 }

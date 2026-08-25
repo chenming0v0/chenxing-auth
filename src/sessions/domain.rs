@@ -11,9 +11,9 @@ use time::{Duration as TimeDuration, OffsetDateTime};
 
 use crate::clock::{Clock, SystemClock};
 
-pub const DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS: u64 = 1_800;
+pub const DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS: u64 = 1_209_600;
 pub const DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS: u64 = 5;
-pub const DEFAULT_SESSION_ABSOLUTE_TTL_SECONDS: u64 = 604_800;
+pub const DEFAULT_SESSION_ABSOLUTE_TTL_SECONDS: u64 = 1_209_600;
 /// `OffsetDateTime` 可表示的最大 epoch 秒数（9999-12-31T23:59:59Z）：time crate
 /// 默认未启用 `large-dates`，年份范围只有 ±9999。`TimeDuration::try_from` 的上界
 /// （i64 秒，约 2920 亿年）远宽于此，TTL 落入两者之间时 `now + ttl` 的 Add 实现

@@ -289,6 +289,23 @@ async fn verify_flattened_schema(
                 )
             )
             AND (
+                $1 < 46
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM (VALUES
+                        ('oauth_clients', 'logo_uri'),
+                        ('oauth_clients', 'client_uri')
+                    ) AS required(table_name, column_name)
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns AS columns
+                        WHERE columns.table_schema = current_schema()
+                          AND columns.table_name = required.table_name
+                          AND columns.column_name = required.column_name
+                    )
+                )
+            )
+            AND (
                 $1 < 29
                 OR NOT EXISTS (
                     SELECT 1

@@ -59,6 +59,9 @@ pub struct NewClient {
     pub created_at: OffsetDateTime,
     pub owner_user_id: Option<UserId>,
     pub auth_method: ClientAuthMethod,
+    pub logo_uri: Option<String>,
+    pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug)]
@@ -75,6 +78,9 @@ pub struct StoredClient {
     pub scopes: Vec<String>,
     pub status: String,
     pub owner_user_id: Option<UserId>,
+    pub logo_uri: Option<String>,
+    pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug)]
@@ -86,6 +92,10 @@ pub struct ListedClient {
     pub scopes: Vec<String>,
     pub status: String,
     pub owner_user_id: Option<UserId>,
+    pub auth_method: ClientAuthMethod,
+    pub logo_uri: Option<String>,
+    pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -115,13 +125,28 @@ type ClientRow = (
     Json<Vec<String>>,
     String,
     Option<UserId>,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
 );
 
-const LIST_COLUMNS: &str =
-    "id, client_id, client_name, redirect_uris, scopes, status, owner_user_id";
+const LIST_COLUMNS: &str = "id, client_id, client_name, redirect_uris, scopes, status, owner_user_id, auth_method, logo_uri, client_uri, description";
 
 fn to_listed_client(row: ClientRow) -> ListedClient {
-    let (id, client_id, client_name, redirect_uris, scopes, status, owner_user_id) = row;
+    let (
+        id,
+        client_id,
+        client_name,
+        redirect_uris,
+        scopes,
+        status,
+        owner_user_id,
+        auth_method,
+        logo_uri,
+        client_uri,
+        description,
+    ) = row;
     ListedClient {
         id,
         client_id,
@@ -130,6 +155,11 @@ fn to_listed_client(row: ClientRow) -> ListedClient {
         scopes: scopes.0,
         status,
         owner_user_id,
+        auth_method: ClientAuthMethod::parse(&auth_method)
+            .expect("oauth_clients.auth_method is constrained to ClientAuthMethod"),
+        logo_uri,
+        client_uri,
+        description,
     }
 }
 
@@ -148,9 +178,9 @@ where
 {
     crate::sqlx::query_scalar(
         "INSERT INTO oauth_clients
-         (client_id, client_name, client_secret_hash, redirect_uris, scopes, auth_method, status, created_at, owner_user_id)
-         VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8)
-         RETURNING id",
+          (client_id, client_name, client_secret_hash, redirect_uris, scopes, auth_method, status, created_at, owner_user_id, logo_uri, client_uri, description)
+          VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11)
+          RETURNING id",
     )
     .bind(client_id)
     .bind(&registration.client_name)
@@ -160,6 +190,9 @@ where
     .bind(credential.auth_method().as_str())
     .bind(created_at)
     .bind(owner_user_id)
+    .bind(&registration.logo_uri)
+    .bind(&registration.client_uri)
+    .bind(&registration.description)
     .fetch_one(executor)
     .await
 }
@@ -191,6 +224,9 @@ pub async fn insert_client(
         created_at,
         owner_user_id: None,
         auth_method: credential.auth_method(),
+        logo_uri: registration.logo_uri,
+        client_uri: registration.client_uri,
+        description: registration.description,
     })
 }
 
@@ -224,6 +260,9 @@ where
         created_at,
         owner_user_id: None,
         auth_method: credential.auth_method(),
+        logo_uri: registration.logo_uri,
+        client_uri: registration.client_uri,
+        description: registration.description,
     };
     crate::audit::repository::insert_with(&mut *transaction, &audit_event(&client))
         .await
@@ -236,20 +275,23 @@ pub async fn find_client_by_id(
     pool: &PgPool,
     client_id: &str,
 ) -> Result<Option<StoredClient>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (String, String, Json<Vec<String>>, Json<Vec<String>>, String, Option<UserId>)>(
-        "SELECT client_id, client_name, redirect_uris, scopes, status, owner_user_id FROM oauth_clients WHERE client_id = $1",
+    crate::sqlx::query_as::<_, (String, String, Json<Vec<String>>, Json<Vec<String>>, String, Option<UserId>, Option<String>, Option<String>, Option<String>)>(
+        "SELECT client_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri, description FROM oauth_clients WHERE client_id = $1",
     )
     .bind(client_id)
     .fetch_optional(pool)
     .await
     .map(|record| {
-        record.map(|(client_id, client_name, redirect_uris, scopes, status, owner_user_id)| StoredClient {
+        record.map(|(client_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri, description)| StoredClient {
             client_id,
             client_name,
             redirect_uris: redirect_uris.0,
             scopes: scopes.0,
             status,
             owner_user_id,
+            logo_uri,
+            client_uri,
+            description,
         })
     })
 }

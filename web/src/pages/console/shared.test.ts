@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EntitlementsResponse, OwnedOAuthClient } from '../../api'
 import { entitlementState, listAllOwnedOAuthClients, OWNED_CLIENT_LIST_COMPAT_ERROR } from './shared'
-import { formatQuota } from './developer-shared'
+import { formatQuota, httpsUriProblem } from './developer-shared'
 
 const { apiFetchMock } = vi.hoisted(() => ({
   apiFetchMock: vi.fn((_path: string, _init?: RequestInit): Promise<unknown> => Promise.resolve({ items: [] })),
@@ -61,6 +61,9 @@ function fakeClient(id: number): OwnedOAuthClient {
     scopes: ['openid'],
     status: 'active',
     quota: { daily_limit: null, daily_used: 0, monthly_limit: null, monthly_used: 0 },
+    auth_method: 'client_secret_basic',
+    logo_uri: null,
+    client_uri: null,
   }
 }
 
@@ -153,5 +156,20 @@ describe('formatQuota', () => {
   it('renders an unlimited monthly limit only for an effective plan', () => {
     expect(formatQuota({ quota: { daily_used: 3, daily_limit: 100, monthly_used: 12, monthly_limit: null } }))
       .toBe('今日 3/100 · 本月 12/∞')
+  })
+})
+
+describe('httpsUriProblem', () => {
+  it('accepts a public HTTPS URL', () => {
+    expect(httpsUriProblem('https://cdn.example.com/logo.png')).toBeNull()
+  })
+
+  it.each([
+    ['http://cdn.example.com/logo.png', '仅允许 HTTPS'],
+    ['https://cdn.example.com/logo.png#x', '不允许包含 fragment'],
+    ['not a url', '不是合法的 URL'],
+    ['https://user:pass@cdn.example.com/logo.png', '不允许包含用户名或密码'],
+  ])('rejects %s', (value, reason) => {
+    expect(httpsUriProblem(value)).toBe(reason)
   })
 })

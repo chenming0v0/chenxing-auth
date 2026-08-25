@@ -178,7 +178,7 @@ impl Config {
             env::var("SESSION_IDLE_TIMEOUT_SECONDS")
                 .ok()
                 .as_deref()
-                .unwrap_or("1800"),
+                .unwrap_or("1209600"),
         )?;
         let session_max_concurrent_sessions = parse_u64(
             "SESSION_MAX_CONCURRENT_SESSIONS",

@@ -48,6 +48,9 @@ struct RegisteredClientResponse {
     /// 公开客户端不签发 secret，此时该字段整体省略（Issue #66）。
     #[serde(skip_serializing_if = "Option::is_none")]
     client_secret: Option<String>,
+    logo_uri: Option<String>,
+    client_uri: Option<String>,
+    description: Option<String>,
 }
 
 impl fmt::Debug for RegisteredClientResponse {
@@ -63,6 +66,9 @@ impl fmt::Debug for RegisteredClientResponse {
                 "client_secret",
                 &self.client_secret.as_ref().map(|_| "<redacted>"),
             )
+            .field("logo_uri", &self.logo_uri)
+            .field("client_uri", &self.client_uri)
+            .field("description", &self.description)
             .finish()
     }
 }
@@ -76,6 +82,10 @@ struct ClientSummary {
     scopes: Vec<String>,
     status: String,
     owner_user_id: Option<UserId>,
+    auth_method: &'static str,
+    logo_uri: Option<String>,
+    client_uri: Option<String>,
+    description: Option<String>,
 }
 
 pub async fn create_client(
@@ -147,6 +157,9 @@ pub async fn create_client(
                 scopes: client.scopes,
                 auth_method: client.auth_method.as_str(),
                 client_secret: client.client_secret,
+                logo_uri: client.logo_uri,
+                client_uri: client.client_uri,
+                description: client.description,
             }),
         )
             .into_response(),
@@ -193,6 +206,10 @@ pub async fn list_clients(
                         scopes: client.scopes,
                         status: client.status,
                         owner_user_id: client.owner_user_id,
+                        auth_method: client.auth_method.as_str(),
+                        logo_uri: client.logo_uri,
+                        client_uri: client.client_uri,
+                        description: client.description,
                     })
                     .collect::<Vec<_>>(),
             ),

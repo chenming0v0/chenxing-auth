@@ -1394,6 +1394,9 @@ fn service_client_input(label: &str) -> ClientRegistrationInput {
         client_name: format!("Quota race {label}"),
         redirect_uris: vec![format!("https://{label}.example/callback")],
         scopes: vec!["openid".to_owned()],
+        logo_uri: None,
+        client_uri: None,
+        description: None,
     }
 }
 

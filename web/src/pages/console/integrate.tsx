@@ -1,72 +1,25 @@
-import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react'
-import { apiFetch, type ClientInput, type OwnedOAuthClient, type RegisteredOwnedOAuthClient } from '../../api'
-import { Drawer } from '../../components/drawer'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { apiFetch, type OwnedOAuthClient, type RegisteredOwnedOAuthClient } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Button, CopyValue, EmptyState, Field, HudPanel, Icon, Notice, TextAreaField } from '../../components/ui'
-import { formatQuota, splitValues } from './developer-shared'
+import { Button, CopyValue, EmptyState, HudPanel, Icon, Notice } from '../../components/ui'
+import { AppRegisterDrawer } from './app-register-drawer'
+import { formatQuota, newIdempotencyKey } from './developer-shared'
 import { entitlementState, listAllOwnedOAuthClients, SelfServiceClosedBlock, useEntitlements } from './shared'
-
-const REDIRECT_URI_RULE_MESSAGE = '仅允许 HTTPS；本地 HTTP 回调必须使用 127.0.0.1 或 [::1]，不接受 localhost、通配符与危险协议。'
-
-function newIdempotencyKey(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return `cx-${Date.now()}-${Math.random().toString(36).slice(2)}`
-}
-
-// 前端镜像后端 src/clients/domain.rs::validate_redirect_uri 的规则集；前端只做即时反馈，服务端仍是权威校验。
-function redirectUriProblem(value: string): string | null {
-  if (value.includes('*')) return '不接受通配符'
-  let url: URL
-  try {
-    url = new URL(value)
-  } catch {
-    return '不是合法的 URL'
-  }
-  const { protocol, hostname, hash, username, password } = url
-  if (protocol !== 'https:' && (protocol !== 'http:' || !isLoopbackHostname(hostname))) {
-    return '仅允许 HTTPS，或 HTTP 回环地址（127.0.0.1 / [::1]）'
-  }
-  if (hash) return '不允许包含 fragment'
-  if (username || password) return '不允许包含用户名或密码'
-  return null
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  // WHATWG URL 把 IPv6 host 序列化为带方括号形式，如 "[::1]"
-  if (hostname === '[::1]') return true
-  const octets = hostname.split('.')
-  return octets.length === 4 && octets[0] === '127' && octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
-}
-
-function findInvalidRedirectUri(redirectUris: string[]): { value: string; reason: string } | null {
-  for (const value of redirectUris) {
-    const reason = redirectUriProblem(value)
-    if (reason !== null) return { value, reason }
-  }
-  return null
-}
 
 export function IntegratePage() {
   const [clients, setClients] = useState<OwnedOAuthClient[]>([])
   const [loading, setLoading] = useState(true)
-  const [secret, setSecret] = useState<{ clientId: string; value: string } | null>(null)
+  const [issued, setIssued] = useState<{ clientId: string; secret: string | null } | null>(null)
   const [message, setMessage] = useState('')
-  const [busy, setBusy] = useState(false)
   const [rotatingClientIds, setRotatingClientIds] = useState<Set<string>>(() => new Set())
   const rotatingClientIdsRef = useRef(new Set<string>())
   const rotationIdempotencyKeysRef = useRef(new Map<string, string>())
-  const createIdempotencyRef = useRef<{ fingerprint: string; key: string } | null>(null)
   const [statusChangingClientIds, setStatusChangingClientIds] = useState<Set<string>>(() => new Set())
   const statusChangingClientIdsRef = useRef(new Set<string>())
   const loadRequestIdRef = useRef(0)
   const mountedRef = useRef(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editing, setEditing] = useState<OwnedOAuthClient | null>(null)
-  const [name, setName] = useState('')
-  const [redirectUris, setRedirectUris] = useState('')
-  const [scopes, setScopes] = useState('openid profile')
   const entitlements = useEntitlements()
   const plans = entitlementState(entitlements)
   // plan === null 是唯一判据：平台未开放自助接入，创建入口关闭，已有应用照常管理
@@ -110,60 +63,24 @@ export function IntegratePage() {
     if (selfServiceClosed) return
     setMessage('')
     setEditing(null)
-    setName('')
-    setRedirectUris('')
-    setScopes('openid profile')
     setDrawerOpen(true)
   }
 
   function openEdit(client: OwnedOAuthClient) {
     setMessage('')
     setEditing(client)
-    setName(client.client_name)
-    setRedirectUris(client.redirect_uris.join('\n'))
-    setScopes(client.scopes.join(' '))
     setDrawerOpen(true)
   }
 
-  async function save(event: FormEvent) {
-    event.preventDefault()
-    setMessage('')
-    const input: ClientInput = { client_name: name.trim(), redirect_uris: splitValues(redirectUris), scopes: splitValues(scopes) }
-    if (!input.client_name || !input.redirect_uris.length || !input.scopes.length) {
-      setMessage('请填写应用名称、至少一个 Redirect URI 和 Scope。')
-      return
-    }
-    const invalid = findInvalidRedirectUri(input.redirect_uris)
-    if (invalid) {
-      setMessage(`「${invalid.value}」${invalid.reason}。${REDIRECT_URI_RULE_MESSAGE}`)
-      return
-    }
-    setBusy(true)
-    try {
-      if (editing) {
-        await apiFetch<void>(`/api/v1/auth/oauth-clients/${encodeURIComponent(editing.client_id)}`, {
-          method: 'PUT', body: JSON.stringify(input),
-        })
-      } else {
-        const fingerprint = JSON.stringify(input)
-        const pending = createIdempotencyRef.current
-        const key = pending?.fingerprint === fingerprint ? pending.key : newIdempotencyKey()
-        createIdempotencyRef.current = { fingerprint, key }
-        const response = await apiFetch<RegisteredOwnedOAuthClient>('/api/v1/auth/oauth-clients', {
-          method: 'POST',
-          headers: { 'Idempotency-Key': key },
-          body: JSON.stringify(input),
-        })
-        createIdempotencyRef.current = null
-        setSecret({ clientId: response.client_id, value: response.client_secret })
-      }
-      closeDrawer()
-      load()
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : '应用保存失败。')
-    } finally {
-      setBusy(false)
-    }
+  function handleCreated(client: RegisteredOwnedOAuthClient) {
+    setIssued({ clientId: client.client_id, secret: client.client_secret ?? null })
+    closeDrawer()
+    load()
+  }
+
+  function handleUpdated() {
+    closeDrawer()
+    load()
   }
 
   async function rotate(clientId: string) {
@@ -180,7 +97,7 @@ export function IntegratePage() {
         headers: { 'Idempotency-Key': key },
       })
       rotationIdempotencyKeysRef.current.delete(clientId)
-      setSecret({ clientId: response.client_id, value: response.client_secret })
+      setIssued({ clientId: response.client_id, secret: response.client_secret })
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Secret 轮换失败。')
     } finally {
@@ -250,22 +167,30 @@ export function IntegratePage() {
 
       {message && !drawerOpen ? <div className="mt-5"><Notice tone="warning">{message}</Notice></div> : null}
       {entitlements.error ? <div className="mt-5"><Notice tone="warning">{entitlements.error}<button className="chenxing-link ml-2" type="button" onClick={entitlements.retry}>重试</button></Notice></div> : null}
-      {secret ? (
-        <HudPanel className="mt-5">
-          <div className="mb-4 flex items-center justify-between gap-4">
-            <div>
-              <h2 className="chenxing-h2">一次性 Client Secret</h2>
-              <p className="chenxing-caption mt-1">只保存在当前页面内存，刷新或离开页面后无法恢复。</p>
+      {issued ? (
+          <HudPanel className="mt-5">
+            <div className="mb-4 flex items-center justify-between gap-4">
+              <div>
+                <h2 className="chenxing-h2">{issued.secret ? '一次性 Client Secret' : '公开客户端已创建'}</h2>
+                <p className="chenxing-caption mt-1">
+                  {issued.secret
+                    ? '只保存在当前页面内存，刷新或离开页面后无法恢复。'
+                    : '该应用类型不签发 Client Secret。令牌交换必须携带 PKCE code_verifier。'}
+                </p>
+              </div>
+              <Icon name={issued.secret ? 'key-round' : 'shield-check'} className="text-[var(--chenxing-cyan)]" size={18} />
             </div>
-            <Icon name="key-round" className="text-[var(--chenxing-cyan)]" size={18} />
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div><span className="chenxing-label">Client ID</span><CopyValue value={secret.clientId} ariaLabel="复制 Client ID" /></div>
-            <div><span className="chenxing-label">Client Secret</span><CopyValue value={secret.value} ariaLabel="复制 Client Secret" /></div>
-          </div>
-          <div className="mt-4"><Notice tone="warning">Secret 不会再次从列表接口返回，请立即保存到受保护的服务端配置中。</Notice></div>
-        </HudPanel>
-      ) : null}
+            <div className={`grid gap-4 ${issued.secret ? 'md:grid-cols-2' : ''}`}>
+              <div><span className="chenxing-label">Client ID</span><CopyValue value={issued.clientId} ariaLabel="复制 Client ID" /></div>
+              {issued.secret ? (
+                <div><span className="chenxing-label">Client Secret</span><CopyValue value={issued.secret} ariaLabel="复制 Client Secret" /></div>
+              ) : null}
+            </div>
+            {issued.secret ? (
+              <div className="mt-4"><Notice tone="warning">Secret 不会再次从列表接口返回，请立即保存到受保护的服务端配置中。</Notice></div>
+            ) : null}
+          </HudPanel>
+        ) : null}
 
       <HudPanel as="section" className="mt-6">
         <div className="flex items-center justify-between gap-4">
@@ -290,7 +215,7 @@ export function IntegratePage() {
                   <p className="chenxing-mono truncate text-[11px] text-[var(--chenxing-muted-foreground)]">{client.client_id}</p>
                   <p className="chenxing-caption mt-1 hidden sm:block">{formatQuota(client)}</p>
                 </div>
-                <span className="chenxing-tag hidden lg:inline-flex">default</span>
+                <span className="chenxing-tag hidden lg:inline-flex">{client.auth_method === 'none' ? '公开' : '机密'}</span>
                 <span className={`${client.status === 'active' ? 'chenxing-tag-success' : 'chenxing-tag-warning'} hidden lg:inline-flex`}>
                   {client.status === 'active' ? '已启用' : client.status}
                 </span>
@@ -306,9 +231,11 @@ export function IntegratePage() {
                       : client.status === 'active' ? '禁用' : '启用'}
                   </Button>
                   <Button variant="ghost" icon="pencil" onClick={() => openEdit(client)}>编辑</Button>
-                  <Button variant="ghost" icon="refresh-cw" disabled={rotatingClientIds.has(client.client_id)} onClick={() => void rotate(client.client_id)}>
-                    {rotatingClientIds.has(client.client_id) ? '轮换中…' : '轮换'}
-                  </Button>
+                  {client.auth_method === 'none' ? null : (
+                    <Button variant="ghost" icon="refresh-cw" disabled={rotatingClientIds.has(client.client_id)} onClick={() => void rotate(client.client_id)}>
+                      {rotatingClientIds.has(client.client_id) ? '轮换中…' : '轮换'}
+                    </Button>
+                  )}
                 </div>
               </article>
             ))}
@@ -353,26 +280,12 @@ export function IntegratePage() {
       </HudPanel>
 
       {drawerOpen ? (
-        <Drawer
-          title={editing ? '编辑应用' : '注册新应用'}
-          description="服务端负责校验 Redirect URI、Scope 和配额。"
+        <AppRegisterDrawer
+          editing={editing}
           onClose={closeDrawer}
-          onSubmit={save}
-          busy={busy}
-          footer={
-            <>
-              <Button type="button" variant="ghost" onClick={closeDrawer} disabled={busy}>取消</Button>
-              <Button type="submit" icon="save" disabled={busy}>{busy ? '保存中…' : editing ? '保存更新' : '创建应用'}</Button>
-            </>
-          }
-        >
-          {message ? <Notice tone="warning">{message}</Notice> : null}
-          <HudPanel className="space-y-4 !p-5">
-            <Field label="应用名称" placeholder="例如：星尘控制台" value={name} onChange={(event) => setName(event.target.value)} required />
-            <TextAreaField label="Redirect URI" placeholder="每行一个严格匹配的 URI" value={redirectUris} onChange={(event) => setRedirectUris(event.target.value)} required hint={REDIRECT_URI_RULE_MESSAGE} />
-            <TextAreaField label="Scope" value={scopes} onChange={(event) => setScopes(event.target.value)} required hint="用空格、逗号或换行分隔。" />
-          </HudPanel>
-        </Drawer>
+          onCreated={handleCreated}
+          onUpdated={handleUpdated}
+        />
       ) : null}
     </ConsoleLayout>
   )

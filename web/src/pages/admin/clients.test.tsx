@@ -19,6 +19,9 @@ const CLIENT = {
   client_id: 'cx-client',
   status: 'active',
   owner_user_id: 1,
+  auth_method: 'client_secret_basic',
+  logo_uri: null,
+  client_uri: null,
 }
 
 function queryPage(path: string): string | null {

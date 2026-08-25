@@ -12,6 +12,9 @@ const CLIENT: OwnedOAuthClient = {
   scopes: ['openid'],
   status: 'active',
   quota: { daily_limit: null, daily_used: 0, monthly_limit: null, monthly_used: 0 },
+  auth_method: 'client_secret_basic',
+  logo_uri: null,
+  client_uri: null,
 }
 
 const { apiFetchMock, listAllOwnedOAuthClientsMock } = vi.hoisted(() => ({

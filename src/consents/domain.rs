@@ -33,6 +33,9 @@ pub struct AuthorizedApp {
     pub scopes: Vec<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
+    pub logo_uri: Option<String>,
+    pub client_uri: Option<String>,
+    pub description: Option<String>,
 }
 
 /// 同意记录在某一时刻的撤销状态，带权威存储的状态版本号（Issue #276）。
@@ -131,15 +134,21 @@ mod tests {
             client_name: "Example App".to_owned(),
             scopes: vec!["openid".to_owned()],
             updated_at: time::OffsetDateTime::UNIX_EPOCH,
+            logo_uri: None,
+            client_uri: None,
+            description: None,
         })
         .expect("authorized app serializes");
         let object = value.as_object().expect("authorized app object");
 
-        assert_eq!(object.len(), 4);
+        assert_eq!(object.len(), 7);
         assert!(object.contains_key("client_id"));
         assert!(object.contains_key("client_name"));
         assert!(object.contains_key("scopes"));
         assert!(object.contains_key("updated_at"));
+        assert!(object.contains_key("logo_uri"));
+        assert!(object.contains_key("client_uri"));
+        assert!(object.contains_key("description"));
         assert_eq!(object["updated_at"], "1970-01-01T00:00:00Z");
         assert!(!object.contains_key("client_secret"));
         assert!(!object.contains_key("redirect_uris"));

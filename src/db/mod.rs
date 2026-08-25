@@ -364,6 +364,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "email security alert outbox",
             include_str!("../../migrations/0045_email_security_alert_outbox.sql"),
         ),
+        (
+            46,
+            "oauth client presentation",
+            include_str!("../../migrations/0046_oauth_client_presentation.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

@@ -23,6 +23,7 @@ const summaryBodies: Record<string, unknown> = {
       id: 1, client_id: 'cid-1', client_name: '深空控制台', redirect_uris: ['https://example.test/cb'],
       scopes: ['openid'], status: 'active',
       quota: { daily_limit: 100, daily_used: 1, monthly_limit: 2000, monthly_used: 12 },
+      auth_method: 'client_secret_basic', logo_uri: null, client_uri: null,
     }],
   },
   '/api/v1/auth/sessions': {

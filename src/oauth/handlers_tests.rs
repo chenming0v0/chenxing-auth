@@ -9,6 +9,9 @@ fn client() -> super::super::authorization::RegisteredClient {
         redirect_uris: vec!["https://client.example/callback".to_owned()],
         scopes: vec!["openid".to_owned()],
         owner_user_id: None,
+        logo_uri: None,
+        client_uri: None,
+        description: None,
     }
 }
 

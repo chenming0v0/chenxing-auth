@@ -13,6 +13,9 @@ fn client_registration_trims_and_deduplicates_scopes() {
             " https://project.example.com/callback ".to_owned(),
         ],
         scopes: vec![" openid ".to_owned(), "openid".to_owned()],
+        logo_uri: None,
+        client_uri: None,
+        description: None,
     })
     .expect("valid client registration");
 
@@ -35,6 +38,9 @@ fn client_registration_enforces_configured_collection_limits() {
                 "https://project.example.com/two".to_owned(),
             ],
             scopes: vec!["openid".to_owned()],
+            logo_uri: None,
+            client_uri: None,
+            description: None,
         },
         &limits,
     )
@@ -46,6 +52,9 @@ fn client_registration_enforces_configured_collection_limits() {
             client_name: "项目".to_owned(),
             redirect_uris: vec!["https://project.example.com/callback".to_owned()],
             scopes: vec!["s".repeat(17)],
+            logo_uri: None,
+            client_uri: None,
+            description: None,
         },
         &limits,
     )
@@ -59,6 +68,9 @@ fn client_registration_rejects_scope_outside_server_allowlist() {
         client_name: "项目".to_owned(),
         redirect_uris: vec!["https://project.example.com/callback".to_owned()],
         scopes: vec!["admin".to_owned()],
+        logo_uri: None,
+        client_uri: None,
+        description: None,
     })
     .expect_err("unknown scopes must be rejected");
 
@@ -75,6 +87,9 @@ fn client_registration_accepts_explicitly_configured_custom_scope() {
             client_name: "项目".to_owned(),
             redirect_uris: vec!["https://project.example.com/callback".to_owned()],
             scopes: vec!["project:read".to_owned()],
+            logo_uri: None,
+            client_uri: None,
+            description: None,
         },
         &limits,
     )
@@ -91,6 +106,9 @@ fn client_registration_rejects_boundary_overflows_and_large_json_values() {
         client_name: "项目".to_owned(),
         redirect_uris: too_many_redirects,
         scopes: vec!["openid".to_owned()],
+        logo_uri: None,
+        client_uri: None,
+        description: None,
     })
     .expect_err("redirect URI collection must be bounded");
     assert_eq!(error, ClientRegistrationError::TooManyRedirectUris);
@@ -113,6 +131,9 @@ fn client_registration_rejects_boundary_overflows_and_large_json_values() {
         client_name: "项目".to_owned(),
         redirect_uris: vec!["https://project.example.com/callback".to_owned()],
         scopes: vec!["scope".to_owned(); DEFAULT_MAX_SCOPES + 1],
+        logo_uri: None,
+        client_uri: None,
+        description: None,
     })
     .expect_err("scope collection must be bounded");
     assert_eq!(error, ClientRegistrationError::TooManyScopes);
@@ -121,6 +142,9 @@ fn client_registration_rejects_boundary_overflows_and_large_json_values() {
         client_name: "项目".to_owned(),
         redirect_uris: vec!["https://project.example.com/callback".to_owned()],
         scopes: vec!["界".repeat(DEFAULT_MAX_SCOPE_LENGTH + 1)],
+        logo_uri: None,
+        client_uri: None,
+        description: None,
     })
     .expect_err("Unicode scope length must be bounded by characters");
     assert_eq!(error, ClientRegistrationError::ScopeTooLong);
@@ -132,6 +156,9 @@ fn client_registration_rejects_redirect_uri_with_userinfo() {
         client_name: "项目".to_owned(),
         redirect_uris: vec!["https://user:pass@example.com/callback".to_owned()],
         scopes: vec!["openid".to_owned()],
+        logo_uri: None,
+        client_uri: None,
+        description: None,
     })
     .expect_err("redirect URI userinfo must be rejected");
 
