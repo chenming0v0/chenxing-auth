@@ -72,6 +72,7 @@
 - 签名密钥轮换必须共享 AppState 克隆的密钥状态，按 JWT `kid` 选择验证公钥；管理员响应不得包含私钥材料。
 - 浏览器 Cookie 会话的状态变更必须校验 HttpOnly Session Cookie、CSRF Cookie 和 `X-CSRF-Token` 三者绑定；开发期请求头兼容逻辑不能成为生产浏览器认证方案。
 - 管理角色必须通过 `AdminPermission` 校验；管理 Session 的写操作必须校验普通 HttpOnly Session Cookie、CSRF Cookie 和 `X-CSRF-Token`。
+- 浏览器会话默认策略：`SESSION_TTL_SECONDS` 与 `SESSION_IDLE_TIMEOUT_SECONDS` 部署默认均为 1209600 秒（14 天），产品意图是让用户长期免登录；不得把 idle 默认改回短窗口。已签发会话的 idle 窗口在签发时固化（#644），修改设置只影响新会话。
 
 ### 前端与端口约定
 
