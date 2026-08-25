@@ -1555,3 +1555,15 @@ fn remote_manager_pulls_the_release_before_running_migrations() {
         .expect("remote manager must start the app after migration");
     assert!(pull_at < migrate_at && migrate_at < start_at);
 }
+
+#[test]
+fn remote_manager_places_curl_output_option_before_the_url() {
+    assert!(
+        REMOTE_INSTALL_SCRIPT
+            .contains("--connect-timeout 10 -o \"$temp_file\" \"$DEFAULT_INSTALLER_URL\"")
+    );
+    assert!(
+        !REMOTE_INSTALL_SCRIPT
+            .contains("--connect-timeout 10 -- \"$DEFAULT_INSTALLER_URL\" -o \"$temp_file\"")
+    );
+}

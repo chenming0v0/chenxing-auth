@@ -61,7 +61,7 @@ fetch_latest_manager() {
     temp_file="$(mktemp "$INSTALL_DIR/.manage.sh.update.XXXXXX")"
     if command_exists curl; then
         if ! curl --fail --silent --show-error --location --retry 3 \
-            --connect-timeout 10 -- "$DEFAULT_INSTALLER_URL" -o "$temp_file"; then
+            --connect-timeout 10 -o "$temp_file" "$DEFAULT_INSTALLER_URL"; then
             rm -f -- "$temp_file"
             fail "下载最新版 manage.sh 失败；现有部署未改变。"
         fi
