@@ -14,6 +14,8 @@ const DB_AUDIT_BOUNDARY_MODULE: &str = include_str!("../../src/db/audit_boundary
 const DB_ROLES_MODULE: &str = include_str!("../../src/db/roles.rs");
 const DB_MIGRATE_MODULE: &str = include_str!("../../src/db/migrate.rs");
 const DB_MIGRATION_COMPAT_MODULE: &str = include_str!("../../src/db/migration_compat.rs");
+const DB_MIGRATION_COMPAT_DESCRIPTION_MODULE: &str =
+    include_str!("../../src/db/migration_compat_description.rs");
 const DB_MIGRATION_PREFLIGHT_MODULE: &str = include_str!("../../src/db/migration_preflight.rs");
 const ENV_EXAMPLE: &str = include_str!("../../.env.example");
 const DOCKERFILE: &str = include_str!("../../Dockerfile");
@@ -1192,10 +1194,10 @@ fn database_uses_forward_only_transactional_migration_history() {
     }
     assert!(DB_MIGRATION_COMPAT_MODULE.contains("verify_flattened_schema"));
     assert!(DB_MIGRATION_COMPAT_MODULE.contains("repair_oauth_client_description"));
-    assert!(DB_MIGRATION_COMPAT_MODULE.contains("ledger_is_exact_prefix"));
-    assert!(DB_MIGRATION_COMPAT_MODULE.contains("information_schema.columns"));
-    assert!(DB_MIGRATION_COMPAT_MODULE.contains("data_type = 'text'"));
-    assert!(DB_MIGRATION_COMPAT_MODULE.contains("is_nullable = 'YES'"));
+    assert!(DB_MIGRATION_COMPAT_DESCRIPTION_MODULE.contains("ledger_is_exact_prefix"));
+    assert!(DB_MIGRATION_COMPAT_DESCRIPTION_MODULE.contains("information_schema.columns"));
+    assert!(DB_MIGRATION_COMPAT_DESCRIPTION_MODULE.contains("data_type = 'text'"));
+    assert!(DB_MIGRATION_COMPAT_DESCRIPTION_MODULE.contains("is_nullable = 'YES'"));
     assert!(DB_MIGRATION_COMPAT_MODULE.contains("Migrate::lock"));
     assert!(DB_ROLES_MODULE.contains("CREATE ROLE chenxing_runtime LOGIN"));
     assert!(!DATABASE_BASELINE.contains("CREATE ROLE"));
