@@ -369,6 +369,16 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "oauth client presentation",
             include_str!("../../migrations/0046_oauth_client_presentation.sql"),
         ),
+        (
+            47,
+            "oauth client description",
+            include_str!("../../migrations/0047_oauth_client_description.sql"),
+        ),
+        (
+            48,
+            "wallet and plan pricing",
+            include_str!("../../migrations/0048_wallet_and_plan_pricing.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

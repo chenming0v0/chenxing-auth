@@ -6,55 +6,13 @@ import {
 import { ConsoleLayout } from '../../components/shells'
 import { Avatar, Badge, Button, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { DataTable, TablePagination } from '../../components/data-table'
-import { Select, type SelectOption } from '../../components/select'
+import { Select } from '../../components/select'
 import { formatDate } from '../../data'
 import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
 import { AssignPlanDrawer } from './plan-assign'
 import { UserCreateDrawer } from './user-create-drawer'
-
-const ROLE_OPTIONS: SelectOption[] = [
-  { value: 'user', label: '普通用户' },
-  { value: 'admin', label: '管理员' },
-  { value: 'owner', label: 'Owner' },
-]
-
-const ROLE_LABEL: Record<string, string> = {
-  user: '普通用户',
-  admin: '管理员',
-  owner: 'Owner',
-}
-
-/** 角色变更的确认文案：点明变更方向，并在涉及 Owner 时说明其全部管理权限的后果。 */
-function roleChangeConfirmText(user: PublicUser, nextRole: string): string {
-  const name = user.display_name || user.username
-  const current = ROLE_LABEL[user.role] ?? user.role
-  const next = ROLE_LABEL[nextRole] ?? nextRole
-
-  let consequence: string
-  if (nextRole === 'owner') {
-    consequence = '提升为 Owner 后将拥有全部管理权限（用户、套餐、密钥轮换、审计与 OAuth 客户端），并可管理其他管理员与 Owner。'
-  } else if (nextRole === 'admin' && user.role === 'user') {
-    consequence = '提升为管理员后将获得用户、套餐与审计等后台管理权限。'
-  } else if (nextRole === 'admin') {
-    consequence = '降级为管理员后将移除 Owner 独有的权限（管理其他管理员与 Owner），保留用户、套餐与审计等后台管理权限。'
-  } else if (user.role === 'owner') {
-    consequence = '降级为普通用户将立即移除 Owner 的全部管理权限（用户、套餐、密钥轮换、审计与 OAuth 客户端），仅保留普通用户权限。'
-  } else {
-    consequence = '降级为普通用户将移除其全部后台管理权限。'
-  }
-  return `确认将 ${name} 的角色从「${current}」改为「${next}」？\n${consequence}`
-}
-
-const STATUS_FILTER_OPTIONS: SelectOption[] = [
-  { value: '', label: '全部状态' },
-  { value: 'active', label: '已启用' },
-  { value: 'disabled', label: '已禁用' },
-]
-
-const STATUS_LABEL: Record<string, string> = {
-  active: '已启用',
-  disabled: '已禁用',
-}
+import { UserCreditDrawer } from './user-credit-drawer'
+import { ROLE_OPTIONS, STATUS_FILTER_OPTIONS, STATUS_LABEL, roleChangeConfirmText } from './users-shared'
 
 export function AdminUsers() {
   const access = useAdminAccess()
@@ -79,6 +37,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
   const [busy, setBusy] = useState<ReadonlySet<number>>(() => new Set())
   const [refreshKey, setRefreshKey] = useState(0)
   const [assignTarget, setAssignTarget] = useState<number | null>(null)
+  const [creditTarget, setCreditTarget] = useState<number | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [created, setCreated] = useState<PublicUser | null>(null)
   const pageSize = 20
@@ -168,6 +127,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
   const totalPages = result ? Math.max(1, Math.ceil(result.total / result.page_size)) : 1
   // 抽屉标题需要用户名；换页后目标行可能已不在当前结果里，取不到就不渲染抽屉。
   const assignUser = assignTarget !== null ? result?.items.find((item) => item.id === assignTarget) : undefined
+  const creditUser = creditTarget !== null ? result?.items.find((item) => item.id === creditTarget) : undefined
 
   return (
     <HudPanel>
@@ -202,8 +162,10 @@ export function UsersTable({ access }: { access: AdminAccess }) {
           const isSelf = user.id === access.data?.user_id
           const canManageRoles = Boolean(access.data?.permissions.includes('manage_roles'))
           const canManagePrivilegedTarget = canManageRoles || (user.role !== 'admin' && user.role !== 'owner')
-          const canAssignPlan = Boolean(access.data?.permissions.includes('manage_users')) && canManagePrivilegedTarget
-          const canChangeStatus = Boolean(access.data?.permissions.includes('manage_users')) && canManagePrivilegedTarget && !isSelf
+          const canManageUsers = Boolean(access.data?.permissions.includes('manage_users'))
+          const canAssignPlan = canManageUsers && canManagePrivilegedTarget
+          const canCredit = canManageUsers
+          const canChangeStatus = canManageUsers && canManagePrivilegedTarget && !isSelf
           return (
             <tr key={user.id}>
                   <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{user.id}</td>
@@ -258,15 +220,26 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                   </td>
                   <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(user.created_at)}</td>
                   <td className="text-right">
-                    <button
-                      type="button"
-                      className={`chenxing-link chenxing-row-action${user.status === 'active' ? ' text-[var(--chenxing-error)]' : ''}`}
-                      disabled={!canChangeStatus || busy.has(user.id)}
-                      title={canChangeStatus ? undefined : isSelf ? '不能修改自己的状态' : '修改管理员或 Owner 状态需要 manage_roles 权限'}
-                      onClick={() => void setUserStatus(user)}
-                    >
-                      {user.status === 'active' ? '禁用' : '启用'}
-                    </button>
+                    <div className="inline-flex items-center gap-3">
+                      <button
+                        type="button"
+                        className="chenxing-link chenxing-row-action"
+                        disabled={!canCredit}
+                        onClick={() => setCreditTarget(user.id)}
+                      >
+                        <Icon name="wallet" size={13} />
+                        充值
+                      </button>
+                      <button
+                        type="button"
+                        className={`chenxing-link chenxing-row-action${user.status === 'active' ? ' text-[var(--chenxing-error)]' : ''}`}
+                        disabled={!canChangeStatus || busy.has(user.id)}
+                        title={canChangeStatus ? undefined : isSelf ? '不能修改自己的状态' : '修改管理员或 Owner 状态需要 manage_roles 权限'}
+                        onClick={() => void setUserStatus(user)}
+                      >
+                        {user.status === 'active' ? '禁用' : '启用'}
+                      </button>
+                    </div>
                   </td>
               </tr>
             )
@@ -292,6 +265,14 @@ export function UsersTable({ access }: { access: AdminAccess }) {
           userName={assignUser.display_name || assignUser.username}
           onAssigned={() => setRefreshKey((value) => value + 1)}
           onClose={() => setAssignTarget(null)}
+        />
+      ) : null}
+      {creditTarget !== null && creditUser ? (
+        <UserCreditDrawer
+          userId={creditTarget}
+          userName={creditUser.display_name || creditUser.username}
+          onCredited={() => setRefreshKey((value) => value + 1)}
+          onClose={() => setCreditTarget(null)}
         />
       ) : null}
     </HudPanel>

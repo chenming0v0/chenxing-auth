@@ -244,8 +244,8 @@ export function ConsolePlans() {
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-3">
-                <Button icon="settings-2" disabled title="订阅管理尚未提供">管理订阅</Button>
-                <Button variant="ghost" icon="receipt" disabled title="账单接口尚未提供">查看账单</Button>
+                <Link to="/console/wallet?purchase=1" className="chenxing-btn-primary"><Icon name="settings-2" size={16} />管理订阅</Link>
+                <Link to="/console/wallet" className="chenxing-btn-ghost"><Icon name="receipt" size={16} />查看账单</Link>
               </div>
             </div>
           </HudPanel>
@@ -292,7 +292,6 @@ export function ConsolePlans() {
                 )
               })}
             </div>
-            <div className="mt-5"><Notice tone="info">当前 API 只提供权益查询，页面不会将选择操作伪装成已扣款或已升级。</Notice></div>
           </HudPanel>
         </>
       ) : null}

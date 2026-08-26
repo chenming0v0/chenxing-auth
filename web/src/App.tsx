@@ -6,9 +6,9 @@ import { getDocumentTitle } from './data'
 import { LandingPage } from './pages/landing'
 import { AuthPage, BootstrapPage } from './pages/auth'
 import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './pages/oauth'
-import { ConsoleOverview, ConsolePlans, ConsoleProfile, AuthorizedApps, SecurityLogsPage } from './pages/console/account'
+import { ConsoleOverview, ConsolePlans, ConsoleProfile, ConsoleWallet, AuthorizedApps, SecurityLogsPage } from './pages/console/account'
 import { IntegratePage, PlaygroundPage } from './pages/console/developer'
-import { AdminAudit, AdminClients, AdminDashboard, AdminPlans, AdminUsers, AdminSettings } from './pages/admin'
+import { AdminAudit, AdminClients, AdminDashboard, AdminInvitations, AdminOAuthProviders, AdminPlans, AdminUsers, AdminSettings } from './pages/admin'
 import { AuthPanel, AuthShell } from './components/shells'
 import { Button, Notice } from './components/ui'
 
@@ -85,6 +85,7 @@ function AppContent() {
     '/console': <ConsoleOverview />,
     '/console/plans': <ConsolePlans />,
     '/console/profile': <ConsoleProfile />,
+    '/console/wallet': <ConsoleWallet />,
     '/console/security': <ConsoleProfile />,
     '/settings/security': <ConsoleProfile />,
     '/console/apps': <AuthorizedApps />,
@@ -96,6 +97,8 @@ function AppContent() {
     '/admin/plans': <AdminPlans />,
     '/admin/clients': <AdminClients />,
     '/admin/audit': <AdminAudit />,
+    '/admin/invitations': <AdminInvitations />,
+    '/admin/oauth-providers': <AdminOAuthProviders />,
     '/admin/settings': <AdminSettings />,
   }
 

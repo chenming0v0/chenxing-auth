@@ -76,6 +76,11 @@ impl PlanService {
         Ok(repository::list_plans(&self.pool).await?)
     }
 
+    /// Active plans for the user-facing catalog, including price 0 (admin-assign only).
+    pub async fn list_catalog(&self) -> Result<Vec<Plan>, PlanServiceError> {
+        Ok(repository::list_active_plans(&self.pool).await?)
+    }
+
     pub async fn create(
         &self,
         input: PlanInput,

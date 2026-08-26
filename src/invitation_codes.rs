@@ -74,6 +74,32 @@ pub struct CreatedInvitationCode {
     pub code: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct InvitationCodeUse {
+    pub user_id: i64,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub used_at: OffsetDateTime,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InvitationCodeDetail {
+    #[serde(flatten)]
+    pub summary: InvitationCodeSummary,
+    pub uses: Vec<InvitationCodeUse>,
+}
+
+type InvitationCodeUseRow = (i64, String, Option<String>, OffsetDateTime);
+
+fn invitation_use(row: InvitationCodeUseRow) -> InvitationCodeUse {
+    InvitationCodeUse {
+        user_id: row.0,
+        username: row.1,
+        display_name: row.2,
+        used_at: row.3,
+    }
+}
+
 pub fn digest(code: &str) -> [u8; 32] {
     Sha256::digest(code.trim().as_bytes()).into()
 }
@@ -153,6 +179,39 @@ pub async fn list(pool: &PgPool) -> Result<Vec<InvitationCodeSummary>, crate::sq
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(summary).collect())
+}
+
+/// Load one invitation code and the users who consumed it.
+///
+/// The queries never select `code_digest`; plaintext codes are not stored.
+pub async fn get_detail(
+    pool: &PgPool,
+    id: i64,
+) -> Result<InvitationCodeDetail, InvitationCodeError> {
+    let mut transaction = pool.begin().await?;
+    let row: InvitationCodeRow = crate::sqlx::query_as(
+        "SELECT id, label, max_uses, use_count, expires_at, disabled_at, created_at
+         FROM registration_invitation_codes WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or(InvitationCodeError::NotFound)?;
+    let uses: Vec<InvitationCodeUseRow> = crate::sqlx::query_as(
+        "SELECT iu.user_id, u.username, u.display_name, iu.used_at
+         FROM registration_invitation_uses iu
+         INNER JOIN users u ON u.id = iu.user_id
+         WHERE iu.invitation_id = $1
+         ORDER BY iu.used_at DESC, iu.user_id DESC",
+    )
+    .bind(id)
+    .fetch_all(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(InvitationCodeDetail {
+        summary: summary(row),
+        uses: uses.into_iter().map(invitation_use).collect(),
+    })
 }
 
 pub async fn disable_with_audit(

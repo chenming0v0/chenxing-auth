@@ -28,6 +28,35 @@ pub const MAX_MONTHLY_AUTH_LIMIT: i64 = 31_000_000;
 /// 服务的攻击流量量级。需要更高就设 `NULL`（不限）。显式 0 没有意义。
 pub const MAX_QPS: i32 = 10_000;
 
+/// 套餐计费周期。`one_time` 为永久挂载；周期套餐按购买时刻起算。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BillingPeriod {
+    #[default]
+    OneTime,
+    Monthly,
+    Yearly,
+}
+
+impl BillingPeriod {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OneTime => "one_time",
+            Self::Monthly => "monthly",
+            Self::Yearly => "yearly",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "one_time" => Some(Self::OneTime),
+            "monthly" => Some(Self::Monthly),
+            "yearly" => Some(Self::Yearly),
+            _ => None,
+        }
+    }
+}
+
 /// 套餐的持久化模型。`monthly_auth_limit` / `max_qps` 为 `NULL` 表示无限 / 不限。
 #[derive(Debug, Clone, Serialize)]
 pub struct Plan {
@@ -41,6 +70,8 @@ pub struct Plan {
     pub max_qps: Option<i32>,
     pub is_default: bool,
     pub status: String,
+    pub price_points: i64,
+    pub billing_period: BillingPeriod,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -93,6 +124,10 @@ pub struct PlanInput {
     pub monthly_auth_limit: Option<i64>,
     pub max_qps: Option<i32>,
     pub is_default: bool,
+    #[serde(default)]
+    pub price_points: i64,
+    #[serde(default)]
+    pub billing_period: BillingPeriod,
 }
 
 /// 通过校验后的套餐输入。
@@ -106,6 +141,8 @@ pub struct ValidatedPlanInput {
     pub monthly_auth_limit: Option<i64>,
     pub max_qps: Option<i32>,
     pub is_default: bool,
+    pub price_points: i64,
+    pub billing_period: BillingPeriod,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -130,6 +167,8 @@ pub enum PlanError {
     InvalidMonthlyLimit,
     #[error("max QPS must be between 1 and {}, or null for unlimited", MAX_QPS)]
     InvalidMaxQps,
+    #[error("plan price in points must not be negative")]
+    InvalidPricePoints,
     #[error("plan expiration must be in the future")]
     ExpiryInPast,
 }
@@ -209,6 +248,9 @@ pub fn validate_plan_input(input: PlanInput) -> Result<ValidatedPlanInput, PlanE
     {
         return Err(PlanError::InvalidMaxQps);
     }
+    if input.price_points < 0 {
+        return Err(PlanError::InvalidPricePoints);
+    }
     Ok(ValidatedPlanInput {
         code,
         name,
@@ -218,6 +260,8 @@ pub fn validate_plan_input(input: PlanInput) -> Result<ValidatedPlanInput, PlanE
         monthly_auth_limit: input.monthly_auth_limit,
         max_qps: input.max_qps,
         is_default: input.is_default,
+        price_points: input.price_points,
+        billing_period: input.billing_period,
     })
 }
 

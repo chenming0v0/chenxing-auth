@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import type { AuditEvent } from '../../api'
 import { AuditTable } from './audit'
+import { formatActor } from './audit-labels'
 
 function jsonResponse(body: unknown): Response {
   return { ok: true, status: 200, json: async () => body } as Response
 }
 
-const AUDIT = {
+const AUDIT: AuditEvent = {
   id: 1,
   actor_type: 'admin',
   actor_id: '1',
@@ -29,6 +31,10 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
+
+function stubList(items: AuditEvent[]) {
+  vi.stubGlobal('fetch', () => Promise.resolve(jsonResponse({ items, page: 1, page_size: 20, total: items.length })))
+}
 
 describe('AuditTable 页码收敛（#672）', () => {
   it('direct page=999 保留全部筛选条件并 replace 到最后有效页', async () => {
@@ -85,5 +91,55 @@ describe('AuditTable 页码收敛（#672）', () => {
       '/admin/audit?action=login&resource_type=session&page=2',
     )
     expect(screen.getByText('session-1')).toBeTruthy()
+  })
+})
+
+describe('AuditTable 展示与详情', () => {
+  it('用中文标签展示 login，而不是原始动作代码作为主文案', async () => {
+    stubList([AUDIT])
+    render(<AuditTable />)
+    expect(await screen.findByText('登录')).toBeTruthy()
+    expect(screen.getByText('管理员 #1')).toBeTruthy()
+    expect(screen.getByText('会话')).toBeTruthy()
+  })
+
+  it('点击一行打开详情抽屉', async () => {
+    stubList([AUDIT])
+    render(<AuditTable />)
+    fireEvent.click(await screen.findByText('session-1'))
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '登录' })).toBeTruthy()
+    expect(screen.getByText('没有附加详情')).toBeTruthy()
+  })
+
+  it('未知动作 some_future_action 仍以原始代码展示', async () => {
+    stubList([{ ...AUDIT, action: 'some_future_action' }])
+    render(<AuditTable />)
+    expect(await screen.findByText('some_future_action')).toBeTruthy()
+    expect(screen.queryByText('登录')).toBeNull()
+  })
+
+  it('URL 中的未知动作会保留在事件筛选器里', async () => {
+    window.history.replaceState({}, '', '/admin/audit?action=some_future_action')
+    stubList([{ ...AUDIT, action: 'some_future_action' }])
+    render(<AuditTable />)
+    await screen.findByText('session-1')
+    expect(screen.getByRole('combobox', { name: '事件类型' }).textContent).toContain('some_future_action')
+  })
+
+  it('metadata 中的 [REDACTED] 按脱敏原文展示，不尝试还原', async () => {
+    stubList([{ ...AUDIT, metadata: { token: '[REDACTED]', result: 'success' } }])
+    render(<AuditTable />)
+    fireEvent.click(await screen.findByText('session-1'))
+    expect(await screen.findByText(/\[REDACTED\]/)).toBeTruthy()
+    expect(screen.getByText(/success/)).toBeTruthy()
+  })
+})
+
+describe('审计执行者文案', () => {
+  it('把 admin / user / system_token 收成带编号的中文身份', () => {
+    expect(formatActor('admin', '1')).toBe('管理员 #1')
+    expect(formatActor('user', '12')).toBe('用户 #12')
+    expect(formatActor('system_token', null)).toBe('系统')
   })
 })

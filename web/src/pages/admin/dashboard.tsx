@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react'
+import { Link, useNavigate } from '../../router'
 import { apiFetch, type AdminOverview, type AuditEvent, type Paged } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { DataTable, TablePanel } from '../../components/data-table'
 import { formatDate } from '../../data'
 import { AdminGate, useAdminAccess } from './shared'
+import { ActionBadge, formatActor, resourceLabel } from './audit-labels'
 
 export function AdminDashboard() {
   const access = useAdminAccess()
+  const navigate = useNavigate()
   const [overview, setOverview] = useState<AdminOverview | null>(null)
   const [audits, setAudits] = useState<AuditEvent[]>([])
   const [error, setError] = useState('')
@@ -64,30 +67,37 @@ export function AdminDashboard() {
                 <p className="chenxing-display mt-3 text-3xl font-bold">{overview.administrators}</p>
                 <p className="chenxing-caption mt-1.5">具备管理会话的账户</p>
               </HudPanel>
-              <HudPanel className="!p-5">
-                <p className="chenxing-label flex items-center gap-2"><Icon name="activity" className="text-[var(--chenxing-warning)]" size={16} />审计事件</p>
-                <p className="chenxing-display mt-3 text-3xl font-bold">{overview.audit_events}</p>
-                <p className="chenxing-caption mt-1.5 text-[var(--chenxing-warning)]">安全与管理操作索引</p>
-              </HudPanel>
+              <Link to="/admin/audit" className="block">
+                <HudPanel className="!p-5">
+                  <p className="chenxing-label flex items-center gap-2"><Icon name="activity" className="text-[var(--chenxing-warning)]" size={16} />审计事件</p>
+                  <p className="chenxing-display mt-3 text-3xl font-bold">{overview.audit_events}</p>
+                  <p className="chenxing-caption mt-1.5">查看审计日志</p>
+                </HudPanel>
+              </Link>
             </div>
           ) : null}
           <TablePanel
             icon="activity"
             title="最近审计"
-            description="只展示非敏感索引字段。"
+            description="只展示脱敏后的索引字段。"
+            action={<Link to="/admin/audit" className="chenxing-link">查看全部</Link>}
             notice={auditError ? <Notice tone="warning">{auditError}</Notice> : null}
           >
             <DataTable
               minWidth={720}
-              columns={['时间', '事件', '主体', { label: '资源', align: 'right' }]}
+              columns={['时间', '事件', '执行者', { label: '资源', align: 'right' }]}
               empty={audits.length ? null : auditError ? '最近审计暂时不可用。' : access.data?.permissions.includes('read_audit') ? '暂无审计事件。' : '暂无审计事件或缺少 read_audit 权限'}
             >
               {audits.map((event, index) => (
-                <tr key={event.id ?? `${event.created_at}-${index}`}>
+                <tr
+                  key={event.id ?? `${event.created_at}-${index}`}
+                  className="cursor-pointer"
+                  onClick={() => navigate(event.action ? `/admin/audit?action=${encodeURIComponent(event.action)}` : '/admin/audit')}
+                >
                   <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(event.created_at)}</td>
-                  <td className="chenxing-body text-sm">{event.action || '—'}</td>
-                  <td className="chenxing-body text-sm">{event.actor_type || '—'}{event.actor_id ? ` · ${event.actor_id}` : ''}</td>
-                  <td className="text-right"><span className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{event.resource_type || '—'}</span></td>
+                  <td><ActionBadge action={event.action || ''} /></td>
+                  <td className="chenxing-body text-sm">{formatActor(event.actor_type, event.actor_id)}</td>
+                  <td className="text-right"><span className="chenxing-body text-sm">{resourceLabel(event.resource_type)}</span></td>
                 </tr>
               ))}
             </DataTable>

@@ -3,4 +3,5 @@
 
 pub mod domain;
 pub mod repository;
+mod row;
 pub mod service;

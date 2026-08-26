@@ -5,6 +5,7 @@ use super::{
     domain::{
         Plan, PlanMutationError, ValidatedPlanInput, validate_plan_assignment, validate_plan_update,
     },
+    row::{PlanExpiryRow, PlanListRow, PlanRow},
     service::EffectivePlan,
 };
 use crate::db::advisory_lock::{BusinessLock, lock_business};
@@ -46,85 +47,21 @@ pub struct PlanWithUsers {
     pub assigned_users: i64,
 }
 
-/// plans 表 12 列（含 created_at / updated_at），按列顺序与 SQL 一一对应。
-type PlanRow = (
-    i64,
-    String,
-    String,
-    Option<String>,
-    i32,
-    i64,
-    Option<i64>,
-    Option<i32>,
-    bool,
-    String,
-    OffsetDateTime,
-    OffsetDateTime,
-);
-
-/// plans 12 列 + 挂载用户数（`COUNT(u.id)` 恒为非空整数）。
-type PlanRowWithCount = (
-    i64,
-    String,
-    String,
-    Option<String>,
-    i32,
-    i64,
-    Option<i64>,
-    Option<i32>,
-    bool,
-    String,
-    OffsetDateTime,
-    OffsetDateTime,
-    i64,
-);
-
-/// plans 12 列 + 用户到期时间（`NULL` 表示永久有效）。
-type PlanRowWithExpiry = (
-    i64,
-    String,
-    String,
-    Option<String>,
-    i32,
-    i64,
-    Option<i64>,
-    Option<i32>,
-    bool,
-    String,
-    OffsetDateTime,
-    OffsetDateTime,
-    Option<OffsetDateTime>,
-);
-
 /// 用户行锁同时读取的套餐指针，以及该指针在数据库事务时间下是否仍有效。
 type LockedUserPlan = (Option<i64>, bool);
 
-fn row_to_plan(row: PlanRow) -> Plan {
-    Plan {
-        id: row.0,
-        code: row.1,
-        name: row.2,
-        description: row.3,
-        oauth_clients_limit: row.4,
-        daily_auth_limit: row.5,
-        monthly_auth_limit: row.6,
-        max_qps: row.7,
-        is_default: row.8,
-        status: row.9,
-        created_at: row.10,
-        updated_at: row.11,
-    }
+fn map_plan_row(row: PlanRow) -> Result<Plan, crate::sqlx::Error> {
+    row.into_plan()
 }
 
 pub async fn list_plans(pool: &PgPool) -> Result<Vec<PlanWithUsers>, crate::sqlx::Error> {
-    let rows: Vec<PlanRowWithCount> = crate::sqlx::query_as(
+    let rows: Vec<PlanListRow> = crate::sqlx::query_as(
         "SELECT p.id, p.code, p.name, p.description, p.oauth_clients_limit, p.daily_auth_limit,
-                p.monthly_auth_limit, p.max_qps, p.is_default, p.status, p.created_at, p.updated_at,
-                COUNT(u.id)
+                p.monthly_auth_limit, p.max_qps, p.is_default, p.status, p.price_points,
+                p.billing_period, p.created_at, p.updated_at, COUNT(u.id) AS assigned_users
          FROM plans p
          LEFT JOIN users u ON u.plan_id = p.id
-         GROUP BY p.id, p.code, p.name, p.description, p.oauth_clients_limit, p.daily_auth_limit,
-                  p.monthly_auth_limit, p.max_qps, p.is_default, p.status, p.created_at, p.updated_at
+         GROUP BY p.id
          ORDER BY p.created_at, p.id",
     )
     .fetch_all(pool)
@@ -132,36 +69,49 @@ pub async fn list_plans(pool: &PgPool) -> Result<Vec<PlanWithUsers>, crate::sqlx
     Ok(rows
         .into_iter()
         .map(|row| PlanWithUsers {
-            plan: row_to_plan((
-                row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
-                row.11,
-            )),
-            assigned_users: row.12,
+            plan: row.plan,
+            assigned_users: row.assigned_users,
         })
         .collect())
+}
+
+pub async fn list_active_plans(pool: &PgPool) -> Result<Vec<Plan>, crate::sqlx::Error> {
+    let rows: Vec<PlanRow> = crate::sqlx::query_as(
+        "SELECT id, code, name, description, oauth_clients_limit, daily_auth_limit,
+                monthly_auth_limit, max_qps, is_default, status, price_points, billing_period,
+                created_at, updated_at
+         FROM plans
+         WHERE status = 'active'
+         ORDER BY created_at, id",
+    )
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(map_plan_row).collect()
 }
 
 pub async fn find_by_id(pool: &PgPool, id: i64) -> Result<Option<Plan>, crate::sqlx::Error> {
     let row: Option<PlanRow> = crate::sqlx::query_as(
         "SELECT id, code, name, description, oauth_clients_limit, daily_auth_limit,
-                monthly_auth_limit, max_qps, is_default, status, created_at, updated_at
+                monthly_auth_limit, max_qps, is_default, status, price_points, billing_period,
+                created_at, updated_at
          FROM plans WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(row_to_plan))
+    row.map(map_plan_row).transpose()
 }
 
 pub async fn find_default(pool: &PgPool) -> Result<Option<Plan>, crate::sqlx::Error> {
     let row: Option<PlanRow> = crate::sqlx::query_as(
         "SELECT id, code, name, description, oauth_clients_limit, daily_auth_limit,
-                monthly_auth_limit, max_qps, is_default, status, created_at, updated_at
+                monthly_auth_limit, max_qps, is_default, status, price_points, billing_period,
+                created_at, updated_at
          FROM plans WHERE is_default = TRUE AND status = 'active' LIMIT 1",
     )
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(row_to_plan))
+    row.map(map_plan_row).transpose()
 }
 
 /// 读取用户当前挂载且仍有效的套餐；未挂载、已归档或已过期时返回 `None`，
@@ -170,10 +120,10 @@ pub async fn find_for_user(
     pool: &PgPool,
     user_id: UserId,
 ) -> Result<Option<EffectivePlan>, crate::sqlx::Error> {
-    let row: Option<PlanRowWithExpiry> = crate::sqlx::query_as(
+    let row: Option<PlanExpiryRow> = crate::sqlx::query_as(
         "SELECT p.id, p.code, p.name, p.description, p.oauth_clients_limit, p.daily_auth_limit,
-                p.monthly_auth_limit, p.max_qps, p.is_default, p.status, p.created_at, p.updated_at,
-                u.plan_expires_at
+                p.monthly_auth_limit, p.max_qps, p.is_default, p.status, p.price_points,
+                p.billing_period, p.created_at, p.updated_at, u.plan_expires_at
          FROM plans p
          JOIN users u ON u.plan_id = p.id
          WHERE u.id = $1
@@ -184,10 +134,8 @@ pub async fn find_for_user(
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|row| EffectivePlan {
-        plan: row_to_plan((
-            row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10, row.11,
-        )),
-        expires_at: row.12,
+        plan: row.plan,
+        expires_at: row.expires_at,
     }))
 }
 
@@ -199,19 +147,20 @@ async fn lock_default_plan_set(
     lock_business(transaction, BusinessLock::DefaultPlan).await
 }
 
-async fn find_for_update(
+pub(crate) async fn find_for_update(
     transaction: &mut Transaction<'_, Postgres>,
     id: i64,
 ) -> Result<Option<Plan>, crate::sqlx::Error> {
     let row: Option<PlanRow> = crate::sqlx::query_as(
         "SELECT id, code, name, description, oauth_clients_limit, daily_auth_limit,
-                monthly_auth_limit, max_qps, is_default, status, created_at, updated_at
+                monthly_auth_limit, max_qps, is_default, status, price_points, billing_period,
+                created_at, updated_at
          FROM plans WHERE id = $1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
     .await?;
-    Ok(row.map(row_to_plan))
+    row.map(map_plan_row).transpose()
 }
 
 async fn find_default_for_update(
@@ -219,7 +168,8 @@ async fn find_default_for_update(
 ) -> Result<Option<Plan>, crate::sqlx::Error> {
     let row: Option<PlanRow> = crate::sqlx::query_as(
         "SELECT id, code, name, description, oauth_clients_limit, daily_auth_limit,
-                monthly_auth_limit, max_qps, is_default, status, created_at, updated_at
+                monthly_auth_limit, max_qps, is_default, status, price_points, billing_period,
+                created_at, updated_at
          FROM plans
          WHERE is_default = TRUE AND status = 'active'
          LIMIT 1
@@ -227,7 +177,7 @@ async fn find_default_for_update(
     )
     .fetch_optional(&mut **transaction)
     .await?;
-    Ok(row.map(row_to_plan))
+    row.map(map_plan_row).transpose()
 }
 
 /// 在调用方事务内锁定用户及其当前有效套餐。
@@ -292,10 +242,12 @@ pub async fn insert(
     }
     let row: PlanRow = crate::sqlx::query_as(
         "INSERT INTO plans (code, name, description, oauth_clients_limit, daily_auth_limit,
-                            monthly_auth_limit, max_qps, is_default, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', NOW(), NOW())
+                            monthly_auth_limit, max_qps, is_default, status, price_points,
+                            billing_period, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, NOW(), NOW())
          RETURNING id, code, name, description, oauth_clients_limit, daily_auth_limit,
-                   monthly_auth_limit, max_qps, is_default, status, created_at, updated_at",
+                   monthly_auth_limit, max_qps, is_default, status, price_points, billing_period,
+                   created_at, updated_at",
     )
     .bind(&input.code)
     .bind(&input.name)
@@ -305,11 +257,13 @@ pub async fn insert(
     .bind(input.monthly_auth_limit)
     .bind(input.max_qps)
     .bind(input.is_default)
+    .bind(input.price_points)
+    .bind(input.billing_period.as_str())
     .fetch_one(&mut *transaction)
     .await?;
     crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
     transaction.commit().await?;
-    Ok(row_to_plan(row))
+    map_plan_row(row).map_err(PlanRepositoryError::from)
 }
 
 pub async fn update(
@@ -343,10 +297,11 @@ pub async fn update(
     let row: PlanRow = crate::sqlx::query_as(
         "UPDATE plans SET code = $2, name = $3, description = $4, oauth_clients_limit = $5,
                 daily_auth_limit = $6, monthly_auth_limit = $7, max_qps = $8, is_default = $9,
-                updated_at = NOW()
+                price_points = $10, billing_period = $11, updated_at = NOW()
          WHERE id = $1
          RETURNING id, code, name, description, oauth_clients_limit, daily_auth_limit,
-                   monthly_auth_limit, max_qps, is_default, status, created_at, updated_at",
+                   monthly_auth_limit, max_qps, is_default, status, price_points, billing_period,
+                   created_at, updated_at",
     )
     .bind(id)
     .bind(&input.code)
@@ -357,6 +312,8 @@ pub async fn update(
     .bind(input.monthly_auth_limit)
     .bind(input.max_qps)
     .bind(input.is_default)
+    .bind(input.price_points)
+    .bind(input.billing_period.as_str())
     .fetch_one(&mut *transaction)
     .await?;
     // 更新成功后在同一事务中统计挂载用户数；避免提交后再查询时失败导致响应丢失更新结果
@@ -364,7 +321,7 @@ pub async fn update(
     crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
     transaction.commit().await?;
     Ok(Some(PlanWithUsers {
-        plan: row_to_plan(row),
+        plan: map_plan_row(row)?,
         assigned_users,
     }))
 }

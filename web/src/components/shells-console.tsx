@@ -67,7 +67,9 @@ function BottomNav() {
     ))
     : developer.some((item) => item.path === location.pathname)
       ? developer
-      : groupItems('账户')
+      : groupItems('账户').filter((item) => (
+        ['/console', '/console/profile', '/console/apps', '/console/logs'].includes(item.path)
+      ))
   return (
     <nav className="chenxing-bottom-nav" aria-label="控制台快捷导航">
       {core.map((item) => (

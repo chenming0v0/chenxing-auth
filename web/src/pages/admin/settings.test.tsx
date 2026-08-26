@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type {
   EmailPolicySetting,
   IssuerSettingResponse,
-  OAuthProviderSummary,
   PasskeySetting,
   RegistrationSetting,
   SecurityLimitsSetting,
@@ -12,7 +11,7 @@ import type {
 import { SettingsWorkspace } from './settings'
 import { installCsrfCookie } from '../../test/csrf-cookie'
 
-// 保存、密钥轮换、提供商启停都是走 apiFetch 的状态变更请求，需要 CSRF cookie 才能发出。
+// 保存、密钥轮换都是走 apiFetch 的状态变更请求，需要 CSRF cookie 才能发出。
 installCsrfCookie()
 
 /* #268：工作区的消息状态曾经每次渲染重建 flash，任一面板发消息都会让全部面板的
@@ -78,25 +77,6 @@ const ISSUER: IssuerSettingResponse = {
   phase: 'issuer_loaded',
 }
 
-const PROVIDER: OAuthProviderSummary = {
-  id: 1,
-  name: 'GitLab',
-  slug: 'gitlab',
-  status: 'active',
-  client_secret_configured: true,
-  authorization_endpoint: 'https://idp.example.com/oauth/authorize',
-  token_endpoint: 'https://idp.example.com/oauth/token',
-  userinfo_endpoint: 'https://idp.example.com/oauth/userinfo',
-  client_id: 'client-abc',
-  scopes: ['openid', 'profile', 'email'],
-  subject_claim: 'sub',
-  email_claim: 'email',
-  name_claim: null,
-  email_verified_claim: 'email_verified',
-  client_auth_method: 'basic',
-  pkce_enabled: true,
-}
-
 let requests: CapturedRequest[] = []
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -114,7 +94,6 @@ function loadedBody(path: string): unknown {
   if (path === '/api/v1/admin/settings/security-limits') return SECURITY_LIMITS
   if (path === '/api/v1/admin/settings/registration') return REGISTRATION
   if (path === '/api/v1/admin/settings/issuer') return ISSUER
-  if (path === '/api/v1/admin/oauth/providers') return [PROVIDER]
   return null
 }
 
@@ -143,7 +122,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const PERMISSIONS = ['manage_settings', 'manage_identity_providers', 'rotate_keys']
+const PERMISSIONS = ['manage_settings', 'rotate_keys']
 
 async function renderWorkspace(permissions: string[] = PERMISSIONS) {
   render(
@@ -160,7 +139,7 @@ async function renderWorkspace(permissions: string[] = PERMISSIONS) {
   await screen.findByLabelText('服务显示名称')
   await screen.findByLabelText('未认证来源 QPS 上限')
   await screen.findByText('corp.example')
-  await screen.findByText('GitLab')
+  await screen.findByText('注册要求邀请码')
 }
 
 function field(label: string): HTMLInputElement {
@@ -197,7 +176,6 @@ describe('SettingsWorkspace 加载 effect 与消息状态解耦', () => {
   it('挂载时每个端点只 GET 一次', async () => {
     await renderWorkspace()
     expectSingleLoadPerEndpoint()
-    expect(getCount('/api/v1/admin/oauth/providers')).toBe(1)
   })
 
   it('某个面板保存成功后，其它面板不重新加载，草稿留存', async () => {
@@ -237,17 +215,6 @@ describe('SettingsWorkspace 加载 effect 与消息状态解耦', () => {
     expect(field('服务显示名称').value).toBe('草稿服务名')
   })
 
-  it('OAuth 提供商启停只刷新自己的列表，不动其它面板', async () => {
-    await renderWorkspace()
-    fillDrafts()
-
-    fireEvent.click(screen.getByRole('button', { name: '禁用' }))
-    await waitFor(() => expect(getCount('/api/v1/admin/oauth/providers')).toBe(2))
-
-    expectSingleLoadPerEndpoint()
-    expectDraftsIntact()
-  })
-
   it('保存成功的面板自身会用服务端返回值刷新，不依赖重新 GET', async () => {
     await renderWorkspace()
     fireEvent.change(field('SMTP 服务器地址'), { target: { value: 'new.smtp.example' } })
@@ -262,19 +229,14 @@ describe('SettingsWorkspace 加载 effect 与消息状态解耦', () => {
   })
 })
 
-describe('SettingsWorkspace 权限退化', () => {
-  it('缺少 manage_identity_providers 时不加载提供商列表', async () => {
-    render(
-      <SettingsWorkspace
-        access={{
-          data: { user_id: 7, username: 'star_owner', role: 'admin', permissions: ['manage_settings'], status: 'active' },
-          loading: false,
-          error: '',
-        }}
-      />,
-    )
-    await screen.findByLabelText('SMTP 服务器地址')
-    expect(screen.getByText('需要 `manage_identity_providers` 权限后才能管理外部身份提供商。')).toBeTruthy()
+describe('SettingsWorkspace 已迁出的面板', () => {
+  it('不再渲染注册邀请码或自定义 OAuth 提供商', async () => {
+    await renderWorkspace()
+    expect(screen.queryByRole('heading', { name: '注册邀请码' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: '自定义 OAuth 2.0 提供商' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: '自定义 OAuth 提供商' })).toBeNull()
+    expect(screen.getByText('注册要求邀请码')).toBeTruthy()
     expect(getCount('/api/v1/admin/oauth/providers')).toBe(0)
+    expect(getCount('/api/v1/admin/registration-invitation-codes')).toBe(0)
   })
 })

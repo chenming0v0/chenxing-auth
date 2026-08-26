@@ -10,7 +10,8 @@ use crate::{
         create_client, disable_client, enable_client, list_clients, rotate_secret, update_client,
     },
     admin::invitation_code_handlers::{
-        create_invitation_codes, disable_invitation_code, list_invitation_codes,
+        create_invitation_codes, disable_invitation_code, get_invitation_code,
+        list_invitation_codes,
     },
     admin::key_handlers::{revoke_signing_key, rotate_signing_key},
     admin::management_handlers::{
@@ -35,6 +36,7 @@ use crate::{
     },
     admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
     admin::user_creation::create_user,
+    admin::wallet_handlers::credit_user_wallet,
     admin::web_handlers::login_page,
     auth_factors::handlers::{
         confirm_totp_setup, finish_discoverable_passkey_authentication,
@@ -76,6 +78,7 @@ use crate::{
         auth_status, change_current_user_password, current_user_profile, list_user_sessions,
         revoke_user_session, update_current_user_profile,
     },
+    wallet::handlers::{get_wallet, list_plan_catalog, list_wallet_ledger, purchase_plan},
 };
 
 use super::discovery::{jwks, openid_configuration};
@@ -152,6 +155,10 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
         )
         .route("/api/v1/auth/password", post(change_current_user_password))
         .route("/api/v1/auth/entitlements", get(current_entitlements))
+        .route("/api/v1/auth/wallet", get(get_wallet))
+        .route("/api/v1/auth/wallet/ledger", get(list_wallet_ledger))
+        .route("/api/v1/auth/plans/catalog", get(list_plan_catalog))
+        .route("/api/v1/auth/wallet/purchase", post(purchase_plan))
         .route("/api/v1/auth/security-events", get(list_security_events))
         .route(
             "/api/v1/auth/security-events/{event_id}",
@@ -222,6 +229,10 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
             get(auth_factor_key_health),
         )
         .route("/api/v1/admin/users/{user_id}/plan", post(assign_plan))
+        .route(
+            "/api/v1/admin/users/{user_id}/wallet/credit",
+            post(credit_user_wallet),
+        )
         .route("/api/v1/admin/plans", get(list_plans).post(create_plan))
         .route("/api/v1/admin/plans/{id}", axum::routing::put(update_plan))
         .route("/api/v1/admin/plans/{id}/archive", post(archive_plan))
@@ -242,6 +253,10 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
         .route(
             "/api/v1/admin/registration-invitation-codes",
             get(list_invitation_codes).post(create_invitation_codes),
+        )
+        .route(
+            "/api/v1/admin/registration-invitation-codes/{id}",
+            get(get_invitation_code),
         )
         .route(
             "/api/v1/admin/registration-invitation-codes/{id}/disable",

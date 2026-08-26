@@ -17,6 +17,7 @@ mod authorization_audit;
 mod bootstrap_invariant;
 mod core;
 mod domain;
+mod invitation_codes;
 mod issuer;
 mod issuer_routes;
 mod issuer_settings;

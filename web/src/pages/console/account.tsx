@@ -1,5 +1,6 @@
 export { ConsoleOverview, ConsolePlans } from './overview-plans'
 export { ConsoleProfile } from './profile-apps'
+export { ConsoleWallet } from './wallet'
 export { AuthorizedApps } from './authorized-apps'
 export { AccountManagement } from './security'
 export { SecurityLogsPage } from './security-logs'

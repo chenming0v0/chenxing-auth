@@ -27,7 +27,9 @@ vi.mock('../auth-state', () => ({
 }))
 
 const allItems = navGroups.flatMap((group) => group.items)
-const coreItems = navGroups.find((group) => group.label === '账户')?.items ?? []
+const coreItems = (navGroups.find((group) => group.label === '账户')?.items ?? []).filter((item) => (
+  ['/console', '/console/profile', '/console/apps', '/console/logs'].includes(item.path)
+))
 
 beforeEach(() => {
   // useLocation 在渲染时读取 window.location.pathname
@@ -83,7 +85,7 @@ describe('ConsoleLayout 移动端导航可达性（#197）', () => {
     // 开发者入口默认落在「接入应用」，管理入口默认落在「仪表盘」
     expect(within(menu).getByRole('link', { name: '开发者' }).getAttribute('href')).toBe('/console/integrate')
     expect(within(menu).getByRole('link', { name: '管理' }).getAttribute('href')).toBe('/admin')
-    for (const flattened of ['总览', '接入应用', '套餐与权益', '仪表盘', '用户管理', '套餐管理', '系统设置']) {
+    for (const flattened of ['总览', '钱包', '接入应用', '套餐与权益', '仪表盘', '用户管理', '套餐管理', '邀请码', '身份提供商', '系统设置']) {
       expect(within(menu).queryByRole('link', { name: flattened })).toBeNull()
     }
     // 分组列表已整体移出汉堡菜单，不再渲染 extra 容器

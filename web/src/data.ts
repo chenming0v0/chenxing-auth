@@ -7,6 +7,7 @@ export const navGroups: NavGroup[] = [
     items: [
       { label: '总览', path: '/console', icon: 'layout-grid' },
       { label: '个人信息', path: '/console/profile', icon: 'user' },
+      { label: '钱包', path: '/console/wallet', icon: 'wallet' },
       { label: '已授权应用', path: '/console/apps', icon: 'shield-check' },
       { label: '安全日志', path: '/console/logs', icon: 'activity' },
     ],
@@ -27,11 +28,15 @@ export const navGroups: NavGroup[] = [
       { label: 'Client 管理', path: '/admin/clients', icon: 'key-round' },
       { label: '审计日志', path: '/admin/audit', icon: 'file-search' },
       { label: '套餐管理', path: '/admin/plans', icon: 'crown' },
+      { label: '邀请码', path: '/admin/invitations', icon: 'ticket' },
     ],
   },
   {
     label: '系统',
-    items: [{ label: '系统设置', path: '/admin/settings', icon: 'settings' }],
+    items: [
+      { label: '身份提供商', path: '/admin/oauth-providers', icon: 'link' },
+      { label: '系统设置', path: '/admin/settings', icon: 'settings' },
+    ],
   },
 ]
 
@@ -46,6 +51,7 @@ export const pageStatus: Record<string, string> = {
   '/console': '控制台 · 总览',
   '/console/plans': '控制台 · 套餐与权益',
   '/console/profile': '控制台 · 个人信息',
+  '/console/wallet': '控制台 · 钱包',
   '/console/security': '控制台 · 个人信息',
   '/settings/security': '控制台 · 个人信息',
   '/console/apps': '控制台 · 已授权应用',
@@ -56,7 +62,9 @@ export const pageStatus: Record<string, string> = {
   '/admin/users': '管理 · 用户管理',
   '/admin/plans': '管理 · 套餐管理',
   '/admin/clients': '管理 · 客户端',
-  '/admin/audit': '管理 · 审计',
+  '/admin/audit': '管理 · 审计日志',
+  '/admin/invitations': '管理 · 邀请码',
+  '/admin/oauth-providers': '管理 · 身份提供商',
   '/admin/settings': '管理 · 系统设置',
 }
 

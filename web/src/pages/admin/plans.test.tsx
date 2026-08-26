@@ -35,6 +35,8 @@ const PLAN_BASIC = {
   daily_auth_limit: 2500,
   monthly_auth_limit: 50000,
   max_qps: 10,
+  price_points: 0,
+  billing_period: 'one_time',
   is_default: true,
   status: 'active' as const,
   assigned_users: 0,
@@ -49,6 +51,8 @@ const PLAN_PRO = {
   daily_auth_limit: 10000,
   monthly_auth_limit: 200000,
   max_qps: 20,
+  price_points: 40,
+  billing_period: 'monthly',
   is_default: false,
   status: 'active' as const,
   assigned_users: 0,
@@ -97,8 +101,29 @@ describe('AdminPlans', () => {
       expect(fetchMock.mock.calls.filter(([path, init]) => path === '/api/v1/admin/plans' && init?.method === 'POST')).toHaveLength(1)
     })
     expect(fetchMock.mock.calls.filter(([path, init]) => path === '/api/v1/admin/plans' && init?.method === 'POST')).toHaveLength(1)
+    const posted = fetchMock.mock.calls.find(([path, init]) => path === '/api/v1/admin/plans' && init?.method === 'POST')
+    expect(JSON.parse(String(posted?.[1]?.body))).toEqual(expect.objectContaining({
+      price_points: 0,
+      billing_period: 'one_time',
+    }))
     release()
     await pending
+  })
+
+  it('新建套餐表单默认售价 0，并展示计费周期', async () => {
+    const fetchMock = vi.fn((path: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (path === '/api/v1/admin/plans' && method === 'GET') return Promise.resolve(jsonResponse([]))
+      return Promise.reject(new Error(`unexpected ${method} ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<AdminPlans />)
+    await screen.findByRole('button', { name: '新建套餐' })
+    fireEvent.click(screen.getByRole('button', { name: '新建套餐' }))
+
+    expect((screen.getByLabelText('售价（辰星点）') as HTMLInputElement).value).toBe('0')
+    expect(screen.getByRole('combobox', { name: '计费周期' }).textContent).toContain('一次性')
   })
 
   it('不同套餐行可并发变更，逆序 reload 响应只接受最新刷新（#682）', async () => {

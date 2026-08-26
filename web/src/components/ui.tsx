@@ -5,7 +5,7 @@ import {
   ChevronsUpDown, Circle, CircleAlert, Code2, Copy, Crown, Database, Download, ExternalLink, Eye, EyeOff, Fingerprint, Image as ImageIcon,
   FlaskConical, Gauge, Globe, Globe2, Info, KeyRound, LayoutDashboard, LayoutGrid, Layers, Link2, Lock, LockKeyhole,
   LogIn, LogOut, Mail, Menu, MoreHorizontal, Pencil, Plus, Power, Receipt, RefreshCw, Rocket, RotateCcw, Save, Search,
-  Send, Server, Settings, Settings2, Shield, ShieldAlert, ShieldCheck, Sparkles, Star, Store, Terminal, Trash2, Unlink,
+  Send, Server, Settings, Settings2, Shield, ShieldAlert, ShieldCheck, Sparkles, Star, Store, Terminal, Ticket, Trash2, Unlink,
   User, UserPlus, Users, Wallet, X, Zap, Clock3, type LucideIcon,
 } from 'lucide-react'
 import logoUrl from '../assets/logo.png'
@@ -23,7 +23,7 @@ const icons: Record<string, LucideIcon> = {
   'more-horizontal': MoreHorizontal, pencil: Pencil, plus: Plus, power: Power, receipt: Receipt, 'refresh-cw': RefreshCw,
   rocket: Rocket, 'rotate-ccw': RotateCcw, save: Save, search: Search, send: Send, server: Server, settings: Settings,
   'settings-2': Settings2, shield: Shield, 'shield-alert': ShieldAlert, 'shield-check': ShieldCheck, sparkles: Sparkles,
-  star: Star, store: Store, terminal: Terminal, 'trash-2': Trash2, unlink: Unlink, user: User, 'user-plus': UserPlus,
+  star: Star, store: Store, terminal: Terminal, ticket: Ticket, 'trash-2': Trash2, unlink: Unlink, user: User, 'user-plus': UserPlus,
   users: Users, wallet: Wallet, x: X, zap: Zap, 'clock-3': Clock3,
 }
 

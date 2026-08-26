@@ -437,6 +437,7 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
             "/api/v1/admin/users/{user_id}/auth-factors/passkey",
         ),
         ("post", "/api/v1/admin/users/{user_id}/plan"),
+        ("post", "/api/v1/admin/users/{user_id}/wallet/credit"),
         ("post", "/api/v1/admin/plans"),
         ("put", "/api/v1/admin/plans/{id}"),
         ("post", "/api/v1/admin/plans/{id}/archive"),

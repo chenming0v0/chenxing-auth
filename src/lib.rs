@@ -23,6 +23,7 @@ pub mod settings;
 pub mod shutdown;
 pub mod state;
 pub mod users;
+pub mod wallet;
 pub mod web_dist;
 pub mod workers;
 

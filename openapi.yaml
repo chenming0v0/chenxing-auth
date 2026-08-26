@@ -38,6 +38,7 @@ tags:
   - name: User Auth/OAuth Clients
   - name: User Auth/Authorized Apps
   - name: User Entitlements
+  - name: User Wallet
   - name: User Auth/Browser Login
   - name: OAuth/OIDC
   - name: Admin Auth
@@ -938,6 +939,82 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/EntitlementsResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/wallet:
+    get:
+      tags: [User Wallet]
+      summary: 查询当前用户辰星点余额
+      operationId: getWallet
+      description: 钱包按需创建。从未入账的用户返回 balance=0，不插入 user_wallets 行。
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 当前余额；currency 固定为 points
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WalletBalance' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/wallet/ledger:
+    get:
+      tags: [User Wallet]
+      summary: 查询当前用户钱包流水
+      operationId: listWalletLedger
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200':
+          description: 按创建时间倒序的钱包流水
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PagedWalletLedger' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/plans/catalog:
+    get:
+      tags: [User Wallet]
+      summary: 查询可展示的套餐目录
+      operationId: listPlanCatalog
+      description: 返回全部 active 套餐，含 price_points=0（仅管理员分配）的档位。
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: active 套餐目录
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/PlanCatalogItem' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/wallet/purchase:
+    post:
+      tags: [User Wallet]
+      summary: 用辰星点购买套餐
+      operationId: purchasePlan
+      description: |
+        同一事务内锁定钱包与套餐：active 且 price_points>0 才可购买。
+        余额不足返回 400 insufficient_balance；归档或定价为 0 返回 400 plan_not_purchasable。
+        购买替换用户当前套餐。one_time 永久有效；monthly 为 now+30 天；yearly 为 now+365 天。
+      security:
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PurchasePlanInput' }
+      responses:
+        '200':
+          description: 购买成功，返回扣款后余额与新套餐
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchasePlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/sessions:
     get:
       tags: [User Auth/Sessions]
@@ -1948,6 +2025,38 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/users/{user_id}/wallet/credit:
+    post:
+      tags: [Admin Users]
+      summary: 向用户钱包充值辰星点
+      description: 基线权限为 manage_users，与分配套餐相同。amount 必须是 1–1000000000 的整数。
+      operationId: creditUserWallet
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreditWalletInput' }
+      responses:
+        '200':
+          description: 充值后的余额
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreditWalletResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/plans:
     get:
       tags: [Admin Plans]
@@ -2474,6 +2583,20 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/admin/registration-invitation-codes/{id}:
+    get:
+      tags: [Admin]
+      summary: 查询注册邀请码使用明细
+      operationId: getRegistrationInvitationCode
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer, format: int64 } }]
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      responses:
+        '200':
+          description: 邀请码状态与使用记录，不包含明文或摘要
+          content: { application/json: { schema: { $ref: '#/components/schemas/InvitationCodeDetail' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/admin/registration-invitation-codes/{id}/disable:
     post:
       tags: [Admin]
@@ -3983,6 +4106,23 @@ components:
           required: [code]
           properties:
             code: { type: string, writeOnly: true, description: 仅创建响应返回一次 }
+    InvitationCodeUse:
+      type: object
+      required: [user_id, username, display_name, used_at]
+      properties:
+        user_id: { type: integer, format: int64 }
+        username: { type: string }
+        display_name: { type: string, nullable: true }
+        used_at: { type: string, format: date-time }
+    InvitationCodeDetail:
+      allOf:
+        - $ref: '#/components/schemas/InvitationCodeSummary'
+        - type: object
+          required: [uses]
+          properties:
+            uses:
+              type: array
+              items: { $ref: '#/components/schemas/InvitationCodeUse' }
     SmtpSetting:
       type: object
       required: [host, port, username, from_address, ssl_enabled, force_auth_login, password_configured]
@@ -4355,8 +4495,8 @@ components:
         client_secret: { type: string, format: password }
     Plan:
       type: object
-      description: 套餐定义；monthly_auth_limit / max_qps 为 null 表示无限 / 不限。日授权 0–1000000，月授权 0–31000000，QPS 1–10000。
-      required: [id, code, name, oauth_clients_limit, daily_auth_limit, monthly_auth_limit, max_qps, is_default, status, created_at, updated_at, assigned_users]
+      description: 套餐定义；monthly_auth_limit / max_qps 为 null 表示无限 / 不限。日授权 0–1000000，月授权 0–31000000，QPS 1–10000。price_points=0 表示不可自助购买，仅管理员可分配。
+      required: [id, code, name, oauth_clients_limit, daily_auth_limit, monthly_auth_limit, max_qps, is_default, status, price_points, billing_period, created_at, updated_at, assigned_users]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         code: { type: string, maxLength: 64, description: 小写字母、数字、下划线或连字符，服务端自动归一化 }
@@ -4368,12 +4508,14 @@ components:
         max_qps: { type: integer, format: int32, nullable: true, minimum: 1, maximum: 10000 }
         is_default: { type: boolean }
         status: { type: string, enum: [active, archived] }
+        price_points: { type: integer, format: int64, minimum: 0, description: 自助购买价格（辰星点）；0 表示仅管理员分配 }
+        billing_period: { type: string, enum: [one_time, monthly, yearly] }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         assigned_users: { type: integer, format: int64, minimum: 0, description: 当前已分配用户数（管理端响应包含） }
     PlanInput:
       type: object
-      description: 创建 / 更新套餐的输入
+      description: 创建 / 更新套餐的输入。price_points / billing_period 缺省为 0 / one_time。
       required: [code, name, oauth_clients_limit, daily_auth_limit, is_default]
       properties:
         code: { type: string, maxLength: 64 }
@@ -4384,6 +4526,72 @@ components:
         monthly_auth_limit: { type: integer, format: int64, nullable: true, minimum: 0, maximum: 31000000 }
         max_qps: { type: integer, format: int32, nullable: true, minimum: 1, maximum: 10000 }
         is_default: { type: boolean }
+        price_points: { type: integer, format: int64, minimum: 0, default: 0 }
+        billing_period: { type: string, enum: [one_time, monthly, yearly], default: one_time }
+    PlanCatalogItem:
+      type: object
+      required: [id, code, name, price_points, billing_period, oauth_clients_limit, daily_auth_limit, monthly_auth_limit, max_qps]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        code: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        price_points: { type: integer, format: int64, minimum: 0 }
+        billing_period: { type: string, enum: [one_time, monthly, yearly] }
+        oauth_clients_limit: { type: integer, format: int32, minimum: 0, maximum: 1000 }
+        daily_auth_limit: { type: integer, format: int64, minimum: 0 }
+        monthly_auth_limit: { type: integer, format: int64, nullable: true, minimum: 0 }
+        max_qps: { type: integer, format: int32, nullable: true, minimum: 1 }
+    WalletBalance:
+      type: object
+      required: [balance, currency]
+      properties:
+        balance: { type: integer, format: int64, minimum: 0 }
+        currency: { type: string, enum: [points] }
+    WalletLedgerEntry:
+      type: object
+      required: [id, amount, balance_after, kind, created_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        amount: { type: integer, format: int64, description: 正数为入账，负数为扣款；不可为 0 }
+        balance_after: { type: integer, format: int64, minimum: 0 }
+        kind: { type: string, enum: [credit, purchase, adjust] }
+        note: { type: string, nullable: true, maxLength: 256 }
+        reference_type: { type: string, nullable: true }
+        reference_id: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+    PagedWalletLedger:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/WalletLedgerEntry' } }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, format: int64, minimum: 0 }
+    PurchasePlanInput:
+      type: object
+      required: [plan_id]
+      properties:
+        plan_id: { type: integer, format: int64, minimum: 1 }
+    PurchasePlanResponse:
+      type: object
+      required: [balance, plan_id, plan_expires_at]
+      properties:
+        balance: { type: integer, format: int64, minimum: 0 }
+        plan_id: { type: integer, format: int64, minimum: 1 }
+        plan_expires_at: { type: string, format: date-time, nullable: true, description: null 表示 one_time 永久有效 }
+    CreditWalletInput:
+      type: object
+      required: [amount]
+      properties:
+        amount: { type: integer, format: int64, minimum: 1, maximum: 1000000000 }
+        note: { type: string, nullable: true, maxLength: 256 }
+    CreditWalletResponse:
+      type: object
+      required: [user_id, balance]
+      properties:
+        user_id: { type: integer, format: int64, minimum: 1 }
+        balance: { type: integer, format: int64, minimum: 0 }
     AssignPlanInput:
       type: object
       required: [plan_id]

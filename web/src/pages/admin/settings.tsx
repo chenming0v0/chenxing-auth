@@ -4,14 +4,12 @@ import { ConsoleLayout } from '../../components/shells'
 import { Button, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { AdminGate, useAdminAccess, type AdminAccess } from './shared'
 import { EmailPolicyPanel } from './settings/email-policy-panel'
-import { OAuthProvidersPanel } from './settings/oauth-providers-panel'
 import { PasskeyPanel } from './settings/passkey-panel'
 import { SecurityLimitsPanel } from './settings/security-limits-panel'
 import { SessionLifetimePanel } from './settings/session-lifetime-panel'
 import { SmtpPanel } from './settings/smtp-panel'
 import { IssuerPanel } from './settings/issuer-panel'
 import { RegistrationPanel } from './settings/registration-panel'
-import { InvitationCodesPanel } from './settings/invitation-codes-panel'
 import { useDraftLeaveGuard, useFlashMessage } from './settings/panel'
 
 export function AdminSettings() {
@@ -21,7 +19,7 @@ export function AdminSettings() {
       <PageIntro
         eyebrow="// Admin · System"
         title="系统设置"
-        description="配置辰星认证中枢的登录、邮件与身份提供商。"
+        description="配置辰星认证中枢的登录、邮件与安全策略。"
       />
       <p className="chenxing-caption mb-6 flex items-center gap-1.5 text-[var(--chenxing-warning)]">
         <Icon name="lock" size={14} />
@@ -37,7 +35,6 @@ export function AdminSettings() {
 export function SettingsWorkspace({ access }: { access: AdminAccess }) {
   const [keyResult, setKeyResult] = useState<KeyRotationResponse | null>(null)
   const [busy, setBusy] = useState(false)
-  const canManageProviders = Boolean(access.data?.permissions.includes('manage_identity_providers'))
   const canManageIssuer = Boolean(access.data?.permissions.includes('manage_issuer'))
   const canRotateKeys = Boolean(access.data?.permissions.includes('rotate_keys'))
   /* flash 的引用跨渲染稳定，面板的加载 effect 不会因为消息状态变化而重跑（#268）。 */
@@ -62,7 +59,6 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
   const reportSmtpDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportSecurityLimitsDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportSessionLifetimeDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
-  const reportOAuthDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportIssuerDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportRegistrationDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   /* Issuer status is independent from registration settings permission. */
@@ -90,20 +86,8 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
       <SmtpPanel onMessage={flash} onDirtyChange={reportSmtpDirty} />
       <SecurityLimitsPanel onMessage={flash} onDirtyChange={reportSecurityLimitsDirty} />
       <SessionLifetimePanel onMessage={flash} onDirtyChange={reportSessionLifetimeDirty} />
-      {canManageProviders ? (
-        <OAuthProvidersPanel onMessage={flash} onDirtyChange={reportOAuthDirty} />
-      ) : (
-        <HudPanel>
-          <h2 className="chenxing-h2 flex items-center gap-2">
-            <Icon name="link" className="text-[var(--chenxing-cyan)]" size={18} />
-            自定义 OAuth 提供商
-          </h2>
-          <p className="chenxing-caption mt-1.5">需要 `manage_identity_providers` 权限后才能管理外部身份提供商。</p>
-        </HudPanel>
-      )}
       {canManageIssuer ? <IssuerPanel onMessage={flash} onDirtyChange={reportIssuerDirty} /> : null}
       <RegistrationPanel onMessage={flash} onDirtyChange={reportRegistrationDirty} />
-      <InvitationCodesPanel />
       <HudPanel>
         <h2 className="chenxing-h2 flex items-center gap-2">
           <Icon name="key-round" className="text-[var(--chenxing-cyan)]" size={18} />

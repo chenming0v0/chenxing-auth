@@ -1144,11 +1144,17 @@ fn database_uses_forward_only_transactional_migration_history() {
     assert!(
         DB_MODULE.contains("include_str!(\"../../migrations/0046_oauth_client_presentation.sql\")")
     );
+    assert!(
+        DB_MODULE.contains("include_str!(\"../../migrations/0047_oauth_client_description.sql\")")
+    );
+    assert!(
+        DB_MODULE.contains("include_str!(\"../../migrations/0048_wallet_and_plan_pricing.sql\")")
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        46
+        48
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1192,14 +1198,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 46);
+    assert_eq!(migrations.len(), 48);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0046_oauth_client_presentation.sql")
+        Some("0048_wallet_and_plan_pricing.sql")
     );
     let versions = migrations
         .iter()
@@ -1210,7 +1216,7 @@ fn database_uses_forward_only_transactional_migration_history() {
                 .expect("migration filename starts with a version prefix")
         })
         .collect::<Vec<_>>();
-    assert_eq!(versions, (1..=46).collect::<Vec<_>>());
+    assert_eq!(versions, (1..=48).collect::<Vec<_>>());
 
     assert_eq!(
         DATABASE_BASELINE.matches("CREATE TABLE ").count(),
@@ -1322,6 +1328,13 @@ fn migration_history_declares_final_security_and_consistency_invariants() {
         "active_attempt_ids UUID[]",
         "cardinality(active_attempt_ids)",
         "GRANT SELECT, INSERT, UPDATE ON TABLE user_email_change_challenges TO chenxing_runtime",
+        "CREATE TABLE user_wallets",
+        "CREATE TABLE wallet_ledger",
+        "GRANT SELECT, INSERT, UPDATE ON TABLE user_wallets TO chenxing_runtime",
+        "GRANT SELECT, INSERT ON TABLE wallet_ledger TO chenxing_runtime",
+        "GRANT USAGE, SELECT ON SEQUENCE wallet_ledger_id_seq TO chenxing_runtime",
+        "CONSTRAINT plans_price_points_check CHECK (price_points >= 0)",
+        "CONSTRAINT plans_billing_period_check CHECK (billing_period IN ('one_time', 'monthly', 'yearly'))",
         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I._sqlx_migrations",
         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I.audit_events_archive FROM chenxing_runtime",
         "ALTER DEFAULT PRIVILEGES IN SCHEMA %I REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLES",
