@@ -1018,7 +1018,7 @@ fn remote_installer_reports_full_readiness_timeout_diagnostics() {
         "compose ps -q app",
         "docker inspect --format",
         ".State.Health.Status",
-        "compose logs app >&2 || true",
+        "compose logs --no-color --tail=200 app >&2 || true",
     ] {
         assert!(
             diagnostics.contains(marker),
