@@ -56,7 +56,9 @@ pub async fn list_owned_clients(
         }
     };
     // 读路径不设闸门：没有生效套餐时照常列出既有 Client，配额上限留空。
-    let quota_limits = effective.map(|effective| effective.plan.auth_quota_limits());
+    let quota_limits = effective
+        .as_ref()
+        .map(|effective| effective.auth_quota_limits());
     // 分页 + 总数：超过 200 个 Client 时不再静默截断，翻页即可访问全部（Issue #415）。
     let (clients, total) = match state
         .clients
@@ -205,7 +207,7 @@ pub async fn create_owned_client(
                     .await
                     .ok()
                     .flatten()
-                    .map(|effective| effective.plan.auth_quota_limits()),
+                    .map(|effective| effective.auth_quota_limits()),
             };
             match owned_registered_response(&state, client, quota_limits).await {
                 Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),

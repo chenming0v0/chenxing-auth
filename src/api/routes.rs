@@ -19,7 +19,8 @@ use crate::{
     },
     admin::passkey_recovery::reset_user_passkey_factor,
     admin::plan_handlers::{
-        archive_plan, assign_plan, create_plan, list_plans, restore_plan, update_plan,
+        archive_plan, archive_quota_addon, assign_plan, create_plan, create_quota_addon,
+        list_plans, list_quota_addons, restore_plan, update_plan, update_quota_addon,
     },
     admin::provider_handlers::{
         create_provider, disable_provider, enable_provider, list_providers, update_provider,
@@ -78,7 +79,14 @@ use crate::{
         auth_status, change_current_user_password, current_user_profile, list_user_sessions,
         revoke_user_session, update_current_user_profile,
     },
-    wallet::handlers::{get_wallet, list_plan_catalog, list_wallet_ledger, purchase_plan},
+    wallet::handlers::{
+        get_wallet, list_plan_catalog, list_quota_addon_catalog, list_wallet_ledger, purchase_plan,
+        purchase_quota_addon,
+    },
+    wallet::redemption_handlers::{
+        create_redemption_codes, disable_redemption_code, get_redemption_code,
+        list_redemption_codes, redeem_wallet_code,
+    },
 };
 
 use super::discovery::{jwks, openid_configuration};
@@ -159,6 +167,15 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
         .route("/api/v1/auth/wallet/ledger", get(list_wallet_ledger))
         .route("/api/v1/auth/plans/catalog", get(list_plan_catalog))
         .route("/api/v1/auth/wallet/purchase", post(purchase_plan))
+        .route(
+            "/api/v1/auth/quota-addons/catalog",
+            get(list_quota_addon_catalog),
+        )
+        .route(
+            "/api/v1/auth/quota-addons/purchase",
+            post(purchase_quota_addon),
+        )
+        .route("/api/v1/auth/wallet/redeem", post(redeem_wallet_code))
         .route("/api/v1/auth/security-events", get(list_security_events))
         .route(
             "/api/v1/auth/security-events/{event_id}",
@@ -237,6 +254,18 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
         .route("/api/v1/admin/plans/{id}", axum::routing::put(update_plan))
         .route("/api/v1/admin/plans/{id}/archive", post(archive_plan))
         .route("/api/v1/admin/plans/{id}/restore", post(restore_plan))
+        .route(
+            "/api/v1/admin/plans/{id}/quota-addons",
+            get(list_quota_addons).post(create_quota_addon),
+        )
+        .route(
+            "/api/v1/admin/quota-addons/{id}",
+            axum::routing::put(update_quota_addon),
+        )
+        .route(
+            "/api/v1/admin/quota-addons/{id}/archive",
+            post(archive_quota_addon),
+        )
         .route("/api/v1/admin/audit", get(list_audit))
         .route("/api/v1/admin/overview", get(admin_overview))
         .route("/api/v1/admin/users/query", get(query_users))
@@ -261,6 +290,18 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
         .route(
             "/api/v1/admin/registration-invitation-codes/{id}/disable",
             post(disable_invitation_code),
+        )
+        .route(
+            "/api/v1/admin/wallet/redemption-codes",
+            get(list_redemption_codes).post(create_redemption_codes),
+        )
+        .route(
+            "/api/v1/admin/wallet/redemption-codes/{id}",
+            get(get_redemption_code),
+        )
+        .route(
+            "/api/v1/admin/wallet/redemption-codes/{id}/disable",
+            post(disable_redemption_code),
         )
         .route(
             "/api/v1/admin/settings/passkey",

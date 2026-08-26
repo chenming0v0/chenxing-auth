@@ -8,6 +8,7 @@ import { InvitationCodesTable } from './invitations/codes-table'
 import { InvitationDetailDrawer } from './invitations/detail-drawer'
 import { CreatedInvitationCodes, InvitationGeneratePanel } from './invitations/generate-panel'
 import { downloadCsv, invitationListCsvRows, invitationPlaintextCsvRows } from './invitations/helpers'
+import { WalletCardsPanel } from './invitations/wallet-cards-panel'
 
 const CODES_PATH = '/api/v1/admin/registration-invitation-codes'
 
@@ -21,7 +22,13 @@ export function AdminInvitations() {
         description="生成和管理注册邀请码。明文只在生成后展示一次，之后只能查看使用状态。"
       />
       <AdminGate access={access} permission="manage_settings">
-        <InvitationsWorkspace />
+        <div className="flex flex-col gap-10">
+          <InvitationsWorkspace />
+          <section aria-labelledby="wallet-redemption-heading">
+            <div className="mb-4"><h2 id="wallet-redemption-heading" className="chenxing-h2">钱包兑换卡</h2><p className="chenxing-caption mt-1">发放辰星点兑换码，并管理其有效状态。</p></div>
+            <WalletCardsPanel />
+          </section>
+        </div>
       </AdminGate>
     </ConsoleLayout>
   )

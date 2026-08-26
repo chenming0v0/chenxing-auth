@@ -295,10 +295,11 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .await
     .expect("read upgraded migration history");
     // 0030/0031 来自 #50-479 批次合并；0032 修复运行时 migration ledger 权限。
-    // 0033–0048 是后续追加的邀请码、邮箱变更、outbox fence、archive INSERT
+    // 0033–0050 是后续追加的邀请码、邮箱变更、outbox fence、archive INSERT
     // 回收、access-token 撤销、JSONB shape CHECK、签发时 idle 窗口、
-    // auth_method 与 secret 哈希配对 CHECK、client 展示字段、以及钱包与套餐定价。
-    assert_eq!(applied, (1_i64..=48).collect::<Vec<_>>());
+    // auth_method 与 secret 哈希配对 CHECK、client 展示字段、钱包与套餐定价、
+    // 兑换码和配额加购。
+    assert_eq!(applied, (1_i64..=50).collect::<Vec<_>>());
 
     // A database initialized by v1.1.2 has the same schema but records the
     // flattened baseline plus the two then-current migrations as versions 1-3.
@@ -308,6 +309,11 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     // 步骤应用进来，先把这些 schema 变更回退，模拟才忠实。列/表均为空，
     // 回退不影响被保留的身份数据。
     for statement in [
+        "DROP TABLE user_quota_addon_purchases",
+        "DROP TABLE plan_quota_addons",
+        "ALTER TABLE users DROP COLUMN plan_entitlement_version",
+        "DROP TABLE wallet_redemptions",
+        "DROP TABLE wallet_redemption_codes",
         "DROP TABLE wallet_ledger",
         "DROP TABLE user_wallets",
         "ALTER TABLE plans DROP CONSTRAINT plans_billing_period_check, DROP CONSTRAINT plans_price_points_check, DROP COLUMN billing_period, DROP COLUMN price_points",
@@ -375,7 +381,7 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .fetch_all(&pool)
     .await
     .expect("read repaired v1.1.2 migration history");
-    assert_eq!(repaired, (1_i64..=48).collect::<Vec<_>>());
+    assert_eq!(repaired, (1_i64..=50).collect::<Vec<_>>());
 
     let preserved: (i64, i64, i64) = chenxing_auth::sqlx::query_as(
         "SELECT \
@@ -438,6 +444,11 @@ async fn flattened_repair_rejects_trigger_names_from_other_schema_or_wrong_table
         .expect("initialize current target schema");
 
     for statement in [
+        "DROP TABLE user_quota_addon_purchases",
+        "DROP TABLE plan_quota_addons",
+        "ALTER TABLE users DROP COLUMN plan_entitlement_version",
+        "DROP TABLE wallet_redemptions",
+        "DROP TABLE wallet_redemption_codes",
         "DROP TABLE wallet_ledger",
         "DROP TABLE user_wallets",
         "ALTER TABLE plans DROP CONSTRAINT plans_billing_period_check, DROP CONSTRAINT plans_price_points_check, DROP COLUMN billing_period, DROP COLUMN price_points",

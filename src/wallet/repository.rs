@@ -143,6 +143,7 @@ pub async fn assign_purchased_plan(
     crate::sqlx::query_scalar(
         "UPDATE users
          SET plan_id = $2,
+             plan_entitlement_version = plan_entitlement_version + 1,
              plan_expires_at = CASE $3
                  WHEN 'one_time' THEN NULL
                  WHEN 'monthly' THEN NOW() + INTERVAL '30 days'
