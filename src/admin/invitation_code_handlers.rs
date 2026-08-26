@@ -32,6 +32,29 @@ pub async fn list_invitation_codes(State(state): State<AppState>, admin: AdminRe
     }
 }
 
+pub async fn get_invitation_code(
+    State(state): State<AppState>,
+    admin: AdminRead,
+    Path(id): Path<i64>,
+) -> Response {
+    if let Err(response) = admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
+    {
+        return response;
+    }
+    match invitation_codes::get_detail(&state.database, id).await {
+        Ok(detail) => (StatusCode::OK, Json(detail)).into_response(),
+        Err(InvitationCodeError::NotFound) => {
+            error::not_found("invitation_code_not_found", "invitation code was not found")
+        }
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load registration invitation code");
+            error::internal()
+        }
+    }
+}
+
 pub async fn create_invitation_codes(
     State(state): State<AppState>,
     admin: AdminWrite,

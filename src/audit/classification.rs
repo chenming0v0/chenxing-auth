@@ -117,6 +117,8 @@ audit_actions! {
     PlanArchive => "plan_archive" => (Account, Notice),
     PlanRestore => "plan_restore" => (Account, Notice),
     UserPlanAssign => "user_plan_assign" => (Account, Notice),
+    PlanPurchase => "plan_purchase" => (Account, Notice),
+    WalletCredit => "wallet_credit" => (Account, Critical),
     AdminAuthorizationDenied => "admin_authorization_denied" => (Account, Warning),
     AdminOwnerGuardDenied => "admin_owner_guard_denied" => (Account, Warning),
     PasswordChange => "password_change" => (Account, Critical),

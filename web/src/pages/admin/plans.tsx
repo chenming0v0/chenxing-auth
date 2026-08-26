@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { apiFetch, type AdminPlan, type AdminPlanInput } from '../../api'
-import { Drawer } from '../../components/drawer'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { apiFetch, type AdminPlan } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, Field, HudPanel, Icon, Notice, PageIntro, TextAreaField, ToggleRow } from '../../components/ui'
+import { Badge, Button, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { DataTable } from '../../components/data-table'
 import { AdminGate, useAdminAccess } from './shared'
-import { useMutationLock } from '../../use-mutation-lock'
+import { PlanEditorDrawer } from './plan-editor-drawer'
 
 export function formatLimit(value: number | null): string {
   return value === null ? '∞' : value.toLocaleString('zh-CN')
@@ -138,8 +137,8 @@ function PlansManager() {
         </div>
 
         <DataTable
-          minWidth={1080}
-          columns={['套餐', 'OAuth 应用', '每日授权', '每月授权', 'QPS', '挂载用户', '状态', { label: '操作', align: 'right' }]}
+          minWidth={1160}
+          columns={['套餐', '售价', 'OAuth 应用', '每日授权', '每月授权', 'QPS', '挂载用户', '状态', { label: '操作', align: 'right' }]}
           empty={plans?.length ? null : plans ? '还没有套餐，从「新建套餐」开始。' : error ? null : loading ? '正在加载套餐列表。' : null}
         >
           {plans?.map((plan) => {
@@ -154,6 +153,7 @@ function PlansManager() {
                   <p className="chenxing-mono mt-0.5 text-xs text-[var(--chenxing-cyan)]">{plan.code}</p>
                   {plan.description ? <p className="chenxing-caption mt-0.5 max-w-xs truncate text-xs" title={plan.description}>{plan.description}</p> : null}
                 </td>
+                <td className="chenxing-mono text-sm">{plan.price_points.toLocaleString('zh-CN')}</td>
                 <td className="chenxing-mono text-sm">{formatLimit(plan.oauth_clients_limit)}</td>
                 <td className="chenxing-mono text-sm">{formatLimit(plan.daily_auth_limit)}</td>
                 <td className="chenxing-mono text-sm">{formatLimit(plan.monthly_auth_limit)}</td>
@@ -217,120 +217,5 @@ function StatCard({ label, icon, value, caption, mono = false, tone = 'normal' }
       <p className={`${mono ? 'chenxing-mono' : 'chenxing-display'} mt-3 truncate ${attention ? 'text-2xl text-[var(--chenxing-warning)]' : 'text-3xl'} font-bold`}>{value}</p>
       <p className="chenxing-mono mt-2 text-xs text-[var(--chenxing-muted-foreground)]">{caption}</p>
     </HudPanel>
-  )
-}
-
-const CODE_PATTERN = /^[a-z0-9_-]{1,64}$/
-/** 必须与 `src/plans/domain.rs` 的业务上界保持一致（Issue #415 / #459）。 */
-const MAX_OAUTH_CLIENTS_LIMIT = 1000
-const MAX_DAILY_AUTH_LIMIT = 1_000_000
-const MAX_MONTHLY_AUTH_LIMIT = 31_000_000
-const MAX_QPS = 10_000
-
-/** 复用共享 Drawer 的右侧编辑抽屉，焦点管理与「接入应用」抽屉一致。 */
-function PlanEditorDrawer({ initial, defaultOn = false, onSaved, onCancel }: {
-  initial: AdminPlan | null
-  /** 从「新建默认套餐」入口进入时预勾选「设为默认」，一步恢复自助接入 */
-  defaultOn?: boolean
-  onSaved: () => void | Promise<void>
-  onCancel: () => void
-}) {
-  const [code, setCode] = useState(initial?.code ?? '')
-  const [name, setName] = useState(initial?.name ?? '')
-  const [description, setDescription] = useState(initial?.description ?? '')
-  const [oauthClients, setOauthClients] = useState(initial ? String(initial.oauth_clients_limit) : '2')
-  const [dailyAuth, setDailyAuth] = useState(initial ? String(initial.daily_auth_limit) : '2500')
-  const [monthlyAuth, setMonthlyAuth] = useState(initial?.monthly_auth_limit === null || !initial ? (initial ? '' : '50000') : String(initial.monthly_auth_limit))
-  const [maxQps, setMaxQps] = useState(initial?.max_qps == null ? '' : String(initial.max_qps))
-  const [isDefault, setIsDefault] = useState(initial?.is_default ?? defaultOn)
-  const [error, setError] = useState('')
-  const { busy: saving, run } = useMutationLock()
-  // 取消唯一默认套餐会让全站自助接入关闭，这是允许的操作，但必须提前说清后果。
-  const clearingLastDefault = Boolean(initial?.is_default && initial.status === 'active' && !isDefault)
-
-  function parseRequired(raw: string, label: string, minimum: number, maximum: number): number {
-    const value = Number(raw.trim())
-    if (!raw.trim() || !Number.isInteger(value) || value < minimum) throw new Error(`${label}必须是不小于 ${minimum} 的整数。`)
-    if (!Number.isSafeInteger(value)) throw new Error(`${label}超出 JavaScript 安全整数范围，最大为 ${Number.MAX_SAFE_INTEGER}。`)
-    if (value > maximum) throw new Error(`${label}超出范围，必须在 ${minimum} 到 ${maximum} 之间。`)
-    return value
-  }
-  function parseOptional(raw: string, label: string, minimum: number, maximum: number): number | null {
-    if (!raw.trim()) return null
-    return parseRequired(raw, label, minimum, maximum)
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault()
-    const normalizedCode = code.trim().toLowerCase()
-    setError('')
-    let input: AdminPlanInput
-    try {
-      if (!CODE_PATTERN.test(normalizedCode)) throw new Error('套餐代码需为 1-64 位小写字母、数字、下划线或连字符。')
-      if (!name.trim()) throw new Error('套餐名称不能为空。')
-      input = {
-        code: normalizedCode,
-        name: name.trim(),
-        description: description.trim() || null,
-        oauth_clients_limit: parseRequired(oauthClients, 'OAuth 应用数上限', 0, MAX_OAUTH_CLIENTS_LIMIT),
-        daily_auth_limit: parseRequired(dailyAuth, '每日授权上限', 0, MAX_DAILY_AUTH_LIMIT),
-        monthly_auth_limit: parseOptional(monthlyAuth, '每月授权上限', 0, MAX_MONTHLY_AUTH_LIMIT),
-        max_qps: parseOptional(maxQps, 'QPS 上限', 1, MAX_QPS),
-        is_default: isDefault,
-      }
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '表单校验失败。')
-      return
-    }
-    await run(async () => {
-      try {
-        await apiFetch<AdminPlan>(initial ? `/api/v1/admin/plans/${initial.id}` : '/api/v1/admin/plans', {
-          method: initial ? 'PUT' : 'POST',
-          body: JSON.stringify(input),
-        })
-        await onSaved()
-      } catch (reason) {
-        setError(reason instanceof Error ? reason.message : '套餐保存失败。')
-      }
-    })
-  }
-
-  return (
-    <Drawer
-      title={initial ? '编辑套餐' : '新建套餐'}
-      description="额度字段留空表示无限制；保存后立即作用于配额检查。"
-      onClose={onCancel}
-      onSubmit={(event) => void submit(event)}
-      busy={saving}
-      footer={
-        <>
-          <Button type="button" variant="ghost" onClick={onCancel} disabled={saving}>取消</Button>
-          <Button type="submit" icon="save" disabled={saving}>{saving ? '保存中…' : initial ? '保存更新' : '创建套餐'}</Button>
-        </>
-      }
-    >
-      {error ? <Notice tone="warning">{error}</Notice> : null}
-      <HudPanel className="space-y-4 !p-5">
-        <Field label="套餐代码" icon="terminal" value={code} onChange={(event) => setCode(event.target.value)} placeholder="例如 pro-max" hint="1-64 位小写字母、数字、_ 或 -，作为套餐唯一标识" required />
-        <Field label="套餐名称" icon="crown" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 专业版" required />
-        <TextAreaField label="套餐描述（可选）" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="展示给用户的一句话说明，最多 512 字。" />
-      </HudPanel>
-      <HudPanel className="space-y-4 !p-5">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="OAuth 应用数上限" type="number" min={0} step={1} value={oauthClients} onChange={(event) => setOauthClients(event.target.value)} required />
-          <Field label="每日授权调用上限" type="number" min={0} step={1} value={dailyAuth} onChange={(event) => setDailyAuth(event.target.value)} required />
-          <Field label="每月授权调用上限" type="number" min={0} step={1} value={monthlyAuth} onChange={(event) => setMonthlyAuth(event.target.value)} placeholder="∞" hint="留空表示无限" />
-          <Field label="QPS 上限" type="number" min={1} step={1} value={maxQps} onChange={(event) => setMaxQps(event.target.value)} placeholder="∞" hint="留空表示不限并发" />
-        </div>
-        <ToggleRow
-          title="设为默认套餐"
-          description={clearingLastDefault
-            ? '取消后系统将没有启用中的默认套餐，全站自助接入会关闭；如需保留，请把另一个套餐设为默认。'
-            : '未挂载或套餐到期的用户将回退到默认套餐。设定后会替换现有默认，并开放自助接入。'}
-          checked={isDefault}
-          onChange={setIsDefault}
-        />
-      </HudPanel>
-    </Drawer>
   )
 }

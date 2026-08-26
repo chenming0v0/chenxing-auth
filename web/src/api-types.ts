@@ -204,6 +204,8 @@ export type AuditEvent = {
   action?: string
   resource_type?: string
   resource_id?: string | null
+  /** 写入时已脱敏；值为字符串 `[REDACTED]` 的字段不可还原。 */
+  metadata?: Record<string, unknown>
   created_at?: string
 }
 /** 用户级安全日志事件（GET /api/v1/auth/security-events，后端实现见 issue #307）。 */
@@ -247,6 +249,32 @@ export type RegistrationStatus = {
   enabled: boolean
   email_verification_required: boolean
   invitation_code_required: boolean
+}
+
+/** 管理端邀请码列表项；不含明文。 */
+export type InvitationCodeSummary = {
+  id: number
+  label: string | null
+  max_uses: number
+  use_count: number
+  expires_at: string | null
+  disabled_at: string | null
+  created_at: string
+}
+
+/** 批量生成响应：明文 code 只在这一次返回。 */
+export type CreatedInvitationCode = InvitationCodeSummary & { code: string }
+
+export type InvitationCodeUse = {
+  user_id: number
+  username: string
+  display_name: string | null
+  used_at: string
+}
+
+/** GET /api/v1/admin/registration-invitation-codes/{id} */
+export type InvitationCodeDetail = InvitationCodeSummary & {
+  uses: InvitationCodeUse[]
 }
 export type PasskeyUserVerification = 'preferred' | 'required' | 'discouraged'
 export type PasskeyAuthenticatorAttachment = 'any' | 'platform' | 'cross_platform'
@@ -354,6 +382,8 @@ export type OAuthProviderInput = {
   /** 是否启用 PKCE；省略时后端按安全默认值开启。 */
   pkce_enabled?: boolean
 }
+export type BillingPeriod = 'one_time' | 'monthly' | 'yearly'
+
 export type AdminPlan = {
   id: number
   code: string
@@ -365,6 +395,9 @@ export type AdminPlan = {
   monthly_auth_limit: number | null
   /** null 表示不限并发 */
   max_qps: number | null
+  /** 0 表示仅管理员分配，用户不能自助购买。 */
+  price_points: number
+  billing_period: BillingPeriod | string
   is_default: boolean
   status: 'active' | 'archived' | string
   assigned_users: number
@@ -377,8 +410,41 @@ export type AdminPlanInput = {
   daily_auth_limit: number
   monthly_auth_limit: number | null
   max_qps: number | null
+  price_points: number
+  billing_period: BillingPeriod
   is_default: boolean
 }
+
+export type WalletBalance = { balance: number; currency: 'points' | string }
+export type WalletLedgerKind = 'credit' | 'purchase' | 'adjust'
+export type WalletLedgerEntry = {
+  id: number
+  amount: number
+  balance_after: number
+  kind: WalletLedgerKind | string
+  note: string | null
+  reference_type: string | null
+  reference_id: string | null
+  created_at: string
+}
+export type CatalogPlan = {
+  id: number
+  code: string
+  name: string
+  description: string | null
+  price_points: number
+  billing_period: BillingPeriod | string
+  oauth_clients_limit: number
+  daily_auth_limit: number
+  monthly_auth_limit: number | null
+  max_qps: number | null
+}
+export type WalletPurchaseResult = {
+  balance: number
+  plan_id: number
+  plan_expires_at: string | null
+}
+export type WalletCreditResult = { user_id: number; balance: number }
 export type AssignPlanInput = { plan_id: number; expires_at: string | null }
 export type KeyRotationResponse = { key_id: string; published_key_count: number }
 export type PendingAuthorization = {

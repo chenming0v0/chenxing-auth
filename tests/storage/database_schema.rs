@@ -289,6 +289,41 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     )
     .await;
     assert_constraint_contains(&pool, "plans", "plans_max_qps_check", &["max_qps", "10000"]).await;
+    assert_column(&pool, "plans", "price_points", "bigint", false).await;
+    assert_column(&pool, "plans", "billing_period", "text", false).await;
+    assert_constraint_contains(
+        &pool,
+        "plans",
+        "plans_price_points_check",
+        &["price_points"],
+    )
+    .await;
+    assert_constraint_contains(
+        &pool,
+        "plans",
+        "plans_billing_period_check",
+        &["one_time", "monthly", "yearly"],
+    )
+    .await;
+    assert_column(&pool, "user_wallets", "user_id", "bigint", false).await;
+    assert_column(&pool, "user_wallets", "balance", "bigint", false).await;
+    assert_fk(&pool, "user_wallets", "user_id", "users", "id").await;
+    assert_constraint_contains(
+        &pool,
+        "user_wallets",
+        "user_wallets_balance_check",
+        &["balance"],
+    )
+    .await;
+    assert_column(&pool, "wallet_ledger", "id", "bigint", false).await;
+    assert_fk(&pool, "wallet_ledger", "user_id", "users", "id").await;
+    assert_constraint_contains(
+        &pool,
+        "wallet_ledger",
+        "wallet_ledger_kind_check",
+        &["credit", "purchase", "adjust"],
+    )
+    .await;
     assert_column(&pool, "user_sessions", "session_payload", "bytea", true).await;
     assert_column(
         &pool,

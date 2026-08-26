@@ -33,6 +33,7 @@ use crate::{
         issuer::IssuerRecord,
     },
     users::service::UserService,
+    wallet::service::WalletService,
     web_dist::{WebDistError, WebDistRoot},
     workers::{WorkerContext, WorkerHealth},
 };
@@ -72,6 +73,7 @@ pub struct AppState {
     pub oauth_quotas: OAuthQuotaStore,
     pub qps: QpsRateLimiter,
     pub plans: PlanService,
+    pub wallets: WalletService,
     pub admin: AdminAuthenticator,
     pub audit: AuditService,
     pub factors: AuthFactorService,
@@ -388,6 +390,7 @@ impl AppState {
         let oauth_quotas =
             OAuthQuotaStore::with_keyspace(redis.clone(), config.redis_keyspace.clone());
         let plans = PlanService::new(database.clone()).with_clock(clock.clone());
+        let wallets = WalletService::new(database.clone());
         let admin = AdminAuthenticator::new(config.admin_token.clone());
         let audit = AuditService::new(database.clone()).with_clock(clock.clone());
         // 复用已加载的 secret_manager，避免第二次 load_or_generate 创建独立副本。
@@ -430,6 +433,7 @@ impl AppState {
             oauth_quotas,
             qps,
             plans,
+            wallets,
             admin,
             audit,
             factors,

@@ -18,3 +18,4 @@ mod migration_upgrade;
 mod plans;
 mod redis;
 mod redis_namespace_isolation;
+mod wallet;

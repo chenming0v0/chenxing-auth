@@ -1,6 +1,7 @@
 use super::{
-    AuthQuotaLimits, MAX_DAILY_AUTH_LIMIT, MAX_MONTHLY_AUTH_LIMIT, MAX_OAUTH_CLIENTS_LIMIT,
-    MAX_QPS, Plan, PlanError, PlanInput, unsigned_quota, validate_plan_input,
+    AuthQuotaLimits, BillingPeriod, MAX_DAILY_AUTH_LIMIT, MAX_MONTHLY_AUTH_LIMIT,
+    MAX_OAUTH_CLIENTS_LIMIT, MAX_QPS, Plan, PlanError, PlanInput, unsigned_quota,
+    validate_plan_input,
 };
 use time::OffsetDateTime;
 
@@ -14,6 +15,8 @@ fn input() -> PlanInput {
         monthly_auth_limit: Some(50_000),
         max_qps: Some(35),
         is_default: false,
+        price_points: 0,
+        billing_period: BillingPeriod::OneTime,
     }
 }
 
@@ -30,6 +33,8 @@ fn plan_with_auth_limits(daily: i64, monthly: Option<i64>) -> Plan {
         max_qps: None,
         is_default: false,
         status: "active".to_owned(),
+        price_points: 0,
+        billing_period: BillingPeriod::OneTime,
         created_at: now,
         updated_at: now,
     }
@@ -198,6 +203,13 @@ fn rejects_negative_limits_and_zero_qps() {
     let mut value = input();
     value.max_qps = Some(0);
     assert_eq!(validate_plan_input(value), Err(PlanError::InvalidMaxQps));
+
+    let mut value = input();
+    value.price_points = -1;
+    assert_eq!(
+        validate_plan_input(value),
+        Err(PlanError::InvalidPricePoints)
+    );
 }
 
 #[test]
@@ -219,6 +231,20 @@ fn rejects_quotas_above_business_bounds() {
     let mut value = input();
     value.max_qps = Some(MAX_QPS + 1);
     assert_eq!(validate_plan_input(value), Err(PlanError::InvalidMaxQps));
+}
+
+#[test]
+fn plan_input_defaults_price_points_and_billing_period() {
+    let input: PlanInput = serde_json::from_value(serde_json::json!({
+        "code": "vip",
+        "name": "VIP",
+        "oauth_clients_limit": 2,
+        "daily_auth_limit": 2500,
+        "is_default": false
+    }))
+    .expect("plan input deserializes");
+    assert_eq!(input.price_points, 0);
+    assert_eq!(input.billing_period, BillingPeriod::OneTime);
 }
 
 #[test]
