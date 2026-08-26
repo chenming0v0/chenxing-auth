@@ -85,14 +85,17 @@ async fn repair_oauth_client_description(
     }
 
     let column_matches = crate::sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (\
-             SELECT 1 FROM information_schema.columns\
-             WHERE table_schema = current_schema()\
-               AND table_name = 'oauth_clients'\
-               AND column_name = 'description'\
-               AND data_type = 'text'\
-               AND is_nullable = 'YES'\
-         )",
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'oauth_clients'
+              AND column_name = 'description'
+              AND data_type = 'text'
+              AND is_nullable = 'YES'
+        )
+        "#,
     )
     .fetch_one(&mut *connection)
     .await?;
