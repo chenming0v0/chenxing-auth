@@ -1,26 +1,26 @@
-import type { InvitationCodeSummary } from '../../../api'
+import type { WalletRedemptionCardSummary } from '../../../api'
 import { Badge, Button, EmptyState } from '../../../components/ui'
 import { DataTable } from '../../../components/data-table'
 import { formatDate } from '../../../data'
 import { issuanceStatus, issuanceStatusTone } from './helpers'
 
 type Props = {
-  codes: InvitationCodeSummary[] | null
+  cards: WalletRedemptionCardSummary[] | null
   busyId: number | null
   onDisable: (id: number) => void
-  onOpen: (item: InvitationCodeSummary) => void
+  onOpen: (item: WalletRedemptionCardSummary) => void
 }
 
-export function InvitationCodesTable({ codes, busyId, onDisable, onOpen }: Props) {
+export function WalletCardsTable({ cards, busyId, onDisable, onOpen }: Props) {
   return (
     <DataTable
-      minWidth={880}
-      columns={['ID', '标签', '已用/上限', '状态', '创建时间', { label: '操作', align: 'right' }]}
-      empty={codes == null ? '正在加载邀请码。' : codes.length ? null : (
-        <EmptyState icon="ticket" title="还没有邀请码" description="生成一批邀请码后，会显示在这里。" />
+      minWidth={920}
+      columns={['ID', '标签', '面值', '已用/上限', '状态', '创建时间', { label: '操作', align: 'right' }]}
+      empty={cards == null ? '正在加载兑换卡。' : cards.length ? null : (
+        <EmptyState icon="wallet" title="还没有兑换卡" description="生成一批兑换卡后，会显示在这里。" />
       )}
     >
-      {codes?.map((item) => {
+      {cards?.map((item) => {
         const status = issuanceStatus(item)
         return (
           <tr
@@ -30,6 +30,7 @@ export function InvitationCodesTable({ codes, busyId, onDisable, onOpen }: Props
           >
             <td className="chenxing-mono text-xs">#{item.id}</td>
             <td className="chenxing-body text-sm">{item.label || '—'}</td>
+            <td className="chenxing-mono text-sm">{item.points.toLocaleString('zh-CN')} 点</td>
             <td className="chenxing-mono text-xs">{item.use_count}/{item.max_uses}</td>
             <td><Badge tone={issuanceStatusTone(status)}>{status}</Badge></td>
             <td className="chenxing-caption">{formatDate(item.created_at)}</td>

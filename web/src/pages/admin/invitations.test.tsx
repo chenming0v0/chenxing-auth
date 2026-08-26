@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CreatedInvitationCode, InvitationCodeDetail, InvitationCodeSummary } from '../../api'
 import { installCsrfCookie } from '../../test/csrf-cookie'
@@ -7,6 +7,7 @@ import { InvitationsWorkspace } from './invitations'
 installCsrfCookie()
 
 const CODES_PATH = '/api/v1/admin/registration-invitation-codes'
+const CARDS_PATH = '/api/v1/admin/wallet/redemption-codes'
 
 const singleUse: InvitationCodeSummary = {
   id: 7,
@@ -42,6 +43,7 @@ type CapturedRequest = { path: string; method: string }
 
 let requests: CapturedRequest[] = []
 let list: InvitationCodeSummary[] = []
+let cardsList: unknown[] = []
 let detailResponse: InvitationCodeDetail | null = null
 let disableStatus = 200
 
@@ -62,6 +64,7 @@ function stubFetch() {
     const url = String(path)
     requests.push({ path: url, method })
     if (method === 'GET' && url === CODES_PATH) return Promise.resolve(jsonResponse(list))
+    if (method === 'GET' && url === CARDS_PATH) return Promise.resolve(jsonResponse(cardsList))
     if (method === 'GET' && url === `${CODES_PATH}/8`) return Promise.resolve(jsonResponse(detailResponse))
     if (method === 'POST' && url === CODES_PATH) {
       list = [...list, { ...created }]
@@ -75,33 +78,50 @@ function stubFetch() {
 }
 
 describe('邀请码独立页', () => {
-  it('展示生成表单和列表导出按钮', async () => {
+  it('页头有生成按钮，列表有导出；表单字段要点开抽屉才出现', async () => {
     list = [singleUse]
+    cardsList = []
     stubFetch()
     render(<InvitationsWorkspace />)
     await screen.findByText('#7')
-    expect(screen.getByRole('button', { name: '批量生成' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '生成邀请码' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '生成兑换卡' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '导出列表 CSV' })).toBeTruthy()
-    expect(screen.getByLabelText('生成数量')).toBeTruthy()
-    expect(screen.getByLabelText('每码可用次数')).toBeTruthy()
-    expect(screen.getByLabelText('标签')).toBeTruthy()
-    expect(screen.getByLabelText('过期时间')).toBeTruthy()
+    expect(screen.queryByLabelText('生成数量')).toBeNull()
+    expect(screen.queryByLabelText('每码可用次数')).toBeNull()
+    expect(screen.queryByLabelText('过期时间')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '生成邀请码' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByLabelText('生成数量')).toBeTruthy()
+    expect(within(dialog).getByLabelText('每码可用次数')).toBeTruthy()
+    expect(within(dialog).getByLabelText('标签')).toBeTruthy()
+    expect(within(dialog).getByLabelText('过期时间')).toBeTruthy()
   })
 
   it('生成后提示明文只展示一次，并提供复制全部与明文导出', async () => {
     list = []
+    cardsList = []
     stubFetch()
     render(<InvitationsWorkspace />)
-    await screen.findByRole('button', { name: '批量生成' })
-    fireEvent.submit(screen.getByRole('button', { name: '批量生成' }).closest('form') as HTMLFormElement)
+    fireEvent.click(await screen.findByRole('button', { name: '生成邀请码' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.submit(dialog.querySelector('form') as HTMLFormElement)
     await screen.findByText('请立即保存以下邀请码，离开后无法再次查看明文。')
     expect(screen.getByText('invite-plain-once')).toBeTruthy()
     expect(screen.getByRole('button', { name: '复制全部' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '导出 CSV（明文，仅此次）' })).toBeTruthy()
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: '兑换卡' }))
+    await screen.findByText('还没有兑换卡')
+    expect(screen.queryByText('请立即保存以下邀请码，离开后无法再次查看明文。')).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: '邀请码' }))
+    expect(screen.getByText('请立即保存以下邀请码，离开后无法再次查看明文。')).toBeTruthy()
   })
 
   it('停用失败时显示安全错误、解除 busy，且不把失败当成成功刷新', async () => {
     list = [singleUse]
+    cardsList = []
     disableStatus = 404
     stubFetch()
     render(<InvitationsWorkspace />)
@@ -122,6 +142,7 @@ describe('邀请码独立页', () => {
 
   it('点击多次可用的邀请码行会打开使用明细', async () => {
     list = [multiUse]
+    cardsList = []
     detailResponse = detail
     stubFetch()
     render(<InvitationsWorkspace />)
@@ -134,10 +155,30 @@ describe('邀请码独立页', () => {
 
   it('没有使用记录时显示空态', async () => {
     list = [multiUse]
+    cardsList = []
     detailResponse = { ...multiUse, uses: [] }
     stubFetch()
     render(<InvitationsWorkspace />)
     fireEvent.click(await screen.findByText('#8'))
     await screen.findByText('还没有人使用这个邀请码')
+  })
+
+  it('同一时刻只有一张表，切换后另一张的表头和空态消失', async () => {
+    list = []
+    cardsList = []
+    stubFetch()
+    render(<InvitationsWorkspace />)
+    await screen.findByText('还没有邀请码')
+    expect(screen.getByText('生成一批邀请码后，会显示在这里。')).toBeTruthy()
+    expect(screen.queryByText('还没有兑换卡')).toBeNull()
+    expect(screen.queryByText('面值')).toBeNull()
+    expect(document.querySelectorAll('table')).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('tab', { name: '兑换卡' }))
+    await screen.findByText('还没有兑换卡')
+    expect(screen.getByText('生成一批兑换卡后，会显示在这里。')).toBeTruthy()
+    expect(screen.queryByText('还没有邀请码')).toBeNull()
+    expect(screen.queryByText('生成一批邀请码后，会显示在这里。')).toBeNull()
+    expect(document.querySelectorAll('table')).toHaveLength(1)
   })
 })
