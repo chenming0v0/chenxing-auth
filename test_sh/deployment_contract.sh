@@ -170,7 +170,7 @@ FAKE_DOCKER_MARKER="$marker" FAKE_DOCKER_PROJECT="$legacy_project" \
     PATH="$fake_bin:$PATH" bash -c 'hash -r; exec bash "$1"' _ "$source_root/deploy/install.sh" >/dev/null
 assert_private_mode "$source_root/.env"
 grep -q "^COMPOSE_PROJECT_NAME=${legacy_project}$" "$source_root/.env"
-[[ "$(tr '\n' ' ' < "$marker")" == 'migrate up ' ]]
+[[ "$(tr '\n' ' ' < "$marker")" == 'up migrate up ' ]]
 
 moved_root="$WORK_DIR/moved-source"
 mkdir -p "$moved_root/deploy"
