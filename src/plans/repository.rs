@@ -5,7 +5,7 @@ use super::{
     domain::{
         Plan, PlanMutationError, ValidatedPlanInput, validate_plan_assignment, validate_plan_update,
     },
-    row::{PlanExpiryRow, PlanListRow, PlanRow},
+    row::{EffectivePlanRow, PlanListRow, PlanRow},
     service::EffectivePlan,
 };
 use crate::db::advisory_lock::{BusinessLock, lock_business};
@@ -120,12 +120,25 @@ pub async fn find_for_user(
     pool: &PgPool,
     user_id: UserId,
 ) -> Result<Option<EffectivePlan>, crate::sqlx::Error> {
-    let row: Option<PlanExpiryRow> = crate::sqlx::query_as(
+    let row: Option<EffectivePlanRow> = crate::sqlx::query_as(
         "SELECT p.id, p.code, p.name, p.description, p.oauth_clients_limit, p.daily_auth_limit,
                 p.monthly_auth_limit, p.max_qps, p.is_default, p.status, p.price_points,
-                p.billing_period, p.created_at, p.updated_at, u.plan_expires_at
+                p.billing_period, p.created_at, p.updated_at, u.plan_expires_at,
+                addons.daily_auth_limit AS addon_daily_auth_limit,
+                addons.monthly_auth_limit AS addon_monthly_auth_limit
          FROM plans p
          JOIN users u ON u.plan_id = p.id
+         LEFT JOIN LATERAL (
+             SELECT LEAST(COALESCE(SUM(daily_auth_limit::numeric), 0),
+                          9223372036854775807)::bigint AS daily_auth_limit,
+                    LEAST(COALESCE(SUM(monthly_auth_limit::numeric), 0),
+                          9223372036854775807)::bigint AS monthly_auth_limit
+             FROM user_quota_addon_purchases purchases
+             WHERE purchases.user_id = u.id
+               AND purchases.plan_id = p.id
+               AND purchases.plan_entitlement_version = u.plan_entitlement_version
+               AND (purchases.plan_expires_at IS NULL OR purchases.plan_expires_at > NOW())
+         ) addons ON TRUE
          WHERE u.id = $1
            AND p.status = 'active'
            AND (u.plan_expires_at IS NULL OR u.plan_expires_at > NOW())",
@@ -133,9 +146,14 @@ pub async fn find_for_user(
     .bind(user_id)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|row| EffectivePlan {
+    let Some(row) = row else { return Ok(None) };
+    Ok(Some(EffectivePlan {
         plan: row.plan,
         expires_at: row.expires_at,
+        addon_daily_auth_limit: u64::try_from(row.addon_daily_auth_limit)
+            .map_err(|_| crate::sqlx::Error::Protocol("invalid addon quota".into()))?,
+        addon_monthly_auth_limit: u64::try_from(row.addon_monthly_auth_limit)
+            .map_err(|_| crate::sqlx::Error::Protocol("invalid addon quota".into()))?,
     }))
 }
 
@@ -404,7 +422,9 @@ pub async fn assign_to_user(
     };
     validate_plan_assignment(&plan)?;
     let result = crate::sqlx::query(
-        "UPDATE users SET plan_id = $2, plan_expires_at = $3, updated_at = NOW() WHERE id = $1",
+        "UPDATE users SET plan_id = $2, plan_expires_at = $3,
+                plan_entitlement_version = plan_entitlement_version + 1, updated_at = NOW()
+         WHERE id = $1",
     )
     .bind(user_id)
     .bind(plan_id)

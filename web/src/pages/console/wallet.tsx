@@ -6,6 +6,8 @@ import { DataTable, TablePagination, TablePanel } from '../../components/data-ta
 import { formatDate } from '../../data'
 import { replaceUrl, useLocation } from '../../router'
 import { WalletPurchaseDrawer } from './wallet-purchase-drawer'
+import { WalletRedeemPanel } from './wallet-redeem-panel'
+import { WalletAddonPanel } from './wallet-addon-panel'
 
 const PAGE_SIZE = 20
 
@@ -70,6 +72,10 @@ export function ConsoleWallet() {
         refreshKey={refreshKey}
         onPurchase={() => { setNotice(''); setCatalogOpen(true) }}
       />
+      <div className="mt-6">
+        <WalletRedeemPanel onRedeemed={() => { setNotice('兑换卡已到账'); setRefreshKey((value) => value + 1) }} />
+      </div>
+      <WalletAddonPanel onPurchased={() => { setNotice('增量包已购买'); setRefreshKey((value) => value + 1) }} />
       <WalletLedger refreshKey={refreshKey} />
       {catalogOpen ? (
         <WalletPurchaseDrawer onClose={closeCatalog} onPurchased={onPurchased} />

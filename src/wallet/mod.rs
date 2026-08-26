@@ -7,5 +7,9 @@
 
 pub mod domain;
 pub mod handlers;
+pub mod redemption_domain;
+pub mod redemption_handlers;
+pub mod redemption_repository;
+pub mod redemption_service;
 pub mod repository;
 pub mod service;

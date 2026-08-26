@@ -444,7 +444,40 @@ export type WalletPurchaseResult = {
   plan_id: number
   plan_expires_at: string | null
 }
+export type QuotaAddon = {
+  id: number
+  plan_id: number
+  code: string
+  name: string
+  description: string | null
+  price_points: number
+  daily_auth_limit: number
+  monthly_auth_limit: number
+  status: string
+  created_at: string
+  updated_at: string
+}
+export type QuotaAddonPurchaseResult = {
+  balance: number
+  addon_id: number
+  plan_expires_at: string | null
+}
 export type WalletCreditResult = { user_id: number; balance: number }
+export type WalletRedeemResult = { balance: number; points: number }
+export type WalletRedemptionCardSummary = {
+  id: number
+  points: number
+  use_count: number
+  max_uses: number
+  label: string | null
+  expires_at: string | null
+  disabled_at: string | null
+  created_at: string
+}
+export type CreatedWalletRedemptionCard = WalletRedemptionCardSummary & { code: string }
+export type WalletRedemptionCardDetail = WalletRedemptionCardSummary & {
+  uses: Array<{ user_id: number; username: string; display_name: string | null; points: number; redeemed_at: string }>
+}
 export type AssignPlanInput = { plan_id: number; expires_at: string | null }
 export type KeyRotationResponse = { key_id: string; published_key_count: number }
 export type PendingAuthorization = {

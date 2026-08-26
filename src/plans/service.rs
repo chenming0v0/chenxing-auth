@@ -56,6 +56,24 @@ pub enum PlanServiceError {
 pub struct EffectivePlan {
     pub plan: Plan,
     pub expires_at: Option<OffsetDateTime>,
+    pub addon_daily_auth_limit: u64,
+    pub addon_monthly_auth_limit: u64,
+}
+
+impl EffectivePlan {
+    pub fn auth_quota_limits(&self) -> super::domain::AuthQuotaLimits {
+        let base = self.plan.auth_quota_limits();
+        super::domain::AuthQuotaLimits {
+            daily_auth_limit: base
+                .daily_auth_limit
+                .saturating_add(self.addon_daily_auth_limit)
+                .min(i64::MAX as u64),
+            monthly_auth_limit: base.monthly_auth_limit.map(|base| {
+                base.saturating_add(self.addon_monthly_auth_limit)
+                    .min(i64::MAX as u64)
+            }),
+        }
+    }
 }
 
 impl PlanService {
@@ -214,6 +232,8 @@ impl PlanService {
             .map(|plan| EffectivePlan {
                 plan,
                 expires_at: None,
+                addon_daily_auth_limit: 0,
+                addon_monthly_auth_limit: 0,
             }))
     }
 }

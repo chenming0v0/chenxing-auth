@@ -14,6 +14,7 @@ use crate::{
     api::extract::{ApiJson, SessionRead, SessionWrite},
     audit::AuditEvent,
     error,
+    plans::addons::{QuotaAddonError, QuotaAddonPurchaseInput},
     plans::domain::Plan,
     state::AppState,
 };
@@ -141,6 +142,82 @@ pub async fn purchase_plan(
     match state.wallets.purchase(session.user_id, input, event).await {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(error_value) => wallet_error_response(error_value),
+    }
+}
+
+pub async fn list_quota_addon_catalog(
+    State(state): State<AppState>,
+    session: SessionRead,
+) -> Response {
+    let effective = match state.plans.effective_plan_for_user(session.user_id).await {
+        Ok(Some(v))
+            if v.expires_at.is_some()
+                && matches!(
+                    v.plan.billing_period,
+                    crate::plans::domain::BillingPeriod::Monthly
+                        | crate::plans::domain::BillingPeriod::Yearly
+                ) =>
+        {
+            v
+        }
+        Ok(_) => {
+            return (
+                StatusCode::OK,
+                Json(Vec::<crate::plans::addons::QuotaAddon>::new()),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error=%e, "failed to resolve add-on catalog plan");
+            return error::internal();
+        }
+    };
+    match crate::plans::addons::list_for_plan(&state.database, effective.plan.id, true).await {
+        Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+        Err(e) => {
+            tracing::error!(error=%e, "failed to list add-on catalog");
+            error::internal()
+        }
+    }
+}
+
+pub async fn purchase_quota_addon(
+    State(state): State<AppState>,
+    session: SessionWrite,
+    ApiJson(input): ApiJson<QuotaAddonPurchaseInput>,
+) -> Response {
+    let event = AuditEvent::new(
+        "user".into(),
+        Some(session.user_id.to_string()),
+        crate::audit::AuditAction::QuotaAddonPurchase,
+        "user".into(),
+        Some(session.user_id.to_string()),
+        serde_json::json!({"addon_id":input.addon_id}),
+    );
+    match state
+        .wallets
+        .purchase_quota_addon(session.user_id, input, event)
+        .await
+    {
+        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+        Err(QuotaAddonError::InsufficientBalance) => {
+            error::bad_request("insufficient_balance", "wallet balance is insufficient")
+        }
+        Err(QuotaAddonError::NoActivePlan) => error::bad_request(
+            "active_plan_required",
+            "an active purchased plan period is required",
+        ),
+        Err(QuotaAddonError::NotAvailable | QuotaAddonError::NotFound) => {
+            error::not_found("quota_addon_not_found", "quota add-on is not available")
+        }
+        Err(QuotaAddonError::Audit(_)) => error::service_unavailable(
+            "audit_unavailable",
+            "the purchase was rolled back because audit is unavailable",
+        ),
+        Err(e) => {
+            tracing::error!(error=%e, "quota add-on purchase failed");
+            error::internal()
+        }
     }
 }
 

@@ -379,6 +379,16 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "wallet and plan pricing",
             include_str!("../../migrations/0048_wallet_and_plan_pricing.sql"),
         ),
+        (
+            49,
+            "wallet redemption codes",
+            include_str!("../../migrations/0049_wallet_redemption_codes.sql"),
+        ),
+        (
+            50,
+            "quota add-ons",
+            include_str!("../../migrations/0050_quota_addons.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

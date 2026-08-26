@@ -82,8 +82,8 @@ pub async fn current_entitlements(State(state): State<AppState>, session: Sessio
             return error::internal();
         }
     };
+    let quota_limits = effective.auth_quota_limits();
     let plan = effective.plan;
-    let quota_limits = plan.auth_quota_limits();
 
     // 配额统计要遍历该用户全部 Client：分页拉全（单用户规模受套餐配额上界约束），
     // 修复前 `list_for_user` 的 200 条硬上限会静默漏算超出的 Client（Issue #415）。

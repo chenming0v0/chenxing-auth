@@ -98,4 +98,36 @@ describe('ConsoleWallet', () => {
     expect(screen.queryByText('已购买')).toBeNull()
     expect(screen.getByRole('dialog', { name: '购买订阅' })).toBeTruthy()
   })
+
+  it('redeems a wallet card and refreshes the wallet', async () => {
+    apiFetchMock.mockImplementation((path: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (path === '/api/v1/auth/wallet' && method === 'GET') return Promise.resolve({ balance: 120, currency: 'points' })
+      if (path.startsWith('/api/v1/auth/wallet/ledger')) return Promise.resolve(EMPTY_LEDGER)
+      if (path === '/api/v1/auth/wallet/redeem' && method === 'POST') return Promise.resolve({ balance: 120, points: 100 })
+      return Promise.reject(new Error(`unexpected ${method} ${path}`))
+    })
+    render(<ConsoleWallet />)
+    const input = await screen.findByLabelText('兑换码')
+    fireEvent.change(input, { target: { value: 'card-plain-once' } })
+    fireEvent.click(screen.getByRole('button', { name: '立即兑换' }))
+    await screen.findByText('兑换成功，已到账 100 辰星点。')
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/wallet/redeem', expect.objectContaining({ method: 'POST' }))
+  })
+
+  it('shows a redeem error without clearing the entered code', async () => {
+    apiFetchMock.mockImplementation((path: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (path === '/api/v1/auth/wallet' && method === 'GET') return Promise.resolve({ balance: 0, currency: 'points' })
+      if (path.startsWith('/api/v1/auth/wallet/ledger')) return Promise.resolve(EMPTY_LEDGER)
+      if (path === '/api/v1/auth/wallet/redeem' && method === 'POST') return Promise.reject(new ApiError('兑换码不存在、已使用、已停用或已过期。', 400, 'invalid_redemption_code'))
+      return Promise.reject(new Error(`unexpected ${method} ${path}`))
+    })
+    render(<ConsoleWallet />)
+    const input = await screen.findByLabelText('兑换码') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'expired-card' } })
+    fireEvent.click(screen.getByRole('button', { name: '立即兑换' }))
+    await screen.findByText('兑换码不存在、已使用、已停用或已过期。')
+    expect(input.value).toBe('expired-card')
+  })
 })

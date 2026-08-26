@@ -21,6 +21,7 @@ use crate::{
     audit::AuditEvent,
     error,
     plans::{
+        addons::{self, QuotaAddonError, QuotaAddonInput},
         domain::PlanInput,
         service::{PlanServiceError, PlanWithUsers},
     },
@@ -33,6 +34,146 @@ struct PlanResponse {
     #[serde(flatten)]
     plan: crate::plans::domain::Plan,
     assigned_users: i64,
+}
+
+pub async fn list_quota_addons(
+    State(state): State<AppState>,
+    admin: AdminRead,
+    Path(plan_id): Path<i64>,
+) -> Response {
+    if let Err(response) = admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
+    {
+        return response;
+    }
+    match addons::list_for_plan(&state.database, plan_id, false).await {
+        Ok(items) => (StatusCode::OK, Json(items)).into_response(),
+        Err(error_value) => {
+            tracing::error!(error=%error_value, "failed to list quota add-ons");
+            error::internal()
+        }
+    }
+}
+
+pub async fn create_quota_addon(
+    State(state): State<AppState>,
+    admin: AdminWrite,
+    Path(plan_id): Path<i64>,
+    ApiJson(input): ApiJson<QuotaAddonInput>,
+) -> Response {
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    let actor = authorization.actor();
+    let (actor_type, actor_id) = actor.audit_fields();
+    let event = AuditEvent::new(
+        actor_type.into(),
+        actor_id,
+        crate::audit::AuditAction::QuotaAddonCreate,
+        "plan_quota_addon".into(),
+        None,
+        serde_json::json!({"plan_id":plan_id}),
+    );
+    match addons::create(
+        &state.database,
+        plan_id,
+        input,
+        authorization.credential(),
+        event,
+    )
+    .await
+    {
+        Ok(item) => (StatusCode::CREATED, Json(item)).into_response(),
+        Err(e) => quota_addon_error(e),
+    }
+}
+
+pub async fn update_quota_addon(
+    State(state): State<AppState>,
+    admin: AdminWrite,
+    Path(id): Path<i64>,
+    ApiJson(input): ApiJson<QuotaAddonInput>,
+) -> Response {
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    let actor = authorization.actor();
+    let (actor_type, actor_id) = actor.audit_fields();
+    let event = AuditEvent::new(
+        actor_type.into(),
+        actor_id,
+        crate::audit::AuditAction::QuotaAddonUpdate,
+        "plan_quota_addon".into(),
+        Some(id.to_string()),
+        serde_json::json!({"result":"success"}),
+    );
+    match addons::update(
+        &state.database,
+        id,
+        input,
+        authorization.credential(),
+        event,
+    )
+    .await
+    {
+        Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+        Err(e) => quota_addon_error(e),
+    }
+}
+
+pub async fn archive_quota_addon(
+    State(state): State<AppState>,
+    admin: AdminWrite,
+    Path(id): Path<i64>,
+) -> Response {
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    let actor = authorization.actor();
+    let (actor_type, actor_id) = actor.audit_fields();
+    let event = AuditEvent::new(
+        actor_type.into(),
+        actor_id,
+        crate::audit::AuditAction::QuotaAddonArchive,
+        "plan_quota_addon".into(),
+        Some(id.to_string()),
+        serde_json::json!({"result":"success"}),
+    );
+    match addons::archive(&state.database, id, authorization.credential(), event).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => quota_addon_error(e),
+    }
+}
+
+fn quota_addon_error(value: QuotaAddonError) -> Response {
+    match value {
+        QuotaAddonError::InvalidCode
+        | QuotaAddonError::InvalidName
+        | QuotaAddonError::InvalidDescription
+        | QuotaAddonError::InvalidValues => {
+            error::bad_request("invalid_quota_addon", value.to_string())
+        }
+        QuotaAddonError::NotFound => error::not_found("quota_addon_not_found", value.to_string()),
+        QuotaAddonError::CodeConflict => {
+            error::conflict("quota_addon_code_conflict", value.to_string())
+        }
+        QuotaAddonError::Audit(_) => error::service_unavailable(
+            "audit_unavailable",
+            "the operation was rolled back because audit is unavailable",
+        ),
+        QuotaAddonError::ManagementActor(_) | QuotaAddonError::Database(_) => {
+            tracing::error!(error=%value, "quota add-on operation failed");
+            error::internal()
+        }
+        _ => error::bad_request("quota_addon_unavailable", value.to_string()),
+    }
 }
 
 fn plan_response(plan: crate::plans::domain::Plan, assigned_users: i64) -> PlanResponse {

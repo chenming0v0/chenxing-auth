@@ -8,6 +8,7 @@ use super::{
     repository,
 };
 use crate::audit::AuditEvent;
+use crate::plans::addons::{QuotaAddonError, QuotaAddonPurchaseInput, QuotaAddonPurchaseResult};
 use crate::plans::domain::Plan;
 use crate::sqlx::PgPool;
 use crate::users::{
@@ -75,7 +76,7 @@ impl WalletService {
         if !repository::lock_user(&mut transaction, user_id).await? {
             transaction.rollback().await?;
             return Err(WalletServiceError::UserNotFound);
-        }
+        };
         let Some(plan) =
             crate::plans::repository::find_for_update(&mut transaction, plan_id).await?
         else {
@@ -85,7 +86,7 @@ impl WalletService {
         if let Err(error) = purchasable_plan(&plan) {
             transaction.rollback().await?;
             return Err(error);
-        }
+        };
         let balance = repository::ensure_for_update(&mut transaction, user_id).await?;
         if balance < plan.price_points {
             transaction.rollback().await?;
@@ -115,6 +116,82 @@ impl WalletService {
             balance: balance_after,
             plan_id: plan.id,
             plan_expires_at,
+        })
+    }
+
+    pub async fn purchase_quota_addon(
+        &self,
+        user_id: UserId,
+        input: QuotaAddonPurchaseInput,
+        audit_event: AuditEvent,
+    ) -> Result<QuotaAddonPurchaseResult, QuotaAddonError> {
+        if input.addon_id < 1 {
+            return Err(QuotaAddonError::NotFound);
+        }
+        let mut transaction = self.pool.begin().await?;
+        let plan: Option<(i64, time::OffsetDateTime, i64)> = crate::sqlx::query_as(
+            "SELECT plan_id, plan_expires_at, plan_entitlement_version FROM users
+             WHERE id=$1 AND plan_id IS NOT NULL AND plan_expires_at > NOW()
+             FOR UPDATE",
+        )
+        .bind(user_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some((plan_id, expires_at, plan_entitlement_version)) = plan else {
+            transaction.rollback().await?;
+            return Err(QuotaAddonError::NoActivePlan);
+        };
+        let Some(plan) =
+            crate::plans::repository::find_for_update(&mut transaction, plan_id).await?
+        else {
+            transaction.rollback().await?;
+            return Err(QuotaAddonError::NoActivePlan);
+        };
+        if plan.status != "active"
+            || !matches!(
+                plan.billing_period,
+                crate::plans::domain::BillingPeriod::Monthly
+                    | crate::plans::domain::BillingPeriod::Yearly
+            )
+        {
+            transaction.rollback().await?;
+            return Err(QuotaAddonError::NoActivePlan);
+        }
+        let Some(addon) =
+            crate::plans::addons::lock_active(&mut transaction, input.addon_id, plan_id).await?
+        else {
+            transaction.rollback().await?;
+            return Err(QuotaAddonError::NotAvailable);
+        };
+        let balance = repository::ensure_for_update(&mut transaction, user_id).await?;
+        if balance < addon.price_points {
+            transaction.rollback().await?;
+            return Err(QuotaAddonError::InsufficientBalance);
+        }
+        let purchase_id = crate::plans::addons::grant(
+            &mut transaction,
+            user_id,
+            &addon,
+            plan_entitlement_version,
+            Some(expires_at),
+        )
+        .await?;
+        let balance = repository::apply_delta(
+            &mut transaction,
+            user_id,
+            -addon.price_points,
+            LedgerKind::Purchase,
+            None,
+            Some("quota_addon_purchase"),
+            Some(&purchase_id.to_string()),
+        )
+        .await?;
+        crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
+        transaction.commit().await?;
+        Ok(QuotaAddonPurchaseResult {
+            balance,
+            addon_id: addon.id,
+            plan_expires_at: Some(expires_at),
         })
     }
 

@@ -1150,11 +1150,15 @@ fn database_uses_forward_only_transactional_migration_history() {
     assert!(
         DB_MODULE.contains("include_str!(\"../../migrations/0048_wallet_and_plan_pricing.sql\")")
     );
+    assert!(
+        DB_MODULE.contains("include_str!(\"../../migrations/0049_wallet_redemption_codes.sql\")")
+    );
+    assert!(DB_MODULE.contains("include_str!(\"../../migrations/0050_quota_addons.sql\")"));
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        48
+        50
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1198,14 +1202,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 48);
+    assert_eq!(migrations.len(), 50);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0048_wallet_and_plan_pricing.sql")
+        Some("0050_quota_addons.sql")
     );
     let versions = migrations
         .iter()
@@ -1216,7 +1220,7 @@ fn database_uses_forward_only_transactional_migration_history() {
                 .expect("migration filename starts with a version prefix")
         })
         .collect::<Vec<_>>();
-    assert_eq!(versions, (1..=48).collect::<Vec<_>>());
+    assert_eq!(versions, (1..=50).collect::<Vec<_>>());
 
     assert_eq!(
         DATABASE_BASELINE.matches("CREATE TABLE ").count(),
@@ -1335,6 +1339,16 @@ fn migration_history_declares_final_security_and_consistency_invariants() {
         "GRANT USAGE, SELECT ON SEQUENCE wallet_ledger_id_seq TO chenxing_runtime",
         "CONSTRAINT plans_price_points_check CHECK (price_points >= 0)",
         "CONSTRAINT plans_billing_period_check CHECK (billing_period IN ('one_time', 'monthly', 'yearly'))",
+        "plan_entitlement_version BIGINT NOT NULL DEFAULT 0",
+        "CREATE TABLE plan_quota_addons",
+        "CREATE TABLE user_quota_addon_purchases",
+        "CONSTRAINT plan_quota_addons_id_plan_id_key UNIQUE (id, plan_id)",
+        "CONSTRAINT user_quota_addon_addon_plan_fkey",
+        "FOREIGN KEY (addon_id, plan_id) REFERENCES plan_quota_addons(id, plan_id) ON DELETE RESTRICT",
+        "GRANT SELECT, INSERT, UPDATE ON TABLE plan_quota_addons TO chenxing_runtime",
+        "GRANT SELECT, INSERT ON TABLE user_quota_addon_purchases TO chenxing_runtime",
+        "GRANT USAGE, SELECT ON SEQUENCE plan_quota_addons_id_seq TO chenxing_runtime",
+        "GRANT USAGE, SELECT ON SEQUENCE user_quota_addon_purchases_id_seq TO chenxing_runtime",
         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I._sqlx_migrations",
         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I.audit_events_archive FROM chenxing_runtime",
         "ALTER DEFAULT PRIVILEGES IN SCHEMA %I REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLES",

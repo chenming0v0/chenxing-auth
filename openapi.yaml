@@ -1012,6 +1012,53 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
+  /api/v1/auth/wallet/redeem:
+    post:
+      tags: [User Wallet]
+      summary: 兑换辰星点兑换卡
+      operationId: redeemWalletCode
+      security:
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/RedeemCodeInput' } }
+      responses:
+        '200': { description: 兑换成功, content: { application/json: { schema: { $ref: '#/components/schemas/RedeemCodeResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+  /api/v1/auth/quota-addons/catalog:
+    get:
+      tags: [User Wallet]
+      summary: 查询当前套餐增量包目录
+      operationId: listQuotaAddonCatalog
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: 可购买的增量包, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/QuotaAddon' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/quota-addons/purchase:
+    post:
+      tags: [User Wallet]
+      summary: 购买授权额度增量包
+      operationId: purchaseQuotaAddon
+      security:
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/PurchaseQuotaAddonInput' } } }
+      responses:
+        '200': { description: 购买成功, content: { application/json: { schema: { $ref: '#/components/schemas/PurchaseQuotaAddonResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
@@ -2102,6 +2149,71 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/wallet/redemption-codes:
+    get:
+      tags: [Admin Wallet]
+      summary: 查询钱包兑换卡
+      operationId: listWalletRedemptionCodes
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+      responses:
+        '200': { description: 兑换卡列表, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/WalletRedemptionCard' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    post:
+      tags: [Admin Wallet]
+      summary: 批量生成钱包兑换卡
+      operationId: createWalletRedemptionCodes
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateWalletRedemptionCardsInput' } } } }
+      responses:
+        '201': { description: 明文兑换码仅在本次响应返回, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/CreatedWalletRedemptionCard' } } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/wallet/redemption-codes/{id}:
+    get:
+      tags: [Admin Wallet]
+      summary: 查询钱包兑换卡明细
+      operationId: getWalletRedemptionCode
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }]
+      responses:
+        '200': { description: 兑换卡明细, content: { application/json: { schema: { $ref: '#/components/schemas/WalletRedemptionCardDetail' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/wallet/redemption-codes/{id}/disable:
+    post:
+      tags: [Admin Wallet]
+      summary: 停用钱包兑换卡
+      operationId: disableWalletRedemptionCode
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }]
+      responses:
+        '200': { description: 停用后的兑换卡, content: { application/json: { schema: { $ref: '#/components/schemas/WalletRedemptionCard' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/plans/{id}:
     put:
       tags: [Admin Plans]
@@ -2133,6 +2245,83 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/plans/{id}/quota-addons:
+    get:
+      tags: [Admin Plans]
+      summary: 查询套餐增量包
+      operationId: listQuotaAddons
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }]
+      responses:
+        '200': { description: 增量包列表, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/QuotaAddon' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    post:
+      tags: [Admin Plans]
+      summary: 创建套餐增量包
+      operationId: createQuotaAddon
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/QuotaAddonInput' } } } }
+      responses:
+        '201': { description: 创建成功, content: { application/json: { schema: { $ref: '#/components/schemas/QuotaAddon' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/quota-addons/{id}:
+    put:
+      tags: [Admin Plans]
+      summary: 更新套餐增量包
+      operationId: updateQuotaAddon
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/QuotaAddonInput' } } } }
+      responses:
+        '200': { description: 更新成功, content: { application/json: { schema: { $ref: '#/components/schemas/QuotaAddon' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/quota-addons/{id}/archive:
+    post:
+      tags: [Admin Plans]
+      summary: 归档套餐增量包
+      operationId: archiveQuotaAddon
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }]
+      responses:
+        '204': { description: 归档成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/plans/{id}/archive:
     post:
@@ -4542,6 +4731,99 @@ components:
         daily_auth_limit: { type: integer, format: int64, minimum: 0 }
         monthly_auth_limit: { type: integer, format: int64, nullable: true, minimum: 0 }
         max_qps: { type: integer, format: int32, nullable: true, minimum: 1 }
+    RedeemCodeInput:
+      type: object
+      required: [code]
+      properties:
+        code: { type: string, minLength: 16, maxLength: 128 }
+    RedeemCodeResponse:
+      type: object
+      required: [points, balance]
+      properties:
+        points: { type: integer, format: int64, minimum: 1 }
+        balance: { type: integer, format: int64, minimum: 0 }
+    QuotaAddon:
+      type: object
+      required: [id, plan_id, code, name, price_points, daily_auth_limit, monthly_auth_limit, status, created_at, updated_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        plan_id: { type: integer, format: int64, minimum: 1 }
+        code: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        price_points: { type: integer, format: int64, minimum: 1 }
+        daily_auth_limit: { type: integer, format: int64, minimum: 0 }
+        monthly_auth_limit: { type: integer, format: int64, minimum: 0 }
+        status: { type: string, enum: [active, archived] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    QuotaAddonInput:
+      type: object
+      required: [code, name, price_points, daily_auth_limit, monthly_auth_limit]
+      properties:
+        code: { type: string, maxLength: 64 }
+        name: { type: string, maxLength: 128 }
+        description: { type: string, nullable: true, maxLength: 512 }
+        price_points: { type: integer, format: int64, minimum: 1 }
+        daily_auth_limit: { type: integer, format: int64, minimum: 0, maximum: 1000000 }
+        monthly_auth_limit: { type: integer, format: int64, minimum: 0, maximum: 31000000 }
+    PurchaseQuotaAddonInput:
+      type: object
+      required: [addon_id]
+      properties:
+        addon_id: { type: integer, format: int64, minimum: 1 }
+    PurchaseQuotaAddonResponse:
+      type: object
+      required: [balance, addon_id]
+      properties:
+        balance: { type: integer, format: int64, minimum: 0 }
+        addon_id: { type: integer, format: int64, minimum: 1 }
+        plan_expires_at: { type: string, format: date-time, nullable: true }
+    WalletRedemptionCard:
+      type: object
+      required: [id, points, max_uses, use_count, created_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        label: { type: string, nullable: true, maxLength: 128 }
+        points: { type: integer, format: int64, minimum: 1 }
+        max_uses: { type: integer, format: int32, minimum: 1 }
+        use_count: { type: integer, format: int32, minimum: 0 }
+        expires_at: { type: string, format: date-time, nullable: true }
+        disabled_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+    CreatedWalletRedemptionCard:
+      allOf:
+        - $ref: '#/components/schemas/WalletRedemptionCard'
+        - type: object
+          required: [code]
+          properties:
+            code: { type: string, format: password, description: 明文兑换码仅返回一次 }
+    WalletRedemptionCardDetail:
+      allOf:
+        - $ref: '#/components/schemas/WalletRedemptionCard'
+        - type: object
+          required: [uses]
+          properties:
+            uses:
+              type: array
+              items:
+                type: object
+                required: [user_id, username, points, redeemed_at]
+                properties:
+                  user_id: { type: integer, format: int64, minimum: 1 }
+                  username: { type: string }
+                  display_name: { type: string, nullable: true }
+                  points: { type: integer, format: int64, minimum: 1 }
+                  redeemed_at: { type: string, format: date-time }
+    CreateWalletRedemptionCardsInput:
+      type: object
+      required: [count, points, max_uses]
+      properties:
+        count: { type: integer, format: int32, minimum: 1, maximum: 100 }
+        points: { type: integer, format: int64, minimum: 1 }
+        max_uses: { type: integer, format: int32, minimum: 1, maximum: 10000 }
+        expires_at: { type: string, format: date-time, nullable: true }
+        label: { type: string, nullable: true, maxLength: 128 }
     WalletBalance:
       type: object
       required: [balance, currency]

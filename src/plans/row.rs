@@ -3,9 +3,9 @@ use time::OffsetDateTime;
 use super::domain::{BillingPeriod, Plan};
 use crate::sqlx::{Error as SqlxError, FromRow, PgRow, Row};
 
-/// Named `plans` row. Extra selected columns (assigned user count, expiry)
-/// are read by the dedicated wrappers below so this struct does not grow
-/// into another positional tuple.
+/// Named `plans` row. Extra selected columns (assigned user count, expiry,
+/// add-on quotas) are read by the dedicated wrappers below so this struct
+/// does not grow into another positional tuple.
 pub(crate) struct PlanRow {
     pub id: i64,
     pub code: String,
@@ -85,16 +85,20 @@ impl<'r> FromRow<'r, PgRow> for PlanListRow {
     }
 }
 
-pub(crate) struct PlanExpiryRow {
+pub(crate) struct EffectivePlanRow {
     pub plan: Plan,
     pub expires_at: Option<OffsetDateTime>,
+    pub addon_daily_auth_limit: i64,
+    pub addon_monthly_auth_limit: i64,
 }
 
-impl<'r> FromRow<'r, PgRow> for PlanExpiryRow {
+impl<'r> FromRow<'r, PgRow> for EffectivePlanRow {
     fn from_row(row: &'r PgRow) -> Result<Self, SqlxError> {
         Ok(Self {
             plan: PlanRow::from_row(row)?.into_plan()?,
             expires_at: row.try_get("plan_expires_at")?,
+            addon_daily_auth_limit: row.try_get("addon_daily_auth_limit")?,
+            addon_monthly_auth_limit: row.try_get("addon_monthly_auth_limit")?,
         })
     }
 }

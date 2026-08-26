@@ -176,7 +176,7 @@ pub async fn issue_authorization_code_result(
         None => None,
     };
     let quota_reservation = if let Some(effective) = owner_plan {
-        let limits = effective.plan.auth_quota_limits();
+        let limits = effective.auth_quota_limits();
         let consumption = match state
             .oauth_quotas
             .consume_with_limits_and_reservation_at(&client_id, limits, state.clock.now())

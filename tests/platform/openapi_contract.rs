@@ -336,21 +336,21 @@ fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
         openapi
             .matches("#/components/responses/PayloadTooLarge")
             .count(),
-        45,
+        50,
         "every JSON request-body operation must declare the unified 413 envelope"
     );
     assert_eq!(
         openapi
             .matches("#/components/responses/UnsupportedMediaType")
             .count(),
-        45,
+        50,
         "every JSON request-body operation must declare the unified 415 envelope"
     );
     assert_eq!(
         openapi
             .matches("#/components/responses/InvalidJsonData")
             .count(),
-        45,
+        50,
         "every JSON request-body operation must declare the unified 422 envelope"
     );
     assert_eq!(
@@ -426,6 +426,9 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
         ("get", "/api/v1/admin/settings/smtp"),
         ("get", "/api/v1/admin/settings/security-limits"),
         ("get", "/api/v1/admin/oauth/providers"),
+        ("get", "/api/v1/admin/wallet/redemption-codes"),
+        ("get", "/api/v1/admin/wallet/redemption-codes/{id}"),
+        ("get", "/api/v1/admin/plans/{id}/quota-addons"),
     ];
     let write_operations = [
         ("post", "/api/v1/admin/users"),
@@ -460,6 +463,11 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
         ("post", "/api/v1/admin/oauth/providers/{slug}/enable"),
         ("post", "/api/v1/admin/keys/rotate"),
         ("post", "/api/v1/admin/keys/{key_id}/revoke"),
+        ("post", "/api/v1/admin/wallet/redemption-codes"),
+        ("post", "/api/v1/admin/wallet/redemption-codes/{id}/disable"),
+        ("post", "/api/v1/admin/plans/{id}/quota-addons"),
+        ("put", "/api/v1/admin/quota-addons/{id}"),
+        ("post", "/api/v1/admin/quota-addons/{id}/archive"),
     ];
     let read_security = "security:\n        - adminBearer: []\n        - sessionCookie: []";
     let write_security = "security:\n        - adminBearer: []\n        - sessionCookie: []\n          csrfCookie: []\n          csrfHeader: []";
@@ -518,12 +526,12 @@ fn openapi_paths_match_all_static_axum_routes() {
     let paths = openapi_paths();
     assert_eq!(
         routes.len(),
-        107,
+        116,
         "route inventory changed; review contract"
     );
     assert_eq!(
         paths.len(),
-        107,
+        116,
         "OpenAPI path inventory changed; review contract"
     );
     assert_eq!(routes, paths, "Axum and OpenAPI path inventories diverged");
