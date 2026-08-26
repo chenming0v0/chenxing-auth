@@ -1,7 +1,10 @@
 use crate::sqlx::Connection;
 use crate::sqlx::migrate::{Migrate, MigrateError, Migrator};
 
-use super::{Database, migration_preflight, roles};
+use super::{
+    Database, migration_compat_description::repair_oauth_client_description, migration_preflight,
+    roles,
+};
 
 const FLATTENED_BASELINE_CHECKSUM: &str =
     "ca8607f4cd8b19d91531d9081d7951d70e266ef35c686c64bcff48e89728ea95";
@@ -38,6 +41,10 @@ pub(super) async fn run(database: &Database, mut migrator: Migrator) -> Result<(
                 target_version,
                 "repaired a recognized flattened SQLx migration ledger after schema verification"
             );
+        }
+
+        if repair_oauth_client_description(&mut connection, &migrator).await? {
+            tracing::warn!("repaired the missing version-47 migration ledger row");
         }
 
         // The compatibility repair and normal migration run share SQLx's PostgreSQL

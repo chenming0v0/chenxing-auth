@@ -14,6 +14,8 @@ const DB_AUDIT_BOUNDARY_MODULE: &str = include_str!("../../src/db/audit_boundary
 const DB_ROLES_MODULE: &str = include_str!("../../src/db/roles.rs");
 const DB_MIGRATE_MODULE: &str = include_str!("../../src/db/migrate.rs");
 const DB_MIGRATION_COMPAT_MODULE: &str = include_str!("../../src/db/migration_compat.rs");
+const DB_MIGRATION_COMPAT_DESCRIPTION_MODULE: &str =
+    include_str!("../../src/db/migration_compat_description.rs");
 const DB_MIGRATION_PREFLIGHT_MODULE: &str = include_str!("../../src/db/migration_preflight.rs");
 const ENV_EXAMPLE: &str = include_str!("../../.env.example");
 const DOCKERFILE: &str = include_str!("../../Dockerfile");
@@ -1191,6 +1193,11 @@ fn database_uses_forward_only_transactional_migration_history() {
         );
     }
     assert!(DB_MIGRATION_COMPAT_MODULE.contains("verify_flattened_schema"));
+    assert!(DB_MIGRATION_COMPAT_MODULE.contains("repair_oauth_client_description"));
+    assert!(DB_MIGRATION_COMPAT_DESCRIPTION_MODULE.contains("ledger_is_exact_prefix"));
+    assert!(DB_MIGRATION_COMPAT_DESCRIPTION_MODULE.contains("information_schema.columns"));
+    assert!(DB_MIGRATION_COMPAT_DESCRIPTION_MODULE.contains("data_type = 'text'"));
+    assert!(DB_MIGRATION_COMPAT_DESCRIPTION_MODULE.contains("is_nullable = 'YES'"));
     assert!(DB_MIGRATION_COMPAT_MODULE.contains("Migrate::lock"));
     assert!(DB_ROLES_MODULE.contains("CREATE ROLE chenxing_runtime LOGIN"));
     assert!(!DATABASE_BASELINE.contains("CREATE ROLE"));
@@ -1270,6 +1277,9 @@ fn migration_preflight_is_inside_the_sqlx_lock_and_rejects_search_path_workaroun
     let repair = DB_MIGRATION_COMPAT_MODULE
         .find("repair_flattened_ledger(&mut connection, &migrator).await?")
         .expect("flattened ledger compatibility must remain enabled");
+    let description_repair = DB_MIGRATION_COMPAT_MODULE
+        .find("repair_oauth_client_description(&mut connection, &migrator).await?")
+        .expect("version-47 compatibility must remain enabled");
     let disable_nested_lock = DB_MIGRATION_COMPAT_MODULE
         .find("migrator.set_locking(false);")
         .expect("run_direct must not acquire the SQLx lock twice");
@@ -1282,7 +1292,8 @@ fn migration_preflight_is_inside_the_sqlx_lock_and_rejects_search_path_workaroun
 
     assert!(lock < preflight);
     assert!(preflight < repair);
-    assert!(repair < disable_nested_lock);
+    assert!(repair < description_repair);
+    assert!(description_repair < disable_nested_lock);
     assert!(disable_nested_lock < run);
     assert!(run < unlock);
     assert!(DB_MIGRATION_COMPAT_MODULE.contains("connection.close_on_drop();"));
@@ -1383,11 +1394,13 @@ fn migration_checksum_manifest_lists_every_sql_file() {
 
     let published = PUBLISHED_MIGRATION_CHECKSUMS.lines().collect::<Vec<_>>();
     let current = manifest.lines().collect::<Vec<_>>();
-    assert_eq!(published.len(), 27);
+    assert_eq!(published.len(), 47);
     assert_eq!(published, current[..published.len()]);
-    assert!(published.last().is_some_and(|line| {
-        line.ends_with("  0027_repair_canonical_email_constraint_scope.sql")
-    }));
+    assert!(
+        published
+            .last()
+            .is_some_and(|line| { line.ends_with("  0047_oauth_client_description.sql") })
+    );
     for marker in [
         "sha256sum -c published-checksums.sha256",
         "published_count=\"$(wc -l < published-checksums.sha256)\"",

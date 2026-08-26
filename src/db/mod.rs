@@ -9,6 +9,7 @@ mod audit_boundary;
 mod canonical_email;
 mod migrate;
 mod migration_compat;
+mod migration_compat_description;
 mod migration_preflight;
 mod migration_state;
 mod pool;

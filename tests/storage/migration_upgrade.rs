@@ -166,6 +166,24 @@ fn published_migrator() -> Migrator {
     }
 }
 
+async fn revert_migrations_after_description(pool: &chenxing_auth::sqlx::PgPool) {
+    for statement in [
+        "DROP TABLE user_quota_addon_purchases",
+        "DROP TABLE plan_quota_addons",
+        "ALTER TABLE users DROP COLUMN plan_entitlement_version",
+        "DROP TABLE wallet_redemptions",
+        "DROP TABLE wallet_redemption_codes",
+        "DROP TABLE wallet_ledger",
+        "DROP TABLE user_wallets",
+        "ALTER TABLE plans DROP CONSTRAINT plans_billing_period_check, DROP CONSTRAINT plans_price_points_check, DROP COLUMN billing_period, DROP COLUMN price_points",
+    ] {
+        chenxing_auth::sqlx::query(statement)
+            .execute(pool)
+            .await
+            .unwrap_or_else(|error| panic!("revert migrations after 0047 ({statement}): {error}"));
+    }
+}
+
 #[tokio::test]
 async fn published_database_upgrades_in_place_without_losing_identity_or_audit_data() {
     let database_url = env::var("MIGRATION_DATABASE_URL")
@@ -300,6 +318,106 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     // auth_method 与 secret 哈希配对 CHECK、client 展示字段、钱包与套餐定价、
     // 兑换码和配额加购。
     assert_eq!(applied, (1_i64..=50).collect::<Vec<_>>());
+
+    // A v1.1.16 database may already have the 0047 schema change while its
+    // ledger stops at 0046. The compatibility repair must record 0047 from
+    // the embedded migration metadata before SQLx runs the remaining tail.
+    revert_migrations_after_description(&pool).await;
+    chenxing_auth::sqlx::query("DELETE FROM _sqlx_migrations WHERE version >= 47")
+        .execute(&pool)
+        .await
+        .expect("remove version-47 ledger tail");
+    chenxing_auth::db::migrate(&pool)
+        .await
+        .expect("repair existing description column and continue migration");
+    let repaired_description: (String, Vec<u8>) = chenxing_auth::sqlx::query_as(
+        "SELECT description, checksum FROM _sqlx_migrations WHERE version = 47",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read repaired version-47 ledger row");
+    let checksum_before_repeat = repaired_description.1.clone();
+    assert_eq!(repaired_description.0, "oauth client description");
+
+    chenxing_auth::db::migrate(&pool)
+        .await
+        .expect("healthy version-47 ledger remains migratable");
+    let checksum_after_repeat: Vec<u8> = chenxing_auth::sqlx::query_scalar(
+        "SELECT checksum FROM _sqlx_migrations WHERE version = 47",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read stable version-47 checksum");
+    assert_eq!(checksum_after_repeat, checksum_before_repeat);
+
+    // With the column absent, the original 0047 SQL must remain responsible
+    // for creating it; the compatibility path must not invent the schema.
+    let later_ledger: Vec<(i64, String, Vec<u8>, bool, i64)> = chenxing_auth::sqlx::query_as(
+        "SELECT version, description, checksum, success, execution_time
+         FROM _sqlx_migrations WHERE version >= 48 ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("save later migration ledger rows");
+    revert_migrations_after_description(&pool).await;
+    chenxing_auth::sqlx::query("ALTER TABLE oauth_clients DROP COLUMN description")
+        .execute(&pool)
+        .await
+        .expect("remove description column for original migration test");
+    chenxing_auth::sqlx::query("DELETE FROM _sqlx_migrations WHERE version >= 47")
+        .execute(&pool)
+        .await
+        .expect("remove version-47 ledger for original migration test");
+    chenxing_auth::db::migrate(&pool)
+        .await
+        .expect("original version-47 migration creates missing column");
+    let description_exists: bool = chenxing_auth::sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'oauth_clients'
+                          AND column_name = 'description')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("check description column after original migration");
+    assert!(description_exists);
+
+    // A missing 0047 row with a later row is not a recognized prefix and must
+    // not be rewritten. Leave the schema intact so normal SQLx validation
+    // fails closed on the inconsistent ledger.
+    chenxing_auth::sqlx::query("DELETE FROM _sqlx_migrations WHERE version >= 47")
+        .execute(&pool)
+        .await
+        .expect("remove version-47 ledger before tail guard test");
+    let later = later_ledger
+        .first()
+        .expect("current migrations include version 48");
+    chenxing_auth::sqlx::query(
+        "INSERT INTO _sqlx_migrations
+             (version, description, checksum, success, execution_time)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(later.0)
+    .bind(&later.1)
+    .bind(&later.2)
+    .bind(later.3)
+    .bind(later.4)
+    .execute(&pool)
+    .await
+    .expect("install synthetic later ledger row");
+    let result = chenxing_auth::db::migrate(&pool).await;
+    assert!(result.is_err(), "later ledger rows must reject migration");
+    let ledger_versions: Vec<i64> = chenxing_auth::sqlx::query_scalar(
+        "SELECT version FROM _sqlx_migrations WHERE version >= 47 ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read ledger after tail guard");
+    assert_eq!(ledger_versions, vec![48]);
+    chenxing_auth::sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 48")
+        .execute(&pool)
+        .await
+        .expect("remove synthetic later ledger row");
 
     // A database initialized by v1.1.2 has the same schema but records the
     // flattened baseline plus the two then-current migrations as versions 1-3.
