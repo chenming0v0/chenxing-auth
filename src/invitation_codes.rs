@@ -16,6 +16,7 @@ const MAX_BATCH_SIZE: u16 = 100;
 pub struct CreateInvitationCodesInput {
     pub count: u16,
     pub max_uses: i32,
+    #[serde(with = "time::serde::rfc3339::option")]
     pub expires_at: Option<OffsetDateTime>,
     pub label: Option<String>,
 }
@@ -40,8 +41,11 @@ pub struct InvitationCodeSummary {
     pub label: Option<String>,
     pub max_uses: i32,
     pub use_count: i32,
+    #[serde(with = "time::serde::rfc3339::option")]
     pub expires_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
     pub disabled_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -79,6 +83,7 @@ pub struct InvitationCodeUse {
     pub user_id: i64,
     pub username: String,
     pub display_name: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
     pub used_at: OffsetDateTime,
 }
 

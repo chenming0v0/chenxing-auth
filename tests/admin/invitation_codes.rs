@@ -149,6 +149,7 @@ async fn invitation_code_detail_lists_uses_without_exposing_secrets() {
         assert_eq!(item["label"], "batch-a");
         assert_eq!(item["max_uses"], 3);
         assert_eq!(item["use_count"], 0);
+        assert!(item["created_at"].as_str().is_some());
     }
     let first_id = created[0]["id"].as_i64().expect("first id");
     let second_id = created[1]["id"].as_i64().expect("second id");
@@ -162,6 +163,7 @@ async fn invitation_code_detail_lists_uses_without_exposing_secrets() {
     for item in listed {
         assert_no_secret_material(item);
         assert_eq!(item["label"], "batch-a");
+        assert!(item["created_at"].as_str().is_some());
     }
 
     let response = send(
@@ -179,6 +181,7 @@ async fn invitation_code_detail_lists_uses_without_exposing_secrets() {
     assert_eq!(unused["label"], "batch-a");
     assert_eq!(unused["max_uses"], 3);
     assert_eq!(unused["use_count"], 0);
+    assert!(unused["created_at"].as_str().is_some());
     assert_eq!(unused["uses"], json!([]));
 
     let response = send(
@@ -250,6 +253,8 @@ async fn invitation_code_detail_lists_uses_without_exposing_secrets() {
     let earlier_user_id = uses[1]["user_id"].as_i64().expect("earlier user id");
     assert!(later_user_id > earlier_user_id);
     assert!(uses[0]["used_at"].as_str().is_some());
+    assert!(uses[1]["used_at"].as_str().is_some());
+    assert!(used["created_at"].as_str().is_some());
 
     let response = send(
         &router,
