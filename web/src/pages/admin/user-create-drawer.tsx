@@ -1,8 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import { ApiError, apiFetch, type AdminCreateUserInput, type PublicUser, type UserRole } from '../../api'
-import { Drawer } from '../../components/drawer'
-import { Button, Field, HudPanel, Notice, PasswordField } from '../../components/ui'
-import { SelectField, type SelectOption } from '../../components/select'
+import { Drawer } from '@chenxing/ui'
+import { Button, Field, HudPanel, Notice, PasswordField } from '@chenxing/ui'
+import { SelectField, type SelectOption } from '@chenxing/ui'
 import { useMutationLock } from '../../use-mutation-lock'
 
 /* 校验规则与服务端 src/users/domain.rs 一致：用户名 3-64 字符，仅含 ASCII 字母、数字、

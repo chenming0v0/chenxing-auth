@@ -1,5 +1,5 @@
 import type { PublicUser } from '../../api'
-import type { SelectOption } from '../../components/select'
+import type { SelectOption } from '@chenxing/ui'
 
 export const ROLE_OPTIONS: SelectOption[] = [
   { value: 'user', label: '普通用户' },

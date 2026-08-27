@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from '../../router'
 import { ApiError, apiFetch, type SecurityEventDetail } from '../../api'
-import { Badge, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { Badge, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
 import { formatDate } from '../../data'
 import { ActionBadge } from './security-logs-shared'
 

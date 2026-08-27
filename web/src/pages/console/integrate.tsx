@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { apiFetch, type OwnedOAuthClient, type RegisteredOwnedOAuthClient } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Button, CopyValue, EmptyState, HudPanel, Icon, Notice } from '../../components/ui'
+import { Button, CopyValue, EmptyState, HudPanel, Icon, Notice } from '@chenxing/ui'
 import { AppRegisterDrawer } from './app-register-drawer'
 import { formatQuota, newIdempotencyKey } from './developer-shared'
 import { entitlementState, listAllOwnedOAuthClients, SelfServiceClosedBlock, useEntitlements } from './shared'

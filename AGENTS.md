@@ -86,8 +86,8 @@
 - 原型设计稿（`design-auth-chengming/`）和设计稿专用的 `design-canvas-format` skill 只存在于 `design` 分支，不在 `dev` 和 `releases` 中；不要在 `dev` 上重新添加它们。
 - 需要查阅或修改设计稿时，不要切换当前工作区分支，使用独立 worktree：`git worktree add ../chenxing-auth-design design`。
 - 设计稿改动只在 `design` 分支提交；`design` 单向从 `dev` 接收更新，禁止把 `design` 合并或 cherry-pick 回 `dev` / `releases`。
-- 新增或修改任何卡片、玻璃容器、表单面板等 UI 时，必须使用项目级 `chenxing-hud-panel` skill 指定的公共容器 `.chenxing-hud-panel`，并通过 `web/src/components/ui.tsx` 的 `HudPanel` 组件渲染；禁止另建玻璃卡片样式或复用旧的 `chenxing-glass-strong chenxing-hud-frame` 组合。
-- 面板样式的唯一来源是 `web/src/chenxing-design.css`，不要复制到其他 CSS 或组件内联样式。
+- 新增或修改任何卡片、玻璃容器、表单面板等 UI 时，必须使用项目级 `chenxing-hud-panel` skill 指定的公共容器 `.chenxing-hud-panel`，并通过组件库 `@chenxing/ui` 导出的 `HudPanel` 组件渲染；禁止另建玻璃卡片样式或复用旧的 `chenxing-glass-strong chenxing-hud-frame` 组合。
+- 面板样式的唯一来源是组件库 `@chenxing/ui` 的 `styles.css`（仓库 https://github.com/chenming0v0/chenxing-ui ，经 `web/src/index.css` 引入），不要复制到本仓库 CSS 或组件内联样式；应用专属外壳样式只放 `web/src/app-shell.css`。通用 UI 组件（原语/select/drawer/data-table/motion/space/skip-link/toast/topbar/error-boundary/intro-gate/avatar-editor）一律从 `@chenxing/ui` 导入，不得在 `web/src/components` 重建同名组件；`web/src/components` 只保留业务壳层（shells）。修改通用组件请去组件库仓库改并更新依赖锁定。
 
 ### 变更验收
 

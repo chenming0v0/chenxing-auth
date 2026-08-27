@@ -58,7 +58,7 @@ function renderConsole() {
 function openHamburgerMenu(): HTMLElement {
   renderConsole()
   fireEvent.click(screen.getByRole('button', { name: '打开导航菜单' }))
-  const menu = document.querySelector('[data-menu]') as HTMLElement
+  const menu = document.querySelector('.cx-nav-panel') as HTMLElement
   expect(menu).toBeTruthy()
   return menu
 }
@@ -134,7 +134,7 @@ describe('ConsoleLayout 移动端导航可达性（#197）', () => {
     const menu = openHamburgerMenu()
     fireEvent.click(within(menu).getByRole('link', { name: '开发者' }))
     // 关闭带 300ms 退出动画（遮罩淡出 + 面板收拢），卸载发生在动画结束后
-    await waitFor(() => expect(document.querySelector('[data-menu]')).toBeNull())
+    await waitFor(() => expect(document.querySelector('.cx-nav-panel')).toBeNull())
   })
 
   it('普通用户看不到管理/系统分组', () => {
@@ -162,7 +162,7 @@ describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
     expect(panelId).toBeTruthy()
     fireEvent.click(button)
     expect(button.getAttribute('aria-expanded')).toBe('true')
-    const menu = document.querySelector('[data-menu]') as HTMLElement
+    const menu = document.querySelector('.cx-nav-panel') as HTMLElement
     expect(menu.id).toBe(panelId)
   })
 
@@ -189,10 +189,10 @@ describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
     renderConsole()
     const button = screen.getByRole('button', { name: '打开导航菜单' })
     fireEvent.click(button)
-    expect(document.querySelector('[data-menu]')).toBeTruthy()
+    expect(document.querySelector('.cx-nav-panel')).toBeTruthy()
     fireEvent.keyDown(document, { key: 'Escape' })
     // 关闭带 300ms 退出动画，卸载发生在动画结束后
-    await waitFor(() => expect(document.querySelector('[data-menu]')).toBeNull())
+    await waitFor(() => expect(document.querySelector('.cx-nav-panel')).toBeNull())
     expect(document.activeElement).toBe(button)
   })
 
@@ -214,7 +214,7 @@ describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
     renderConsole()
     const button = screen.getByRole('button', { name: '打开导航菜单' })
     fireEvent.keyDown(button, { key: 'ArrowDown' })
-    const menu = document.querySelector('[data-menu]') as HTMLElement
+    const menu = document.querySelector('.cx-nav-panel') as HTMLElement
     expect(menu).toBeTruthy()
     expect(document.activeElement).toBe(menuItems(menu)[0])
   })
@@ -260,7 +260,7 @@ describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
     expect(button.getAttribute('aria-expanded')).toBe('true')
     fireEvent.click(within(menu).getByRole('link', { name: '开发者' }))
     // 关闭带 300ms 退出动画，卸载发生在动画结束后
-    await waitFor(() => expect(document.querySelector('[data-menu]')).toBeNull())
+    await waitFor(() => expect(document.querySelector('.cx-nav-panel')).toBeNull())
     expect(button.getAttribute('aria-expanded')).toBe('false')
   })
 })
@@ -383,7 +383,7 @@ describe('无行为控件改为静态文本（#240）', () => {
     expect(within(accountPanel).getByText('文档中心').tagName).toBe('SPAN')
 
     fireEvent.click(screen.getByRole('button', { name: '打开导航菜单' }))
-    const menu = document.querySelector('[data-menu]') as HTMLElement
+    const menu = document.querySelector('.cx-nav-panel') as HTMLElement
     expect(menu).toBeTruthy()
     expect(within(menu).queryByRole('button', { name: /应用广场/ })).toBeNull()
     expect(within(menu).getByText('应用广场').tagName).toBe('SPAN')

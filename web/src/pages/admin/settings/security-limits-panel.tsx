@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { apiFetch, type SecurityLimitsSetting } from '../../../api'
-import { Button, Field, HudPanel, Icon, Notice } from '../../../components/ui'
+import { Button, Field, HudPanel, Icon, Notice } from '@chenxing/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, validateIntegerWithinRange, type SettingsPanelProps } from './panel'
 
 type FieldKey = keyof SecurityLimitsSetting

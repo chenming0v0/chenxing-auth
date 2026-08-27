@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
-import { HudPanel, BrandMark, Notice } from './ui'
-import { SpaceBackdrop } from './space'
-import { SkipLink, SkipTarget, useSkipTargetId } from './skip-link'
+import { HudPanel, BrandMark, Notice } from '@chenxing/ui'
+import { SpaceBackdrop } from '@chenxing/ui'
+import { SkipLink, SkipTarget, useSkipTargetId } from '@chenxing/ui'
 import { GlobalTopbar } from './shells-topbar'
 
 export function AuthShell({

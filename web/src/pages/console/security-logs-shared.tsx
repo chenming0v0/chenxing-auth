@@ -1,4 +1,4 @@
-import { Badge } from '../../components/ui'
+import { Badge } from '@chenxing/ui'
 
 export const PAGE_SIZE = 20
 

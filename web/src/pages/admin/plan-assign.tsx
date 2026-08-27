@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { apiFetch, type AdminPlan, type AssignPlanInput } from '../../api'
-import { Button, Field, HudPanel, Notice } from '../../components/ui'
-import { Drawer } from '../../components/drawer'
-import { SelectField } from '../../components/select'
+import { Button, Field, HudPanel, Notice } from '@chenxing/ui'
+import { Drawer } from '@chenxing/ui'
+import { SelectField } from '@chenxing/ui'
 import { useMutationLock } from '../../use-mutation-lock'
 
 /** 复用共享 Drawer 的套餐分配抽屉；分配走 POST /admin/users/{id}/plan。 */

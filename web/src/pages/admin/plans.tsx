@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiFetch, type AdminPlan } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
-import { DataTable } from '../../components/data-table'
+import { Badge, Button, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
+import { DataTable } from '@chenxing/ui'
 import { AdminGate, useAdminAccess } from './shared'
 import { PlanEditorDrawer } from './plan-editor-drawer'
 

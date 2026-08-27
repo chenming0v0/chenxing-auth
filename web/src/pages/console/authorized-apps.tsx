@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { apiFetch, type AuthorizedOAuthApp } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, Chip, EmptyState, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { Badge, Button, Chip, EmptyState, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
 import { formatDate } from '../../data'
 import { Link } from '../../router'
 import type { MessageTone } from './profile-avatar'

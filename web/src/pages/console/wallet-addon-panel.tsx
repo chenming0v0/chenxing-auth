@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiFetch, type QuotaAddon, type QuotaAddonPurchaseResult } from '../../api'
-import { Badge, Button, HudPanel, Icon, Notice } from '../../components/ui'
+import { Badge, Button, HudPanel, Icon, Notice } from '@chenxing/ui'
 import { useMutationLock } from '../../use-mutation-lock'
 
 function points(value: number): string { return value.toLocaleString('zh-CN') }

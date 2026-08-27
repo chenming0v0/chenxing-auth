@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiFetch, type PublicExternalProvider } from '../../api'
-import { Button, Icon, Notice } from '../../components/ui'
+import { Button, Icon, Notice } from '@chenxing/ui'
 
 type LoadState =
   | { kind: 'loading' }

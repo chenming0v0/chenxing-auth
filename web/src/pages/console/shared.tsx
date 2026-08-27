@@ -4,7 +4,7 @@ import {
   type AuthorizedOAuthApp, type EntitlementItem, type EntitlementsResponse,
   type OwnedOAuthClient, type OwnedOAuthClientList, type SessionItem,
 } from '../../api'
-import { Icon } from '../../components/ui'
+import { Icon } from '@chenxing/ui'
 
 export function entitlementView(item: EntitlementItem) {
   const numericLimit = typeof item.limit === 'number' ? item.limit : null

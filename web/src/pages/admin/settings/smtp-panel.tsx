@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { apiFetch, type SmtpPasswordAction, type SmtpSetting } from '../../../api'
-import { Button, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '../../../components/ui'
+import { Button, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '@chenxing/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, validateIntegerWithinRange, type SettingsPanelProps } from './panel'
 
 /** 第一方控制台始终显式发送 password_action，不走省略字段兼容路径。 */

@@ -7,10 +7,10 @@ description: Enforce the shared Chenxing HUD glass panel (.chenxing-hud-panel) f
 
 ## Mandatory container
 
-Every card or glass container in this project must use the public class `chenxing-hud-panel`. The CSS source of truth is `web/src/chenxing-design.css`; in React always go through the shared `HudPanel` component in `web/src/components/ui.tsx`.
+Every card or glass container in this project must use the public class `chenxing-hud-panel`. The CSS source of truth is the `@chenxing/ui` package (`node_modules/@chenxing/ui/src/styles/components.css`, imported via `web/src/index.css`); in React always go through the shared `HudPanel` component exported by `@chenxing/ui`.
 
 ```tsx
-import { HudPanel } from '../components/ui'
+import { HudPanel } from '@chenxing/ui'
 
 <HudPanel>{/* content */}</HudPanel>
 ```
@@ -24,7 +24,7 @@ For width control, pass layout utilities through `className`:
 ## Rules
 
 - Never write cards with one-off glass styles or the old `chenxing-glass-strong chenxing-hud-frame p-8` combination.
-- Keep the panel CSS in `web/src/chenxing-design.css`; do not duplicate it into component-level styles or new CSS files.
+- Keep the panel CSS in the `@chenxing/ui` library (edit it in the chenxing-ui repo, then update the dependency); do not duplicate it into app-level styles or new CSS files.
 - Do not apply the raw `chenxing-hud-panel` class in pages; render `HudPanel` so the contract stays in one place.
 - After changing the panel CSS, rebuild `web/dist` so the embedded assets stay in sync.
 - The prototype drafts that originally defined this panel live on the `design` branch (`design-auth-chengming/`); they are not part of `dev` and must not be re-added here.

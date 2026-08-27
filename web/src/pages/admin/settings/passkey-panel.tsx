@@ -5,8 +5,8 @@ import {
   type PasskeySetting,
   type PasskeyUserVerification,
 } from '../../../api'
-import { Button, Field, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
-import { SelectField } from '../../../components/select'
+import { Button, Field, HudPanel, Icon, Notice, ToggleRow } from '@chenxing/ui'
+import { SelectField } from '@chenxing/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
 function splitOrigins(value: string): string[] {

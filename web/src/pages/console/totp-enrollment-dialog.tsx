@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import QRCode from 'qrcode'
 import type { SecurityTotpStart } from '../../api'
-import { useModalFocus } from '../../components/modal'
-import { Button, CopyValue, HudPanel, Icon } from '../../components/ui'
+import { useModalFocus } from '@chenxing/ui'
+import { Button, CopyValue, HudPanel, Icon } from '@chenxing/ui'
 
 type TotpEnrollmentDialogProps = {
   data: SecurityTotpStart

@@ -2,9 +2,9 @@ import type { ReactNode } from 'react'
 import { Link, NavLink, useLocation } from '../router'
 import { useAuth } from '../auth-state'
 import { navGroups, pageStatus } from '../data'
-import { BrandLockup, Icon } from './ui'
-import { SpaceBackdrop } from './space'
-import { SkipLink, SkipTarget, useSkipTargetId } from './skip-link'
+import { BrandLockup, Icon } from '@chenxing/ui'
+import { SpaceBackdrop } from '@chenxing/ui'
+import { SkipLink, SkipTarget, useSkipTargetId } from '@chenxing/ui'
 import { GlobalTopbar } from './shells-topbar'
 
 /** 桌面侧栏导航分组：按角色过滤可见分组，渲染带 active 态的导航项。

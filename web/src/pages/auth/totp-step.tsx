@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import QRCode from 'qrcode'
 import { apiFetch, ApiError, type LoginResponse, type PendingLoginResponse, type TotpSetupResponse } from '../../api'
-import { Button, CopyValue, Field, Notice } from '../../components/ui'
+import { Button, CopyValue, Field, Notice } from '@chenxing/ui'
 
 /**
  * login_ticket 是 MFA 步骤的会话凭证，失效（过期、被消费或服务端撤销）后

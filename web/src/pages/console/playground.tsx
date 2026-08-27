@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link } from '../../router'
 import { type OwnedOAuthClient } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
-import { SelectField } from '../../components/select'
+import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
+import { SelectField } from '@chenxing/ui'
 import { entitlementState, listAllOwnedOAuthClients, useEntitlements } from './shared'
 
 export function PlaygroundPage() {

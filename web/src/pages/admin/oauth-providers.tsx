@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ConsoleLayout } from '../../components/shells'
-import { Notice, PageIntro } from '../../components/ui'
+import { Notice, PageIntro } from '@chenxing/ui'
 import { AdminGate, useAdminAccess } from './shared'
 import { useDraftLeaveGuard, useFlashMessage } from './settings/panel'
 import { OAuthProvidersPanel } from './settings/oauth-providers-panel'

@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
-import { ErrorBoundary } from './components/error-boundary'
+import { ErrorBoundary } from '@chenxing/ui'
 import './index.css'
 
 // 错误消息与堆栈可能携带令牌、URL 查询等敏感信息，一律不进控制台。

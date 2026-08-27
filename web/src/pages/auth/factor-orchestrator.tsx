@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { PendingLoginResponse, TotpSetupResponse } from '../../api'
-import { Button, Icon, Notice } from '../../components/ui'
+import { Button, Icon, Notice } from '@chenxing/ui'
 import { TotpStep } from './totp-step'
 import { PasskeyStep } from './passkey-step'
 

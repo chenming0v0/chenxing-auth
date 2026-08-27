@@ -1,8 +1,8 @@
 import { Link } from '../../router'
 import { useAuth } from '../../auth-state'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, Chip, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
-import { DataTable, TablePanel } from '../../components/data-table'
+import { Badge, Button, Chip, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
+import { DataTable, TablePanel } from '@chenxing/ui'
 import { formatDate, greeting } from '../../data'
 import {
   entitlementState, entitlementView, Meter, SelfServiceClosedBlock,

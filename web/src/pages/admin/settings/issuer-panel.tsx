@@ -1,6 +1,6 @@
 import { useRef, useState, type FormEvent } from 'react'
 import { apiFetch, type IssuerSettingResponse, type UpdateIssuerSetting } from '../../../api'
-import { Button, Field, HudPanel, Icon, Notice } from '../../../components/ui'
+import { Button, Field, HudPanel, Icon, Notice } from '@chenxing/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
 function validateIssuer(value: string): string | null {

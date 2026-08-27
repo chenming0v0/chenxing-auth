@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import type { AuditEvent } from '../../api'
-import { Drawer } from '../../components/drawer'
-import { Button } from '../../components/ui'
+import { Drawer } from '@chenxing/ui'
+import { Button } from '@chenxing/ui'
 import { formatDate } from '../../data'
 import { ActionBadge, lookupAction, resourceLabel, SeverityBadge, formatActor } from './audit-labels'
 

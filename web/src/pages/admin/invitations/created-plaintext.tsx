@@ -1,4 +1,4 @@
-import { Button, CopyValue, HudPanel, Notice } from '../../../components/ui'
+import { Button, CopyValue, HudPanel, Notice } from '@chenxing/ui'
 
 type PlaintextItem = { id: number; code: string }
 

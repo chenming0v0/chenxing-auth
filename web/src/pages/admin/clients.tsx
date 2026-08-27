@@ -5,8 +5,8 @@ import {
   type KeyRotationResponse, type Paged, type PublicUser, type RegistrationEmailSetting,
 } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
-import { DataTable, TablePanel, TablePagination } from '../../components/data-table'
+import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
+import { DataTable, TablePanel, TablePagination } from '@chenxing/ui'
 import { formatDate, initialOf } from '../../data'
 import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
 
