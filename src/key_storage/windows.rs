@@ -12,18 +12,24 @@ use std::{
 };
 
 use super::policy::{FileInode, invalid_storage_path, require_same_inode};
-use super::windows_acl::{ProtectedSd, TrustedSids, apply_protected_dacl, validate_leaf_security};
+use super::windows_acl::{TrustedSids, validate_leaf_security};
 use super::windows_policy::{
     ancestor_kind_trusted, leaf_directory_kind_trusted, regular_file_kind_trusted,
 };
+use super::windows_rename::rename_in_dir;
+use super::windows_sd::{ProtectedSd, apply_protected_dacl};
 use super::windows_sys::{
-    dir_access, dispose_file, file_read_access, file_write_access, inode_of, list_dir,
-    open_dir_path, open_relative, path_kind, raw_handle, rename_in_dir, require_kind,
+    dir_access, dir_read_access, dispose_file, file_read_access, file_write_access, inode_of,
+    list_dir, open_dir_path, open_relative, path_kind, raw_handle, require_kind,
 };
 use super::{SecureFileData, TEMPORARY_FILE_SUFFIX, TemporaryFileKind};
 
 pub(crate) struct SecureDir {
     file: File,
+    /// walk() 逐级句柄相对打开所解析到的同一路径的规范化名字。内核的
+    /// `FileRenameInfo` 不支持父目录句柄相对形式，重命名需要完整路径；
+    /// 用这个“与已持句柄同源”的前缀而不是重新按路径探测。
+    path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -130,7 +136,7 @@ impl SecureDir {
         let mut file = self.create_exclusive(temporary)?;
         file.write_all(contents)?;
         file.sync_all()?;
-        rename_in_dir(&file, &self.file, destination, replace_existing)?;
+        rename_in_dir(&file, &self.path, destination, replace_existing)?;
         drop(file);
         Ok(())
     }
@@ -198,24 +204,41 @@ fn open_start(path: &Path) -> io::Result<(SecureDir, Vec<OsString>)> {
     } else {
         Path::new(".")
     };
+    // 一次性把起点规范化成绝对名字：后续每一步都是相对句柄打开的，
+    // 这里解析到的是与句柄同一对象的规范名（符号链接已被各步
+    // FILE_OPEN_REPARSE_POINT 校验排除）。存成无 \\?\ 前缀的形态，
+    // rename 重命名时再拼回内核要求的 \??\ 前缀。canonicalize 的
+    // verbatim 前缀要用文本比较剥离——Path 组件语义下它不可匹配；
+    // UNC 形态（\\?\UNC\…）保持原样，本机制不用于网络盘。
+    let mut base = std::fs::canonicalize(start_path)?;
+    if let Some(text) = base.to_str()
+        && let Some(rest) = text.strip_prefix("\\\\?\\")
+        && !rest.starts_with("UNC\\")
+    {
+        base = PathBuf::from(rest);
+    }
     let file = open_dir_path(start_path)?;
     require_kind(&file, true)?;
     if !ancestor_kind_trusted(path_kind(&file)?) {
         return Err(invalid_storage_path());
     }
-    Ok((SecureDir { file }, components))
+    Ok((SecureDir { file, path: base }, components))
 }
 
 fn step(parent: &SecureDir, name: &OsStr, create: bool, is_leaf: bool) -> io::Result<SecureDir> {
-    match open_relative(&parent.file, name, dir_access(), true, false, None) {
-        Ok(dir) => finish_dir(dir, is_leaf, false),
+    // 打开已存在的目录只做遍历与安全校验，不请求写 ACL / 删除权：
+    // 那会把启动成败绑定到其它进程对该目录句柄的共享意愿上。
+    let child_path = parent.path.join(name);
+    match open_relative(&parent.file, name, dir_read_access(), true, false, None) {
+        Ok(dir) => finish_dir(dir, is_leaf, false, child_path),
         Err(error) if error.kind() == ErrorKind::NotFound && create => {
             match create_dir(parent, name) {
-                Ok(dir) => finish_dir(dir, true, true),
+                Ok(dir) => finish_dir(dir, true, true, child_path),
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => finish_dir(
-                    open_relative(&parent.file, name, dir_access(), true, false, None)?,
+                    open_relative(&parent.file, name, dir_read_access(), true, false, None)?,
                     is_leaf,
                     false,
+                    child_path,
                 ),
                 Err(error) => Err(error),
             }
@@ -232,7 +255,12 @@ fn create_dir(parent: &SecureDir, name: &OsStr) -> io::Result<File> {
     Ok(file)
 }
 
-fn finish_dir(file: File, treat_as_leaf: bool, just_created: bool) -> io::Result<SecureDir> {
+fn finish_dir(
+    file: File,
+    treat_as_leaf: bool,
+    just_created: bool,
+    path: PathBuf,
+) -> io::Result<SecureDir> {
     let kind = require_kind(&file, true)?;
     if treat_as_leaf {
         if !leaf_directory_kind_trusted(kind) {
@@ -246,7 +274,7 @@ fn finish_dir(file: File, treat_as_leaf: bool, just_created: bool) -> io::Result
     } else if !ancestor_kind_trusted(kind) {
         return Err(invalid_storage_path());
     }
-    Ok(SecureDir { file })
+    Ok(SecureDir { file, path })
 }
 
 fn require_regular(file: &File, expected: Option<FileInode>) -> io::Result<FileInode> {

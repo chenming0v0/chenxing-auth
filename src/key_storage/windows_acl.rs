@@ -2,21 +2,29 @@
 //!
 //! 叶子只允许当前进程 SID / SYSTEM 持有并取得完整控制权。已有对象只校验、不改写。
 
-use std::{io, mem, ptr};
+#[cfg(test)]
+use std::mem;
+use std::{io, ptr};
+
+#[cfg(test)]
+use windows_sys::Win32::Foundation::GENERIC_ALL;
+#[cfg(test)]
+use windows_sys::Win32::Security::Authorization::SetSecurityInfo;
+#[cfg(test)]
+use windows_sys::Win32::Security::{
+    ACL_REVISION, AddAccessAllowedAceEx, InitializeAcl, PROTECTED_DACL_SECURITY_INFORMATION,
+};
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GENERIC_ALL, GetLastError, HANDLE, LocalFree},
-    Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo},
+    Foundation::{CloseHandle, GetLastError, HANDLE, LocalFree},
+    Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
     Security::{
-        ACCESS_ALLOWED_ACE, ACCESS_DENIED_ACE, ACE_HEADER, ACL, ACL_REVISION,
-        AddAccessAllowedAceEx, CONTAINER_INHERIT_ACE, CopySid, CreateWellKnownSid,
+        ACCESS_ALLOWED_ACE, ACCESS_DENIED_ACE, ACE_HEADER, ACL, CopySid, CreateWellKnownSid,
         DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetLengthSid, GetSecurityDescriptorControl,
-        GetSecurityDescriptorDacl, GetTokenInformation, InitializeAcl,
-        InitializeSecurityDescriptor, IsValidSid, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
-        SECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_CONTROL, SECURITY_MAX_SID_SIZE,
-        SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TOKEN_QUERY, TOKEN_USER,
-        TokenUser, WinAuthenticatedUserSid, WinBuiltinUsersSid, WinLocalSystemSid, WinWorldSid,
+        GetSecurityDescriptorDacl, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR_CONTROL,
+        SECURITY_MAX_SID_SIZE, TOKEN_QUERY, TOKEN_USER, TokenUser, WinAuthenticatedUserSid,
+        WinBuiltinUsersSid, WinLocalSystemSid, WinWorldSid,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
@@ -26,8 +34,7 @@ use super::windows_policy::{
     AceKind, AceView, DaclView, WellKnownPrincipal, invalid_acl, leaf_dacl_trusted,
 };
 
-/// `SECURITY_DESCRIPTOR_REVISION` 不走 SystemServices feature，值是稳定 ABI。
-const SECURITY_DESCRIPTOR_REVISION: u32 = 1;
+/// `ACE_HEADER` 类型宽度 ABI 稳定；类型常量取自 ntsecapi 惯例。
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 const ACCESS_DENIED_ACE_TYPE: u8 = 1;
 
@@ -66,7 +73,7 @@ impl SidBuf {
         Ok(Self { bytes })
     }
 
-    fn as_psid(&self) -> PSID {
+    pub(super) fn as_psid(&self) -> PSID {
         self.bytes.as_ptr().cast_mut().cast()
     }
 
@@ -110,108 +117,10 @@ impl TrustedSids {
         }
     }
 
-    fn grant_sids(&self) -> impl Iterator<Item = &SidBuf> {
+    pub(super) fn grant_sids(&self) -> impl Iterator<Item = &SidBuf> {
         let same = self.current.eq_sid(self.system.as_psid());
         std::iter::once(&self.current).chain((!same).then_some(&self.system))
     }
-}
-
-/// 创建对象时附带的绝对安全描述符。DACL 指针指向内部 ACL 缓冲。
-pub(super) struct ProtectedSd {
-    sd: SECURITY_DESCRIPTOR,
-    _acl: Vec<u8>,
-}
-
-impl ProtectedSd {
-    pub(super) fn for_directory(sids: &TrustedSids) -> io::Result<Self> {
-        build_sd(sids, CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE)
-    }
-
-    pub(super) fn for_file(sids: &TrustedSids) -> io::Result<Self> {
-        build_sd(sids, 0)
-    }
-
-    pub(super) fn as_ptr(&self) -> *const SECURITY_DESCRIPTOR {
-        &self.sd
-    }
-}
-
-fn build_sd(sids: &TrustedSids, inherit: u32) -> io::Result<ProtectedSd> {
-    let grant: Vec<&SidBuf> = sids.grant_sids().collect();
-    let acl_size = mem::size_of::<ACL>()
-        + grant.len() * (mem::size_of::<ACCESS_ALLOWED_ACE>() + SECURITY_MAX_SID_SIZE as usize);
-    let mut acl = vec![0u8; acl_size];
-    if unsafe { InitializeAcl(acl.as_mut_ptr().cast(), acl_size as u32, ACL_REVISION) } == 0 {
-        return Err(io::Error::from_raw_os_error(
-            unsafe { GetLastError() } as i32
-        ));
-    }
-    for sid in grant {
-        let ok = unsafe {
-            AddAccessAllowedAceEx(
-                acl.as_mut_ptr().cast(),
-                ACL_REVISION,
-                inherit,
-                GENERIC_ALL,
-                sid.as_psid(),
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::from_raw_os_error(
-                unsafe { GetLastError() } as i32
-            ));
-        }
-    }
-
-    let mut sd = unsafe { mem::zeroed::<SECURITY_DESCRIPTOR>() };
-    if unsafe { InitializeSecurityDescriptor((&raw mut sd).cast(), SECURITY_DESCRIPTOR_REVISION) }
-        == 0
-    {
-        return Err(io::Error::from_raw_os_error(
-            unsafe { GetLastError() } as i32
-        ));
-    }
-    if unsafe { SetSecurityDescriptorDacl((&raw mut sd).cast(), 1, acl.as_ptr().cast(), 0) } == 0 {
-        return Err(io::Error::from_raw_os_error(
-            unsafe { GetLastError() } as i32
-        ));
-    }
-    if unsafe {
-        SetSecurityDescriptorControl((&raw mut sd).cast(), SE_DACL_PROTECTED, SE_DACL_PROTECTED)
-    } == 0
-    {
-        return Err(io::Error::from_raw_os_error(
-            unsafe { GetLastError() } as i32
-        ));
-    }
-    Ok(ProtectedSd { sd, _acl: acl })
-}
-
-pub(super) fn apply_protected_dacl(
-    handle: HANDLE,
-    sids: &TrustedSids,
-    directory: bool,
-) -> io::Result<()> {
-    let sd = if directory {
-        ProtectedSd::for_directory(sids)?
-    } else {
-        ProtectedSd::for_file(sids)?
-    };
-    let status = unsafe {
-        SetSecurityInfo(
-            handle,
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            sd.sd.Dacl,
-            ptr::null(),
-        )
-    };
-    if status != 0 {
-        return Err(io::Error::from_raw_os_error(status as i32));
-    }
-    Ok(())
 }
 
 pub(super) fn validate_leaf_security(handle: HANDLE, sids: &TrustedSids) -> io::Result<()> {
