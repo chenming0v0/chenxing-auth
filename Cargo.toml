@@ -1,6 +1,6 @@
 [package]
 name = "chenxing-auth"
-version = "1.1.20"
+version = "1.1.21"
 edition = "2024"
 description = "天穹辰星 · 辰星认证中枢"
 license = "MIT"
