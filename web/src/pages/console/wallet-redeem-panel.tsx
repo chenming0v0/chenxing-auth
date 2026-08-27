@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { apiFetch, type WalletRedeemResult } from '../../api'
-import { Button, Field, HudPanel, Notice } from '../../components/ui'
+import { Button, Field, HudPanel, Icon, Notice } from '../../components/ui'
 
 export function WalletRedeemPanel({ onRedeemed }: { onRedeemed: (result: WalletRedeemResult) => void }) {
   const [code, setCode] = useState('')
@@ -31,9 +31,16 @@ export function WalletRedeemPanel({ onRedeemed }: { onRedeemed: (result: WalletR
   }
 
   return (
-    <HudPanel as="section" aria-labelledby="wallet-redeem-title">
-      <h2 id="wallet-redeem-title" className="chenxing-h2">兑换辰星点</h2>
-      <p className="chenxing-caption mt-1.5">输入管理员发放的兑换码，余额会立即增加。</p>
+    <HudPanel as="section" aria-labelledby="wallet-redeem-title" className="flex flex-col">
+      <div className="flex items-start gap-3.5">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)] text-[var(--chenxing-cyan)]">
+          <Icon name="ticket" size={18} />
+        </span>
+        <div className="min-w-0">
+          <h2 id="wallet-redeem-title" className="chenxing-h2">兑换辰星点</h2>
+          <p className="chenxing-caption mt-1">输入管理员发放的兑换码，余额会立即增加。</p>
+        </div>
+      </div>
       <form className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-end" onSubmit={redeem}>
         <Field
           className="min-w-0 flex-1"
@@ -49,6 +56,7 @@ export function WalletRedeemPanel({ onRedeemed }: { onRedeemed: (result: WalletR
       </form>
       {message ? <div className="mt-4"><Notice tone="warning">{message}</Notice></div> : null}
       {success ? <div className="mt-4"><Notice tone="success">{success}</Notice></div> : null}
+      <p className="chenxing-caption mt-auto pt-5">兑换码由管理员发放，每张只能使用一次。</p>
     </HudPanel>
   )
 }

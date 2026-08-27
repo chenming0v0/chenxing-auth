@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiFetch, type QuotaAddon, type QuotaAddonPurchaseResult } from '../../api'
-import { Badge, Button, HudPanel, Notice } from '../../components/ui'
+import { Badge, Button, HudPanel, Icon, Notice } from '../../components/ui'
 import { useMutationLock } from '../../use-mutation-lock'
 
 function points(value: number): string { return value.toLocaleString('zh-CN') }
@@ -32,19 +32,37 @@ export function WalletAddonPanel({ onPurchased }: { onPurchased: () => void }) {
   }
 
   return (
-    <HudPanel className="mt-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div><p className="chenxing-caption">授权增量包</p><h2 className="chenxing-heading mt-2">增加日/月授权额度</h2></div>
+    <HudPanel as="section" aria-labelledby="wallet-addon-title" className="mt-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex items-start gap-3.5">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)] text-[var(--chenxing-cyan)]">
+            <Icon name="layers" size={18} />
+          </span>
+          <div className="min-w-0">
+            <h2 id="wallet-addon-title" className="chenxing-h2">授权增量包</h2>
+            <p className="chenxing-caption mt-1">增加当前套餐的日/月授权额度。</p>
+          </div>
+        </div>
         <Badge>随当前套餐周期生效</Badge>
       </div>
       {error ? <div className="mt-4"><Notice tone="warning">{error}</Notice></div> : null}
       {items?.length === 0 ? <p className="chenxing-caption mt-4">当前套餐没有可购买的增量包。</p> : null}
-      <div className="mt-4 grid gap-3 md:grid-cols-2">
-        {items?.map((item) => <div key={item.id} className="rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] p-4">
-          <div className="flex items-start justify-between gap-3"><div><p className="chenxing-body font-semibold">{item.name}</p><p className="chenxing-caption mt-1">{item.description || item.code}</p></div><p className="chenxing-mono text-[var(--chenxing-cyan)]">{points(item.price_points)} 点</p></div>
-          <p className="chenxing-caption mt-3">每日 +{points(item.daily_auth_limit)}，每月 +{points(item.monthly_auth_limit)}</p>
-          <Button className="mt-4" icon="plus" disabled={busy} onClick={() => void purchase(item)}>{busy ? '购买中…' : '购买增量包'}</Button>
-        </div>)}
+      <div className="mt-5 grid gap-3 md:grid-cols-2">
+        {items?.map((item) => (
+          <div key={item.id} className="flex flex-col rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.38)] p-4 transition-colors duration-200 hover:border-[var(--chenxing-border-strong)]">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="chenxing-body font-semibold">{item.name}</p>
+                <p className="chenxing-caption mt-1">{item.description || item.code}</p>
+              </div>
+              <p className="chenxing-mono shrink-0 text-[var(--chenxing-cyan)]">{points(item.price_points)} 点</p>
+            </div>
+            <p className="chenxing-caption mt-3">每日 +{points(item.daily_auth_limit)}，每月 +{points(item.monthly_auth_limit)}</p>
+            <div className="mt-4 pt-1">
+              <Button icon="plus" disabled={busy} onClick={() => void purchase(item)}>{busy ? '购买中…' : '购买增量包'}</Button>
+            </div>
+          </div>
+        ))}
       </div>
     </HudPanel>
   )
