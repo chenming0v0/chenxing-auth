@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { apiFetch, type InvitationCodeDetail } from '../../../api'
-import { Drawer } from '../../../components/drawer'
-import { Button, EmptyState, Notice } from '../../../components/ui'
-import { DataTable } from '../../../components/data-table'
+import { Drawer } from '@chenxing/ui'
+import { Button, EmptyState, Notice } from '@chenxing/ui'
+import { DataTable } from '@chenxing/ui'
 import { formatDate } from '../../../data'
 
 export function InvitationDetailDrawer({ codeId, onClose }: { codeId: number; onClose: () => void }) {

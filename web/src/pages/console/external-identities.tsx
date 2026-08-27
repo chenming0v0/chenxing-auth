@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiFetch, type ExternalIdentity, type ExternalIdentityListResponse, type PublicExternalProvider } from '../../api'
-import { useModalFocus } from '../../components/modal'
-import { Badge, Button, HudPanel, Icon, PasswordField } from '../../components/ui'
+import { useModalFocus } from '@chenxing/ui'
+import { Badge, Button, HudPanel, Icon, PasswordField } from '@chenxing/ui'
 import { safeRedirectTarget } from '../../safe-redirect'
 import type { MessageTone } from './profile-avatar'
 

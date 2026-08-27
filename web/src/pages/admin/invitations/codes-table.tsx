@@ -1,6 +1,6 @@
 import type { InvitationCodeSummary } from '../../../api'
-import { Badge, Button, EmptyState } from '../../../components/ui'
-import { DataTable } from '../../../components/data-table'
+import { Badge, Button, EmptyState } from '@chenxing/ui'
+import { DataTable } from '@chenxing/ui'
 import { formatDate } from '../../../data'
 import { issuanceStatus, issuanceStatusTone } from './helpers'
 

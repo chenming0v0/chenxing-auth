@@ -10,7 +10,7 @@ import { ConsoleOverview, ConsolePlans, ConsoleProfile, ConsoleWallet, Authorize
 import { IntegratePage, PlaygroundPage } from './pages/console/developer'
 import { AdminAudit, AdminClients, AdminDashboard, AdminInvitations, AdminOAuthProviders, AdminPlans, AdminUsers, AdminSettings } from './pages/admin'
 import { AuthPanel, AuthShell } from './components/shells'
-import { Button, Notice } from './components/ui'
+import { Button, Notice } from '@chenxing/ui'
 
 function AppContent() {
   const path = usePathname()

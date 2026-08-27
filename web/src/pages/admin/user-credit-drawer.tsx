@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { apiFetch, type WalletCreditResult } from '../../api'
-import { Drawer } from '../../components/drawer'
-import { Button, Field, HudPanel, Notice, TextAreaField } from '../../components/ui'
+import { Drawer } from '@chenxing/ui'
+import { Button, Field, HudPanel, Notice, TextAreaField } from '@chenxing/ui'
 import { useMutationLock } from '../../use-mutation-lock'
 
 const MAX_CREDIT_AMOUNT = 1_000_000_000

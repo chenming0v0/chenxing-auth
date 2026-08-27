@@ -1,5 +1,5 @@
-import { useModalFocus } from '../../components/modal'
-import { Button, Field, HudPanel, Icon, Notice, PasswordField } from '../../components/ui'
+import { useModalFocus } from '@chenxing/ui'
+import { Button, Field, HudPanel, Icon, Notice, PasswordField } from '@chenxing/ui'
 import type { FormEvent } from 'react'
 
 type EmailChangeDialogProps = {

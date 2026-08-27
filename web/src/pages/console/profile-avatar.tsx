@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { apiFetch, avatarUrl, type UserMe } from '../../api'
-import { AvatarContent, Button, Icon } from '../../components/ui'
-import { AvatarEditor } from '../../components/avatar-editor'
+import { AvatarContent, Button, Icon } from '@chenxing/ui'
+import { AvatarEditor } from '@chenxing/ui'
 import {
   ACCEPTED_UPLOAD_TYPES,
   localRejectionMessage,
@@ -10,7 +10,7 @@ import {
   rejectDecodedSize,
   rejectFileBeforeDecode,
   type SourceSize,
-} from '../../components/avatar-crop'
+} from '@chenxing/ui'
 
 export type MessageTone = 'success' | 'warning'
 

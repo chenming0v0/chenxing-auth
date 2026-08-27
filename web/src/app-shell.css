@@ -1,0 +1,198 @@
+/* ============================================================
+   chenxing-auth 应用专属外壳样式。
+   通用设计体系（面板/按钮/表单/顶栏/抽屉/背景层等）全部来自
+   @chenxing/ui 的 styles.css，这里只保留认证平台自己的外壳：
+   控制台侧栏与底栏、顶栏登录 CTA、状态点、进度条、紧凑标签、
+   全局滚动条与选区。不要把库里已有的样式复制回来。
+   ============================================================ */
+
+main {
+  position: relative;
+  min-height: 100vh;
+  /* clip (not hidden): hidden would make this a scroll container and break
+     position: sticky on the topbar; clip crops nebula overflow without that */
+  overflow: clip;
+  background: var(--chenxing-background);
+  isolation: isolate;
+}
+
+/* content column offset so fixed sidebar doesn't overlap (desktop only) */
+.chenxing-console-main { min-width: 0; }
+@media (min-width: 1024px) {
+  .chenxing-console-main { margin-left: 15rem; }
+}
+
+
+/* ---------- console shell: left sidebar (New API style) ---------- */
+.chenxing-sidebar {
+  position: fixed;
+  top: 0; left: 0; bottom: 0;
+  z-index: var(--chenxing-z-nav);
+  display: flex;
+  flex-direction: column;
+  width: 15rem;
+  padding: 1.25rem 0.9rem;
+  background: linear-gradient(180deg, rgba(9, 15, 28, 0.92), rgba(5, 8, 17, 0.94));
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  border-right: 1px solid var(--chenxing-border);
+}
+.chenxing-sidebar-scroll { flex: 1; overflow-y: auto; }
+.chenxing-nav-label {
+  padding: 0 0.75rem;
+  margin-top: 1.1rem;
+  margin-bottom: 0.4rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.9375rem;
+  letter-spacing: 0.08em;
+  color: var(--chenxing-muted-foreground);
+}
+.chenxing-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.6rem 0.75rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--chenxing-muted-foreground);
+  border-radius: var(--chenxing-radius-md);
+  transition: color 0.18s, background 0.18s;
+  cursor: pointer;
+}
+.chenxing-nav-item:hover { color: var(--chenxing-foreground); background: var(--chenxing-muted); }
+.chenxing-nav-item[aria-current="page"],
+.chenxing-nav-item.is-active {
+  color: var(--chenxing-foreground);
+  background: var(--chenxing-primary-soft);
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.28);
+}
+.chenxing-nav-item[aria-current="page"]::before,
+.chenxing-nav-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: -0.9rem;
+  top: 50%;
+  height: 1.4rem;
+  width: 3px;
+  transform: translateY(-50%);
+  border-radius: 0 var(--chenxing-radius-pill) var(--chenxing-radius-pill) 0;
+  background: linear-gradient(180deg, var(--chenxing-primary), var(--chenxing-cyan));
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.7);
+}
+.chenxing-nav-item[aria-current="page"] i,
+.chenxing-nav-item.is-active i { color: var(--chenxing-cyan); }
+
+
+/* 顶栏登录入口：lamalama 右侧只有汉堡，但本项目是认证平台，登录是回访用户的
+   主路径，藏进汉堡是功能退步。折中为无填充的幽灵胶囊——让出密度，保留入口。 */
+.chenxing-topbar-cta {
+  display: inline-flex;
+  align-items: center;
+  height: calc(2 * var(--cx-u));
+  padding: 0 calc(0.85 * var(--cx-u));
+  font-family: var(--chenxing-font-body);
+  font-size: calc(0.75 * var(--cx-u));
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  color: var(--chenxing-cyan);
+  border: 1px solid rgba(103, 232, 249, 0.32);
+  border-radius: var(--chenxing-radius-pill);
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+.chenxing-topbar-cta:hover {
+  background: var(--chenxing-cyan-soft);
+  border-color: rgba(103, 232, 249, 0.55);
+}
+.chenxing-status-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  flex-shrink: 0;
+  border-radius: var(--chenxing-radius-full);
+  background: var(--chenxing-success);
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.9);
+}
+
+
+/* ---------- console shell: mobile bottom tab bar ---------- */
+.chenxing-bottom-nav {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: var(--chenxing-z-nav);
+  display: flex;
+  gap: 0.15rem;
+  padding: 0.4rem 0.5rem calc(0.4rem + env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, rgba(6, 10, 20, 0.82), rgba(4, 6, 13, 0.96));
+  backdrop-filter: blur(20px) saturate(1.5);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  border-top: 1px solid var(--chenxing-border);
+}
+.chenxing-bottom-tab {
+  flex: 1;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.45rem 0.2rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.625rem;
+  color: var(--chenxing-muted-foreground);
+  border-radius: var(--chenxing-radius-md);
+  transition: color 0.2s, background 0.2s;
+  cursor: pointer;
+}
+.chenxing-bottom-tab[aria-current="page"],
+.chenxing-bottom-tab.is-active {
+  color: var(--chenxing-cyan);
+  background: var(--chenxing-cyan-soft);
+}
+
+/* ---------- console shell: progress meter ---------- */
+.chenxing-meter {
+  height: 8px;
+  width: 100%;
+  overflow: hidden;
+  background: rgba(4, 8, 16, 0.6);
+  border: 1px solid var(--chenxing-input);
+  border-radius: var(--chenxing-radius-pill);
+}
+.chenxing-meter-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--chenxing-primary), var(--chenxing-cyan));
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.5);
+}
+
+
+/* subtle scrollbar */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: #04060d; }
+::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #1e4b8a, #0f2b52); border-radius: 99px; border: 2px solid #04060d; }
+::-webkit-scrollbar-thumb:hover { background: #2a6bb8; }
+::selection { background: rgba(56, 189, 248, 0.4); color: #fff; }
+
+
+/* ---------- compact rounded-rect tags (content-sized, subtle border + dark fill) ---------- */
+/* Unlike pill chips/badges: small 8px radius; width always hugs the text. */
+.chenxing-tag,
+.chenxing-tag-success,
+.chenxing-tag-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: fit-content;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  padding: 0.3rem 0.65rem;
+  border-radius: var(--chenxing-radius-sm);
+  color: #a5c8ff;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(147, 197, 253, 0.28);
+}
+.chenxing-tag-success { color: #46e0a1; background: rgba(52, 211, 153, 0.1); border-color: rgba(52, 211, 153, 0.32); }
+.chenxing-tag-warning { color: var(--chenxing-warning); background: rgba(251, 191, 36, 0.09); border-color: rgba(251, 191, 36, 0.32); }

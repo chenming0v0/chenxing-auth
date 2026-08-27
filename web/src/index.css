@@ -1,12 +1,12 @@
 @import "tailwindcss";
-@import "./chenxing-design-foundation.css";
-@import "./chenxing-design.css";
-@import "./chenxing-design-shell.css";
-@import "./chenxing-design-shell-drawer.css";
-@import "./chenxing-design-shell-components.css";
-@import "./chenxing-design-controls.css";
+/* 设计体系唯一来源：@chenxing/ui（token、面板、控件、顶栏、背景层、动效样式）。
+   组件 TSX 内的 Tailwind 工具类由下方 @source 扫描库源码生成。 */
+@import "@chenxing/ui/styles.css";
+@import "./app-shell.css";
 @import "./oauth.css";
 @import "./landing.css";
+
+@source "../node_modules/@chenxing/ui/src";
 
 /* ============================================================
    自托管字体（不得改回 Google Fonts CDN）
@@ -18,7 +18,7 @@
 
    中文（CJK）刻意不自托管：Noto Sans SC 的完整字符集被切成 101 个
    unicode-range 分片 × 5 个字重 = 505 个 woff2，数 MB 级别，不适合入库。
-   中文改走系统字体栈（见 chenxing-design.css 的 --chenxing-font-* ），
+   中文改走系统字体栈（见 @chenxing/ui foundation.css 的 --chenxing-font-* ），
    这是国内站点的通行做法。
 
    字重、unicode-range 和 font-display 与 Google 原始 CSS 保持一致，
@@ -167,30 +167,12 @@
     outline: 2px solid var(--chenxing-cyan);
     outline-offset: 3px;
   }
-  /* .chenxing-field-shell 内裸控件的样式只在 chenxing-design.css 里定义：
+  /* .chenxing-field-shell 内裸控件的样式只在 @chenxing/ui 的 components.css 里定义：
      无 @layer 的规则优先级高于任何 @layer，这里重复一份永远不会生效。 */
   .no-scrollbar::-webkit-scrollbar { display: none; }
   .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 }
 
-.cx-space-root {
-  position: relative;
-  min-height: 100vh;
-  /* clip (not hidden): hidden creates a scroll container and breaks the
-     sticky topbar; clip still crops nebula/starfield overflow */
-  overflow: clip;
-  /* clip 不建立 BFC，topbar 的 margin-top 会穿透到 main 外，把整页下推并在
-     视口顶部露出一条没有星空/网格的裸背景死区；flow-root 把外边距收回 main 内 */
-  display: flow-root;
-  background: var(--chenxing-background);
-  isolation: isolate;
-}
-.cx-space-root > canvas,
-.cx-space-root > .chenxing-nebula,
-.cx-space-root > .chenxing-grid,
-.cx-space-root > .chenxing-vignette {
-  pointer-events: none;
-}
 .cx-space-root.console-shell .chenxing-sidebar {
   display: none;
 }
@@ -247,43 +229,7 @@
 .chenxing-console-content {
   width: 100%;
 }
-.cx-alert {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.75rem;
-  border-radius: var(--chenxing-radius-md);
-  border: 1px solid rgba(255, 107, 122, 0.35);
-  background: rgba(255, 107, 122, 0.08);
-  padding: 0.75rem 1rem;
-}
-.cx-alert-info {
-  border-color: rgba(103, 232, 249, 0.3);
-  background: var(--chenxing-cyan-soft);
-}
-.cx-alert-success {
-  border-color: rgba(52, 211, 153, 0.3);
-  background: rgba(52, 211, 153, 0.08);
-}
-.cx-alert-warning {
-  border-color: rgba(251, 191, 36, 0.3);
-  background: rgba(251, 191, 36, 0.08);
-}
-.cx-copy-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  width: 100%;
-  border: 1px solid var(--chenxing-border);
-  border-radius: var(--chenxing-radius-md);
-  background: rgba(4, 8, 16, 0.55);
-  padding: 0.7rem 0.9rem;
-  color: var(--chenxing-ice);
-  font-family: var(--chenxing-font-mono);
-  font-size: 0.78rem;
-  text-align: left;
-}
-.cx-copy-row:hover { border-color: var(--chenxing-border-strong); }
+
 .cx-auth-tabs {
   display: flex;
   gap: 0.25rem;
@@ -313,56 +259,7 @@
   cursor: pointer;
 }
 .cx-check input { accent-color: var(--chenxing-primary); width: 1rem; height: 1rem; }
-.cx-table-wrap {
-  overflow-x: auto;
-  border: 1px solid var(--chenxing-border);
-  border-radius: var(--chenxing-radius-md);
-}
-.cx-table {
-  width: 100%;
-  border-collapse: collapse;
-  text-align: left;
-}
-.cx-table th,
-.cx-table td {
-  padding: 0.85rem 1rem;
-  vertical-align: middle;
-}
-/* 表头排版是表格规范的一部分，不靠页面逐个 <th> 重复 chenxing-label */
-.cx-table thead th {
-  font-family: var(--chenxing-font-display);
-  font-size: 0.9375rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  color: var(--chenxing-muted-foreground);
-}
-.cx-table thead tr {
-  border-bottom: 1px solid var(--chenxing-border);
-  background: rgba(4, 8, 16, 0.5);
-}
-.cx-table tbody tr {
-  border-top: 1px solid var(--chenxing-border);
-  transition: background 0.15s;
-}
-.cx-table tbody tr:hover { background: var(--chenxing-muted); }
-/* 空态行不是数据行：不参与 hover 反馈，并给 EmptyState 留出与独立空态一致的高度 */
-.cx-table tbody tr.cx-table-empty-row:hover { background: transparent; }
-.cx-table-empty {
-  padding: 2.5rem 1rem;
-  text-align: center;
-  color: var(--chenxing-muted-foreground);
-  font-size: 0.875rem;
-}
-.cx-table-empty .cx-empty { min-height: 0; }
-.cx-empty {
-  display: grid;
-  place-items: center;
-  gap: 0.75rem;
-  min-height: 12rem;
-  text-align: center;
-  color: var(--chenxing-muted-foreground);
-}
-.cx-empty strong { color: var(--chenxing-foreground); font-size: 1rem; }
+
 
 
       /* Google-like OAuth shell on Chenxing glass + side highlights */

@@ -1,5 +1,5 @@
 import { useId } from 'react'
-import { Icon, Switch } from '../../components/ui'
+import { Icon, Switch } from '@chenxing/ui'
 import { permissionChoices, type OAuthPermission } from '../../oauth-permissions'
 
 const HINT = '勾选后，授权确认页会向用户展示这些权限。至少选择一项。'

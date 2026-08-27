@@ -7,9 +7,9 @@ import {
   type OwnedOAuthClient,
   type RegisteredOwnedOAuthClient,
 } from '../../api'
-import { Drawer } from '../../components/drawer'
-import { SelectField } from '../../components/select'
-import { Button, Field, HudPanel, Icon, Notice, TextAreaField } from '../../components/ui'
+import { Drawer } from '@chenxing/ui'
+import { SelectField } from '@chenxing/ui'
+import { Button, Field, HudPanel, Icon, Notice, TextAreaField } from '@chenxing/ui'
 import { DEFAULT_SELECTED_SCOPES } from '../../oauth-permissions'
 import { useMutationLock } from '../../use-mutation-lock'
 import {

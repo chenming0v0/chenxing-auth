@@ -1,8 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import { apiFetch, type AdminPlan, type AdminPlanInput, type BillingPeriod } from '../../api'
-import { Drawer } from '../../components/drawer'
-import { Button, Field, HudPanel, Notice, TextAreaField, ToggleRow } from '../../components/ui'
-import { SelectField } from '../../components/select'
+import { Drawer } from '@chenxing/ui'
+import { Button, Field, HudPanel, Notice, TextAreaField, ToggleRow } from '@chenxing/ui'
+import { SelectField } from '@chenxing/ui'
 import { useMutationLock } from '../../use-mutation-lock'
 
 const CODE_PATTERN = /^[a-z0-9_-]{1,64}$/

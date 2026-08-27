@@ -2,8 +2,8 @@
 
 ## Source of truth
 
-- CSS: `web/src/chenxing-design.css` -> `.chenxing-hud-panel`
-- React component: `web/src/components/ui.tsx` -> `HudPanel`
+- CSS: `@chenxing/ui` -> `src/styles/components.css` -> `.chenxing-hud-panel`（库仓库 https://github.com/chenming0v0/chenxing-ui ）
+- React component: `@chenxing/ui` -> `HudPanel`
 - Prototype drafts (design branch only): `design-auth-chengming/DESIGN.md`
 
 ## CSS contract
@@ -31,8 +31,8 @@ export function HudPanel({ children, className = '' }: { children: ReactNode; cl
 
 ## Workflow
 
-1. Add or update `.chenxing-hud-panel` in `web/src/chenxing-design.css`.
-2. Use `HudPanel` from `web/src/components/ui.tsx` in pages; never hand-roll the class.
+1. Add or update `.chenxing-hud-panel` in the chenxing-ui repo (`src/styles/components.css`), then update the locked dependency in `web/package-lock.json`.
+2. Use `HudPanel` from `@chenxing/ui` in pages; never hand-roll the class.
 3. Rebuild the frontend so `web/dist` matches the source:
 
 ```bash

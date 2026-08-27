@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type KeyboardEvent } from 'react'
 import { ApiError, apiFetch, type EmailPolicySetting, type UpdateEmailPolicySetting } from '../../../api'
-import { Button, Chip, Field, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
+import { Button, Chip, Field, HudPanel, Icon, Notice, ToggleRow } from '@chenxing/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
 const MAX_ALLOWED_DOMAINS = 128

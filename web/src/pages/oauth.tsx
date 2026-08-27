@@ -10,7 +10,7 @@ import {
   type PendingAuthorization,
 } from '../api'
 import { OAuthShell } from '../components/shells'
-import { BrandMark, HudPanel, Icon, Notice } from '../components/ui'
+import { BrandMark, HudPanel, Icon, Notice } from '@chenxing/ui'
 import { initialOf } from '../data'
 import { permissionMeta } from '../oauth-permissions'
 import { safeRedirectTarget } from '../safe-redirect'

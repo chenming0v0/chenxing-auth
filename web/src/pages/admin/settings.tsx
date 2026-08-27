@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { apiFetch, type KeyRotationResponse } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Button, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { Button, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
 import { AdminGate, useAdminAccess, type AdminAccess } from './shared'
 import { EmailPolicyPanel } from './settings/email-policy-panel'
 import { PasskeyPanel } from './settings/passkey-panel'

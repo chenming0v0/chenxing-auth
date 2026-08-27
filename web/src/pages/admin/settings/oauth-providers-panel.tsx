@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { apiFetch, type OAuthProviderSummary } from '../../../api'
-import { Badge, Button, EmptyState, Icon, Notice } from '../../../components/ui'
-import { DataTable, TablePanel } from '../../../components/data-table'
+import { Badge, Button, EmptyState, Icon, Notice } from '@chenxing/ui'
+import { DataTable, TablePanel } from '@chenxing/ui'
 import { OAuthProviderFormDialog, toInput, type ProviderForm } from './oauth-provider-form-dialog'
 import { useSettingsResource, type SettingsPanelProps } from './panel'
 

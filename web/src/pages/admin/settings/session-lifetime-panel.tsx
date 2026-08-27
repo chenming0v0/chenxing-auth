@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { apiFetch, type SessionLifetimeSetting } from '../../../api'
-import { Button, Field, HudPanel, Icon, Notice } from '../../../components/ui'
+import { Button, Field, HudPanel, Icon, Notice } from '@chenxing/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, validateIntegerWithinRange, type SettingsPanelProps } from './panel'
 
 const MAX_SESSION_TTL_SECONDS = 90 * 24 * 60 * 60

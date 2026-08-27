@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { Link } from '../router'
 import { AuthShell } from '../components/shells'
-import { BrandMark, HudPanel, Icon } from '../components/ui'
-import { CountUp, DrawLine, Reveal, Typewriter, usePrefersReducedMotion } from '../components/motion'
-import { WarpField } from '../components/space'
-import { IntroGate } from '../components/intro-gate'
+import { BrandMark, HudPanel, Icon } from '@chenxing/ui'
+import { CountUp, DrawLine, Reveal, Typewriter, usePrefersReducedMotion } from '@chenxing/ui'
+import { WarpField } from '@chenxing/ui'
+import { IntroGate } from '@chenxing/ui'
 
 const stats = [
   { target: 12.8, decimals: 1, suffix: 'M', label: '已签发通行证' },

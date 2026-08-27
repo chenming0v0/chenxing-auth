@@ -4,9 +4,9 @@ import {
   apiFetch, type AdminUserQueryItem, type Paged, type PublicUser,
 } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Avatar, Badge, Button, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
-import { DataTable, TablePagination } from '../../components/data-table'
-import { Select } from '../../components/select'
+import { Avatar, Badge, Button, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
+import { DataTable, TablePagination } from '@chenxing/ui'
+import { Select } from '@chenxing/ui'
 import { formatDate } from '../../data'
 import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
 import { AssignPlanDrawer } from './plan-assign'

@@ -1,8 +1,8 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import type { OAuthProviderInput, OAuthProviderSummary } from '../../../api'
-import { useModalFocus } from '../../../components/modal'
-import { Button, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '../../../components/ui'
-import { SelectField } from '../../../components/select'
+import { useModalFocus } from '@chenxing/ui'
+import { Button, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '@chenxing/ui'
+import { SelectField } from '@chenxing/ui'
 import { useDirtyReport } from './panel'
 
 export type ProviderForm = {

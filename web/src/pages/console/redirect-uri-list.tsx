@@ -1,5 +1,5 @@
 import { forwardRef, useImperativeHandle, useState, type KeyboardEvent } from 'react'
-import { Button, Field, Icon } from '../../components/ui'
+import { Button, Field, Icon } from '@chenxing/ui'
 import { REDIRECT_URI_RULE_MESSAGE, redirectUriProblem } from './developer-shared'
 
 /** 与后端 `DEFAULT_MAX_REDIRECT_URIS` 对齐；前端只做即时拒绝，服务端仍是权威上限。 */

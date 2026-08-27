@@ -383,7 +383,7 @@
         font-size: 22px;
       }
       /* 传输动画右端的接入应用标记：比左端辰星标记多一层天蓝渐变。
-         这三个 alpha 档位在 chenxing-design.css 里没有对应 token
+         这三个 alpha 档位在 @chenxing/ui 的 token 里没有对应值
          （最近的是 --chenxing-primary / --chenxing-primary-soft 0.16 /
          --chenxing-border-strong 0.36，透明度和色相都不同），按“不新造 token”
          的约束保留字面值，与同文件 .oauth-app-mark 的写法一致。

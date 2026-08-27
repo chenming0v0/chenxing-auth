@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { ApiError, apiFetch, type IssuerSettingResponse, type RegistrationSetting } from '../../../api'
-import { Button, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
+import { Button, HudPanel, Icon, Notice, ToggleRow } from '@chenxing/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
 /**

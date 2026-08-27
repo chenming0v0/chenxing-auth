@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { apiFetch, type CatalogPlan, type WalletPurchaseResult } from '../../api'
-import { Drawer } from '../../components/drawer'
-import { Badge, Button, Chip, HudPanel, Notice } from '../../components/ui'
+import { Drawer } from '@chenxing/ui'
+import { Badge, Button, Chip, HudPanel, Notice } from '@chenxing/ui'
 import { useMutationLock } from '../../use-mutation-lock'
 
 const BILLING_LABEL: Record<string, string> = {

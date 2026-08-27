@@ -1,6 +1,6 @@
 import type { FormEvent, ReactNode } from 'react'
 import type { SecurityFactorSummary, SecurityTotpStart } from '../../api'
-import { Badge, Button, Icon } from '../../components/ui'
+import { Badge, Button, Icon } from '@chenxing/ui'
 import { TotpEnrollmentDialog } from './totp-enrollment-dialog'
 
 export type SecurityFactorState =

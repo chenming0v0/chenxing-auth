@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { apiFetch, type AdminMeResponse } from '../../api'
-import { HudPanel, Notice } from '../../components/ui'
+import { HudPanel, Notice } from '@chenxing/ui'
 
 export type AdminAccess = { data: AdminMeResponse | null; loading: boolean; error: string }
 

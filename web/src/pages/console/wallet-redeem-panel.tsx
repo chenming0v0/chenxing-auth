@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { apiFetch, type WalletRedeemResult } from '../../api'
-import { Button, Field, HudPanel, Icon, Notice } from '../../components/ui'
+import { Button, Field, HudPanel, Icon, Notice } from '@chenxing/ui'
 
 export function WalletRedeemPanel({ onRedeemed }: { onRedeemed: (result: WalletRedeemResult) => void }) {
   const [code, setCode] = useState('')

@@ -1,5 +1,5 @@
-import { Badge } from '../../components/ui'
-import type { SelectOption } from '../../components/select'
+import { Badge } from '@chenxing/ui'
+import type { SelectOption } from '@chenxing/ui'
 
 /** 与 `src/audit/classification.rs` 的 SecurityEventSeverity 对齐。 */
 export type AuditSeverity = 'info' | 'notice' | 'warning' | 'critical'

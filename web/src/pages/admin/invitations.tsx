@@ -7,8 +7,8 @@ import {
   type WalletRedemptionCardSummary,
 } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Button, Icon, Notice, PageIntro } from '../../components/ui'
-import { TablePanel } from '../../components/data-table'
+import { Button, Icon, Notice, PageIntro } from '@chenxing/ui'
+import { TablePanel } from '@chenxing/ui'
 import { AdminGate, useAdminAccess } from './shared'
 import { InvitationCodesTable } from './invitations/codes-table'
 import { WalletCardsTable } from './invitations/cards-table'
