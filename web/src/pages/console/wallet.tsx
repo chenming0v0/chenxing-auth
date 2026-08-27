@@ -104,12 +104,12 @@ export function ConsoleWallet() {
   )
 }
 
-/** 统计条单元格：小图标 + 标签在上，数值主体在中，说明在下。 */
+/** 统计条单元格：小图标 + 标签在上，数值主体在中，可选说明在下。 */
 function StatCell({ icon, tone = 'cyan', label, sub, children }: {
   icon: string
   tone?: 'cyan' | 'gold'
   label: string
-  sub: string
+  sub?: string
   children: React.ReactNode
 }) {
   const toneClass = tone === 'gold' ? 'text-[var(--chenxing-gold)]' : 'text-[var(--chenxing-cyan)]'
@@ -123,7 +123,7 @@ function StatCell({ icon, tone = 'cyan', label, sub, children }: {
       </div>
       {/* min-h 让三格数值底线对齐：余额/条数是大号数字，套餐名字号更小 */}
       <div className="mt-4 flex min-h-[2.75rem] items-end">{children}</div>
-      <p className="chenxing-caption mt-2">{sub}</p>
+      {sub ? <p className="chenxing-caption mt-2">{sub}</p> : null}
     </div>
   )
 }
@@ -164,7 +164,7 @@ function WalletStatsStrip({ refreshKey, planState, ledgerTotal }: {
     <HudPanel>
       {error ? <div className="mb-5"><Notice tone="warning">{error}</Notice></div> : null}
       <div className="grid divide-y divide-[var(--chenxing-border)] sm:grid-cols-3 sm:divide-y-0 sm:divide-x">
-        <StatCell icon="wallet" label="当前余额" sub="不是真实货币，购买套餐会扣除对应点数">
+        <StatCell icon="wallet" label="当前余额">
           <p className="chenxing-display text-aurora text-4xl font-bold tabular-nums" aria-label={label}>
             {loading ? '—' : amount}
             <span className="chenxing-body ml-2 text-sm font-medium text-[var(--chenxing-muted-foreground)]">辰星点</span>
@@ -173,7 +173,7 @@ function WalletStatsStrip({ refreshKey, planState, ledgerTotal }: {
         <StatCell icon="crown" tone="gold" label="当前套餐" sub={planSub}>
           <p className="chenxing-display truncate text-2xl font-semibold" title={planName}>{planName}</p>
         </StatCell>
-        <StatCell icon="receipt" label="账单记录" sub="充值、购买与调整明细">
+        <StatCell icon="receipt" label="账单记录">
           <p className="chenxing-display text-4xl font-bold tabular-nums">
             {ledgerTotal === null ? '—' : formatPoints(ledgerTotal)}
             <span className="chenxing-body ml-2 text-sm font-medium text-[var(--chenxing-muted-foreground)]">条</span>
@@ -216,8 +216,7 @@ function WalletSubscriptionPanel({ planState, onPurchase }: {
           </p>
         )}
       </div>
-      <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
-        <p className="chenxing-caption">购买会从余额扣除对应辰星点数。</p>
+      <div className="mt-5 flex justify-end">
         <Button icon="crown" onClick={onPurchase}>购买订阅</Button>
       </div>
     </HudPanel>

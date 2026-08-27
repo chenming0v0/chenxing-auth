@@ -40,7 +40,6 @@ export function WalletAddonPanel({ onPurchased }: { onPurchased: () => void }) {
           </span>
           <div className="min-w-0">
             <h2 id="wallet-addon-title" className="chenxing-h2">授权增量包</h2>
-            <p className="chenxing-caption mt-1">增加当前套餐的日/月授权额度。</p>
           </div>
         </div>
         <Badge>随当前套餐周期生效</Badge>

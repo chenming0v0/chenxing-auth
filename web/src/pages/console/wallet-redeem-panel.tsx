@@ -59,7 +59,6 @@ export function WalletRedeemPanel({ onRedeemed }: { onRedeemed: (result: WalletR
       </form>
       {message ? <div className="mt-4"><Notice tone="warning">{message}</Notice></div> : null}
       {success ? <div className="mt-4"><Notice tone="success">{success}</Notice></div> : null}
-      <p className="chenxing-caption mt-auto pt-5">兑换码由管理员发放，每张只能使用一次。</p>
     </HudPanel>
   )
 }
