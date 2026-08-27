@@ -86,9 +86,13 @@ describe('兑换卡', () => {
 
     await screen.findByText('请立即保存以下兑换码，离开后无法再次查看明文。')
     expect(screen.getByText('wallet-plain-once')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '复制全部' })).toBeTruthy()
+    // 抽屉卸载会解除背景 inert；明文在页面上，必须等 dialog 消失后
+    // 复制按钮才进无障碍树，否则 getByRole 会打到仍被 aria-hidden 的节点。
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull()
+      expect(screen.getByRole('button', { name: '复制全部' })).toBeTruthy()
+    })
     expect(screen.getByRole('button', { name: '导出 CSV（明文，仅此次）' })).toBeTruthy()
-    expect(screen.queryByRole('dialog')).toBeNull()
     await screen.findByText('#22')
     expect(screen.getByText('50 点')).toBeTruthy()
     expect(screen.getByRole('tab', { name: '兑换卡' }).getAttribute('aria-selected')).toBe('true')

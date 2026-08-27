@@ -108,9 +108,13 @@ describe('邀请码独立页', () => {
     fireEvent.submit(dialog.querySelector('form') as HTMLFormElement)
     await screen.findByText('请立即保存以下邀请码，离开后无法再次查看明文。')
     expect(screen.getByText('invite-plain-once')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '复制全部' })).toBeTruthy()
+    // 抽屉卸载会解除背景 inert；明文在页面上，必须等 dialog 消失后
+    // 复制按钮才进无障碍树，否则 getByRole 会打到仍被 aria-hidden 的节点。
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull()
+      expect(screen.getByRole('button', { name: '复制全部' })).toBeTruthy()
+    })
     expect(screen.getByRole('button', { name: '导出 CSV（明文，仅此次）' })).toBeTruthy()
-    expect(screen.queryByRole('dialog')).toBeNull()
 
     fireEvent.click(screen.getByRole('tab', { name: '兑换卡' }))
     await screen.findByText('还没有兑换卡')
