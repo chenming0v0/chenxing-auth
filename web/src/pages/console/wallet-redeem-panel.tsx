@@ -41,18 +41,21 @@ export function WalletRedeemPanel({ onRedeemed }: { onRedeemed: (result: WalletR
           <p className="chenxing-caption mt-1">输入管理员发放的兑换码，余额会立即增加。</p>
         </div>
       </div>
+      {/* Field 的 className 落在内层 input 上，弹性伸缩必须交给这里的包装层，
+          否则表单行会缩成内容宽、按钮悬在卡片中部留出大片空白。 */}
       <form className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-end" onSubmit={redeem}>
-        <Field
-          className="min-w-0 flex-1"
-          label="兑换码"
-          icon="ticket"
-          value={code}
-          onChange={(event) => setCode(event.target.value)}
-          placeholder="输入兑换码"
-          autoComplete="one-time-code"
-          disabled={busy}
-        />
-        <Button type="submit" icon="zap" disabled={busy}>{busy ? '兑换中…' : '立即兑换'}</Button>
+        <div className="min-w-0 flex-1">
+          <Field
+            label="兑换码"
+            icon="ticket"
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            placeholder="输入兑换码"
+            autoComplete="one-time-code"
+            disabled={busy}
+          />
+        </div>
+        <Button type="submit" icon="zap" className="shrink-0" disabled={busy}>{busy ? '兑换中…' : '立即兑换'}</Button>
       </form>
       {message ? <div className="mt-4"><Notice tone="warning">{message}</Notice></div> : null}
       {success ? <div className="mt-4"><Notice tone="success">{success}</Notice></div> : null}
