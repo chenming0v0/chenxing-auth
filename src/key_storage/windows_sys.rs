@@ -38,21 +38,32 @@ use windows_sys::{
             BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY,
             FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
             FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-            FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE,
-            FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FileDispositionInfo, FileRenameInfo,
-            GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE,
-            SetFileInformationByHandle, WRITE_DAC,
+            FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FILE_TRAVERSE, FileDispositionInfo, GetFileInformationByHandle,
+            OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle, WRITE_DAC,
         },
         System::IO::IO_STATUS_BLOCK,
     },
 };
 
 use super::policy::{FileInode, invalid_storage_path};
-use super::windows_acl::ProtectedSd;
 use super::windows_policy::{PathKind, reparse_point_rejected};
+use super::windows_sd::ProtectedSd;
 
 const OBJ_CASE_INSENSITIVE: u32 = 0x40;
 
+/// 打开“仅遍历/校验”的已存在目录。
+///
+/// 请求 WRITE_DAC 或 DELETE 会把启动成败绑定到其它进程的句柄共享意愿上：
+/// 任何不带 FILE_SHARE_DELETE 持有该目录的程序（终端、IDE、索引器、资源
+/// 管理器）都会让我们拿到 SHARING_VIOLATION；非管理员对卷根请求 WRITE_DAC
+/// 则直接 ACCESS_DENIED。纯读路径只需要列目录、穿越和读属性；要改安全
+/// 描述符或增删子项的创建路径继续用 [`dir_access`]。
+pub(super) fn dir_read_access() -> u32 {
+    FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE
+}
+
+/// 打开“本进程要向其中创建子项或修改其安全描述符”的目录。
 pub(super) fn dir_access() -> u32 {
     FILE_LIST_DIRECTORY
         | FILE_ADD_FILE
@@ -85,7 +96,7 @@ pub(super) fn open_dir_path(path: &Path) -> io::Result<File> {
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
-            dir_access(),
+            dir_read_access(),
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             ptr::null(),
             OPEN_EXISTING,
@@ -147,37 +158,6 @@ pub(super) fn open_relative(
         return Err(map_ntstatus(status));
     }
     file_from_handle(handle)
-}
-
-pub(super) fn rename_in_dir(
-    file: &File,
-    parent: &File,
-    new_name: &str,
-    replace: bool,
-) -> io::Result<()> {
-    validate_basename(OsStr::new(new_name))?;
-    let mut wide: Vec<u16> = new_name.encode_utf16().collect();
-    wide.push(0);
-    let name_bytes = (wide.len() - 1) * 2;
-    let extra = name_bytes.saturating_sub(2);
-    let size = mem::size_of::<FILE_RENAME_INFO>() + extra;
-    let align = mem::align_of::<FILE_RENAME_INFO>();
-    let mut storage = vec![0u8; size + align];
-    let offset = storage.as_ptr() as usize % align;
-    let aligned = if offset == 0 { 0 } else { align - offset };
-    let info = unsafe { storage.as_mut_ptr().add(aligned).cast::<FILE_RENAME_INFO>() };
-    unsafe {
-        (*info).Anonymous.ReplaceIfExists = replace;
-        (*info).RootDirectory = raw_handle(parent);
-        (*info).FileNameLength = name_bytes as u32;
-        ptr::copy_nonoverlapping(wide.as_ptr(), (*info).FileName.as_mut_ptr(), wide.len());
-        let ok =
-            SetFileInformationByHandle(raw_handle(file), FileRenameInfo, info.cast(), size as u32);
-        if ok == 0 {
-            return Err(map_last_error());
-        }
-    }
-    Ok(())
 }
 
 pub(super) fn dispose_file(file: &File) -> io::Result<()> {
@@ -329,7 +309,7 @@ fn os_name_to_wide(name: &OsStr) -> io::Result<Vec<u16>> {
     Ok(name.encode_wide().collect())
 }
 
-fn validate_basename(name: &OsStr) -> io::Result<()> {
+pub(super) fn validate_basename(name: &OsStr) -> io::Result<()> {
     if name.is_empty() || name == "." || name == ".." {
         return Err(invalid_storage_path());
     }
@@ -364,7 +344,7 @@ fn map_ntstatus(status: NTSTATUS) -> io::Error {
     map_dos(dos)
 }
 
-fn map_last_error() -> io::Error {
+pub(super) fn map_last_error() -> io::Error {
     map_dos(unsafe { GetLastError() })
 }
 

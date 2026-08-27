@@ -33,6 +33,10 @@ mod windows;
 #[cfg(windows)]
 mod windows_acl;
 #[cfg(windows)]
+mod windows_rename;
+#[cfg(windows)]
+mod windows_sd;
+#[cfg(windows)]
 mod windows_sys;
 
 #[cfg(not(any(unix, windows)))]
