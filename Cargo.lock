@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "chenxing-auth"
-version = "1.1.21"
+version = "1.1.22"
 dependencies = [
  "aes-gcm",
  "argon2",
