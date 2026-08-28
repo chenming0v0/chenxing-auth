@@ -1,6 +1,6 @@
 import type { WalletRedemptionCardSummary } from '../../../api'
-import { Badge, Button, EmptyState } from '@chenxing/ui'
-import { DataTable } from '@chenxing/ui'
+import { Badge, EmptyState } from '@chenxing/ui'
+import { DataTable, RowAction, RowActions } from '@chenxing/ui'
 import { formatDate } from '../../../data'
 import { issuanceStatus, issuanceStatusTone } from './helpers'
 
@@ -34,15 +34,15 @@ export function WalletCardsTable({ cards, busyId, onDisable, onOpen }: Props) {
             <td className="chenxing-mono text-xs">{item.use_count}/{item.max_uses}</td>
             <td><Badge tone={issuanceStatusTone(status)}>{status}</Badge></td>
             <td className="chenxing-caption">{formatDate(item.created_at)}</td>
-            <td className="text-right" onClick={(event) => event.stopPropagation()}>
-              <Button
-                variant="danger"
+            <RowActions>
+              <RowAction
+                tone="danger"
                 disabled={busyId === item.id || Boolean(item.disabled_at)}
                 onClick={() => onDisable(item.id)}
               >
                 停用
-              </Button>
-            </td>
+              </RowAction>
+            </RowActions>
           </tr>
         )
       })}

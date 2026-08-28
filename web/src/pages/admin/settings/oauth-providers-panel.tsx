@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { apiFetch, type OAuthProviderSummary } from '../../../api'
 import { Badge, Button, EmptyState, Icon, Notice } from '@chenxing/ui'
-import { DataTable, TablePanel } from '@chenxing/ui'
+import { DataTable, RowAction, RowActions, TablePanel } from '@chenxing/ui'
 import { OAuthProviderFormDialog, toInput, type ProviderForm } from './oauth-provider-form-dialog'
 import { useSettingsResource, type SettingsPanelProps } from './panel'
 
@@ -283,14 +283,16 @@ export function OAuthProvidersPanel({ onMessage, onDirtyChange }: SettingsPanelP
                   </Badge>
                 )}
               </td>
-              <td>
-                <div className="flex items-center justify-end gap-3">
-                  <button type="button" className="chenxing-link chenxing-row-action" onClick={() => openEdit(provider)}>编辑</button>
-                  <button type="button" className="chenxing-link chenxing-row-action" style={{ color: 'var(--chenxing-error)' }} onClick={() => void toggleStatus(provider)} disabled={busy}>
-                    {provider.status === 'active' ? '禁用' : '启用'}
-                  </button>
-                </div>
-              </td>
+              <RowActions>
+                <RowAction onClick={() => openEdit(provider)}>编辑</RowAction>
+                <RowAction
+                  tone={provider.status === 'active' ? 'danger' : 'default'}
+                  onClick={() => void toggleStatus(provider)}
+                  disabled={busy}
+                >
+                  {provider.status === 'active' ? '禁用' : '启用'}
+                </RowAction>
+              </RowActions>
             </tr>
           ))}
         </DataTable>

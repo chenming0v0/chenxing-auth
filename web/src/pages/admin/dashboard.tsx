@@ -86,7 +86,7 @@ export function AdminDashboard() {
             <DataTable
               minWidth={720}
               columns={['时间', '事件', '执行者', { label: '资源', align: 'right' }]}
-              empty={audits.length ? null : auditError ? '最近审计暂时不可用。' : access.data?.permissions.includes('read_audit') ? '暂无审计事件。' : '暂无审计事件或缺少 read_audit 权限'}
+              empty={audits.length ? null : auditError ? '最近审计暂时不可用。' : access.data?.permissions.includes('read_audit') ? '暂无审计事件。' : '暂无审计事件或缺少 read_audit 权限。'}
             >
               {audits.map((event, index) => (
                 <tr

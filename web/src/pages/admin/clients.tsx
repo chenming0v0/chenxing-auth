@@ -5,8 +5,8 @@ import {
   type KeyRotationResponse, type Paged, type PublicUser, type RegistrationEmailSetting,
 } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
-import { DataTable, TablePanel, TablePagination } from '@chenxing/ui'
+import { Badge, Button, EmptyState, Notice, PageIntro, SearchField } from '@chenxing/ui'
+import { DataTable, RowAction, RowActions, TablePanel, TablePagination } from '@chenxing/ui'
 import { formatDate, initialOf } from '../../data'
 import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
 
@@ -94,22 +94,23 @@ export function ClientsTable({ access }: { access: AdminAccess }) {
   const totalPages = result ? Math.max(1, Math.ceil(result.total / result.page_size)) : 1
 
   return (
-    <HudPanel>
-      {error ? <div className="mb-4"><Notice tone="warning">{error}</Notice></div> : null}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="chenxing-h2">Client 目录</h2>
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="chenxing-field-shell w-full sm:w-72">
-            <Icon name="search" className="chenxing-field-icon h-4 w-4" size={16} />
-            <input aria-label="搜索客户端" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') updateQuery(1) }} placeholder="搜索 Client 或名称" />
-          </div>
+    <TablePanel
+      icon="layout-grid"
+      title="Client 目录"
+      action={
+        <>
+          <SearchField aria-label="搜索客户端" value={search} onChange={(event) => setSearch(event.target.value)} onSearch={() => updateQuery(1)} placeholder="搜索 Client 或名称" />
           <Button variant="ghost" icon="search" onClick={() => updateQuery(1)}>查询</Button>
-        </div>
-      </div>
+        </>
+      }
+      notice={error ? <Notice tone="warning">{error}</Notice> : null}
+    >
       <DataTable
         minWidth={920}
         columns={['Client', 'Owner', 'Redirect URI', '状态', { label: '操作', align: 'right' }]}
-        empty={result?.items.length ? null : result ? '没有匹配 Client' : error ? null : '正在加载 Client'}
+        empty={result?.items.length ? null : result ? (
+          <EmptyState icon="layout-grid" title="没有匹配的 Client" description="调整搜索关键词后重试。" />
+        ) : error ? null : '正在加载 Client。'}
       >
         {result?.items.map((client) => (
           <tr key={client.client_id}>
@@ -120,17 +121,17 @@ export function ClientsTable({ access }: { access: AdminAccess }) {
             <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{client.owner_user_id ?? '—'}</td>
             <td><p className="chenxing-caption max-w-xs truncate">{client.redirect_uris.join(' · ')}</p></td>
             <td><Badge tone={client.status === 'active' ? 'success' : 'warning'}>{client.status}</Badge></td>
-            <td className="text-right">
-              <Button variant={client.status === 'active' ? 'danger' : 'ghost'} icon={client.status === 'active' ? 'x' : 'check'} onClick={() => void setClientStatus(client)} disabled={busy.has(client.client_id)}>
+            <RowActions>
+              <RowAction tone={client.status === 'active' ? 'danger' : 'default'} onClick={() => void setClientStatus(client)} disabled={busy.has(client.client_id)}>
                 {client.status === 'active' ? '禁用' : '启用'}
-              </Button>
-            </td>
+              </RowAction>
+            </RowActions>
           </tr>
         ))}
       </DataTable>
       {result && result.total > 0 ? (
         <TablePagination page={page} totalPages={totalPages} total={result.total} onPageChange={updateQuery} />
       ) : null}
-    </HudPanel>
+    </TablePanel>
   )
 }
