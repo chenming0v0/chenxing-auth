@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiFetch, type AdminPlan } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
-import { DataTable } from '@chenxing/ui'
+import { DataTable, EmptyState, RowAction, RowActions, TablePanel } from '@chenxing/ui'
 import { AdminGate, useAdminAccess } from './shared'
 import { PlanEditorDrawer } from './plan-editor-drawer'
 
@@ -127,19 +127,19 @@ function PlansManager() {
         </HudPanel>
       ) : null}
 
-      <HudPanel className="mt-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="chenxing-h2">套餐矩阵</h2>
-            <p className="chenxing-caption mt-1">额度与并发限制实时生效于配额检查；没有启用中的默认套餐时，全站自助接入处于关闭状态。</p>
-          </div>
-          <Button icon="plus" onClick={() => setEditor({ mode: 'create' })}>新建套餐</Button>
-        </div>
-
+      <TablePanel
+        icon="crown"
+        title="套餐矩阵"
+        description="额度与并发限制实时生效于配额检查；没有启用中的默认套餐时，全站自助接入处于关闭状态。"
+        action={<Button icon="plus" onClick={() => setEditor({ mode: 'create' })}>新建套餐</Button>}
+        className="mt-5"
+      >
         <DataTable
           minWidth={1160}
           columns={['套餐', '售价', 'OAuth 应用', '每日授权', '每月授权', 'QPS', '挂载用户', '状态', { label: '操作', align: 'right' }]}
-          empty={plans?.length ? null : plans ? '还没有套餐，从「新建套餐」开始。' : error ? null : loading ? '正在加载套餐列表。' : null}
+          empty={plans?.length ? null : plans ? (
+            <EmptyState icon="crown" title="还没有套餐" description="从「新建套餐」开始。" />
+          ) : error ? null : loading ? '正在加载套餐列表。' : null}
         >
           {plans?.map((plan) => {
             const archived = plan.status !== 'active'
@@ -165,25 +165,22 @@ function PlansManager() {
                         {archived ? '已归档' : '启用中'}
                     </Badge>
                   </td>
-                  <td className="text-right">
-                      <div className="inline-flex items-center gap-3">
-                        <button type="button" className="chenxing-link chenxing-row-action" disabled={busyIds.has(plan.id)} onClick={() => setEditor({ mode: 'edit', plan })}>编辑</button>
-                        {/* 默认套餐不再受服务端保护：可以归档，也可以取消默认（代价是关闭自助接入） */}
-                        <button
-                          type="button"
-                          className={`chenxing-link chenxing-row-action${archived ? '' : ' text-[var(--chenxing-error)]'}`}
-                          disabled={busyIds.has(plan.id)}
-                          onClick={() => void changeStatus(plan)}
-                        >
-                          {archived ? '恢复' : '归档'}
-                        </button>
-                      </div>
-                    </td>
+                  <RowActions>
+                    <RowAction disabled={busyIds.has(plan.id)} onClick={() => setEditor({ mode: 'edit', plan })}>编辑</RowAction>
+                    {/* 默认套餐不再受服务端保护：可以归档，也可以取消默认（代价是关闭自助接入） */}
+                    <RowAction
+                      tone={archived ? 'default' : 'danger'}
+                      disabled={busyIds.has(plan.id)}
+                      onClick={() => void changeStatus(plan)}
+                    >
+                      {archived ? '恢复' : '归档'}
+                    </RowAction>
+                  </RowActions>
                 </tr>
               )
             })}
           </DataTable>
-      </HudPanel>
+      </TablePanel>
 
       {editor ? (
         <PlanEditorDrawer

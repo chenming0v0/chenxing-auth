@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from '../../router'
 import { apiFetch, type AuditEvent, type Paged } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Button, Icon, Notice, PageIntro } from '@chenxing/ui'
-import { DataTable, TablePanel, TablePagination } from '@chenxing/ui'
+import { DataTable, EmptyState, RowAction, RowActions, TablePanel, TablePagination } from '@chenxing/ui'
 import { Select } from '@chenxing/ui'
 import { formatDate } from '../../data'
 import { AdminGate, parsePageParam, useAdminAccess } from './shared'
@@ -88,22 +88,26 @@ export function AuditTable() {
         icon="activity"
         title="事件列表"
         description="点击一行查看脱敏后的详情。未知历史动作会保留原始代码。"
+        action={
+          <>
+            <div className="chenxing-field-shell w-56">
+              <Select value={action} onChange={setAction} options={actionOptions} aria-label="事件类型" />
+            </div>
+            <div className="chenxing-field-shell w-52">
+              <Select value={resourceType} onChange={setResourceType} options={resourceOptions} aria-label="资源类型" />
+            </div>
+            <Button variant="ghost" icon="search" onClick={() => updateQuery(1)}>查询</Button>
+            <Button variant="ghost" icon="rotate-ccw" onClick={() => navigate('/admin/audit?page=1')}>重置</Button>
+          </>
+        }
+        notice={error ? <Notice tone="warning">{error}</Notice> : null}
       >
-        {error ? <Notice tone="warning">{error}</Notice> : null}
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <div className="chenxing-field-shell w-56">
-            <Select value={action} onChange={setAction} options={actionOptions} aria-label="事件类型" />
-          </div>
-          <div className="chenxing-field-shell w-52">
-            <Select value={resourceType} onChange={setResourceType} options={resourceOptions} aria-label="资源类型" />
-          </div>
-          <Button variant="ghost" icon="search" onClick={() => updateQuery(1)}>查询</Button>
-          <Button variant="ghost" icon="rotate-ccw" onClick={() => navigate('/admin/audit?page=1')}>重置</Button>
-        </div>
         <DataTable
           minWidth={920}
           columns={['时间', '事件', '级别', '执行者', '资源', { label: '操作', align: 'right' }]}
-          empty={result?.items.length ? null : result ? '暂无审计事件' : error ? null : '正在加载审计事件'}
+          empty={result?.items.length ? null : result ? (
+            <EmptyState icon="activity" title="暂无审计事件" description="调整筛选条件后重试。" />
+          ) : error ? null : '正在加载审计事件。'}
         >
           {result?.items.map((event, index) => (
             <tr
@@ -119,12 +123,12 @@ export function AuditTable() {
                 <p className="chenxing-body text-sm">{resourceLabel(event.resource_type)}</p>
                 {event.resource_id ? <p className="chenxing-caption chenxing-mono">{event.resource_id}</p> : null}
               </td>
-              <td className="text-right" onClick={(clickEvent) => clickEvent.stopPropagation()}>
-                <button type="button" className="chenxing-link chenxing-row-action" onClick={() => setDetail(event)}>
+              <RowActions>
+                <RowAction onClick={() => setDetail(event)}>
                   <Icon name="arrow-right" size={13} />
                   详情
-                </button>
-              </td>
+                </RowAction>
+              </RowActions>
             </tr>
           ))}
         </DataTable>

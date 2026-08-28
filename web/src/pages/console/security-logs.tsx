@@ -80,7 +80,7 @@ function SecurityLogList() {
             empty={result?.items.length
               ? null
               : state.kind === 'loading'
-                ? '正在加载活动记录…'
+                ? '正在加载活动记录。'
                 : state.kind === 'error'
                   ? '无法加载活动记录。'
                   : '暂无活动记录。'}
@@ -137,7 +137,7 @@ function SecurityLogList() {
             <EmptyState
               icon="activity"
               title={state.kind === 'loading'
-                ? '正在加载活动记录…'
+                ? '正在加载活动记录。'
                 : state.kind === 'error'
                   ? '无法加载活动记录'
                   : '暂无活动记录'}

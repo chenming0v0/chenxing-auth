@@ -156,7 +156,7 @@ export function ConsoleOverview() {
         <DataTable
           minWidth={720}
           columns={['时间', '应用', '事件', '状态']}
-          empty={loading ? '正在加载最近活动。' : !hasData ? '最近授权活动不可用。' : apps.length ? null : '暂无最近授权活动'}
+          empty={loading ? '正在加载最近活动。' : !hasData ? '最近授权活动不可用。' : apps.length ? null : '暂无最近授权活动。'}
         >
           {apps.slice(0, 4).map((app) => (
             <tr key={app.client_id}>

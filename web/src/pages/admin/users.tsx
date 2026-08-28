@@ -4,8 +4,8 @@ import {
   apiFetch, type AdminUserQueryItem, type Paged, type PublicUser,
 } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Avatar, Badge, Button, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
-import { DataTable, TablePagination } from '@chenxing/ui'
+import { Avatar, Badge, Button, EmptyState, Icon, Notice, PageIntro, SearchField } from '@chenxing/ui'
+import { DataTable, RowAction, RowActions, TablePanel, TablePagination } from '@chenxing/ui'
 import { Select } from '@chenxing/ui'
 import { formatDate } from '../../data'
 import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
@@ -130,33 +130,36 @@ export function UsersTable({ access }: { access: AdminAccess }) {
   const creditUser = creditTarget !== null ? result?.items.find((item) => item.id === creditTarget) : undefined
 
   return (
-    <HudPanel>
-      {error ? <div className="mb-4"><Notice tone="warning">{error}</Notice></div> : null}
-      {created ? (
-        <div className="mb-4">
-          <Notice tone="success">已创建用户 {created.username}（{created.email}），请把初始密码通过安全渠道转交本人。</Notice>
-        </div>
-      ) : null}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <Button icon="user-plus" onClick={() => { setCreated(null); setCreateOpen(true) }}>添加用户</Button>
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="chenxing-field-shell w-full sm:w-72">
-            <Icon name="search" className="chenxing-field-icon h-4 w-4" size={16} />
-            <input aria-label="搜索用户" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') updateQuery(1) }} placeholder="搜索用户 ID / 用户名 / 邮箱" />
-          </div>
+    <TablePanel
+      icon="users"
+      title="用户目录"
+      action={
+        <>
+          <Button icon="user-plus" onClick={() => { setCreated(null); setCreateOpen(true) }}>添加用户</Button>
+          <SearchField aria-label="搜索用户" value={search} onChange={(event) => setSearch(event.target.value)} onSearch={() => updateQuery(1)} placeholder="搜索用户 ID / 用户名 / 邮箱" />
           <div className="chenxing-field-shell w-36">
             <Icon name="activity" className="chenxing-field-icon h-4 w-4" size={16} />
             <Select value={status} onChange={setStatus} options={STATUS_FILTER_OPTIONS} aria-label="按用户状态筛选" />
           </div>
           <Button variant="ghost" icon="search" onClick={() => updateQuery(1)}>查询</Button>
           <Button variant="ghost" icon="rotate-ccw" onClick={() => { setSearch(''); setStatus(''); navigate('/admin/users?page=1') }}>重置</Button>
+        </>
+      }
+      notice={error || created ? (
+        <div className="grid gap-3">
+          {error ? <Notice tone="warning">{error}</Notice> : null}
+          {created ? (
+            <Notice tone="success">已创建用户 {created.username}（{created.email}），请把初始密码通过安全渠道转交本人。</Notice>
+          ) : null}
         </div>
-      </div>
-
+      ) : null}
+    >
       <DataTable
         minWidth={1080}
         columns={['ID', '用户名', '状态', '角色', '套餐', '创建时间', { label: '操作', align: 'right' }]}
-        empty={result?.items.length ? null : result ? '没有匹配用户' : error ? null : '正在加载用户'}
+        empty={result?.items.length ? null : result ? (
+          <EmptyState icon="users" title="没有匹配的用户" description="调整搜索关键词或状态筛选后重试。" />
+        ) : error ? null : '正在加载用户。'}
       >
         {result?.items.map((user) => {
           const isSelf = user.id === access.data?.user_id
@@ -207,40 +210,33 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                         {user.plan.expires_at ? <p className="chenxing-caption text-xs">到期 {formatDate(user.plan.expires_at)}</p> : null}
                       </div>
                     ) : <span className="chenxing-caption">未挂载</span>}
-                    <button
-                      type="button"
-                      className="chenxing-link chenxing-row-action"
+                    <RowAction
                       disabled={!canAssignPlan}
                       title={canAssignPlan ? undefined : isSelf ? '不能为自己分配套餐' : '为管理员或 Owner 分配套餐需要 manage_roles 权限'}
                       onClick={() => setAssignTarget(user.id)}
                     >
                       <Icon name="crown" size={13} />
                       分配套餐
-                    </button>
+                    </RowAction>
                   </td>
                   <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(user.created_at)}</td>
-                  <td className="text-right">
-                    <div className="inline-flex items-center gap-3">
-                      <button
-                        type="button"
-                        className="chenxing-link chenxing-row-action"
-                        disabled={!canCredit}
-                        onClick={() => setCreditTarget(user.id)}
-                      >
-                        <Icon name="wallet" size={13} />
-                        充值
-                      </button>
-                      <button
-                        type="button"
-                        className={`chenxing-link chenxing-row-action${user.status === 'active' ? ' text-[var(--chenxing-error)]' : ''}`}
-                        disabled={!canChangeStatus || busy.has(user.id)}
-                        title={canChangeStatus ? undefined : isSelf ? '不能修改自己的状态' : '修改管理员或 Owner 状态需要 manage_roles 权限'}
-                        onClick={() => void setUserStatus(user)}
-                      >
-                        {user.status === 'active' ? '禁用' : '启用'}
-                      </button>
-                    </div>
-                  </td>
+                  <RowActions>
+                    <RowAction
+                      disabled={!canCredit}
+                      onClick={() => setCreditTarget(user.id)}
+                    >
+                      <Icon name="wallet" size={13} />
+                      充值
+                    </RowAction>
+                    <RowAction
+                      tone={user.status === 'active' ? 'danger' : 'default'}
+                      disabled={!canChangeStatus || busy.has(user.id)}
+                      title={canChangeStatus ? undefined : isSelf ? '不能修改自己的状态' : '修改管理员或 Owner 状态需要 manage_roles 权限'}
+                      onClick={() => void setUserStatus(user)}
+                    >
+                      {user.status === 'active' ? '禁用' : '启用'}
+                    </RowAction>
+                  </RowActions>
               </tr>
             )
           })}
@@ -275,6 +271,6 @@ export function UsersTable({ access }: { access: AdminAccess }) {
           onClose={() => setCreditTarget(null)}
         />
       ) : null}
-    </HudPanel>
+    </TablePanel>
   )
 }
