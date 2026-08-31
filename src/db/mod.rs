@@ -390,6 +390,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "quota add-ons",
             include_str!("../../migrations/0050_quota_addons.sql"),
         ),
+        (
+            51,
+            "wallet purchase idempotency",
+            include_str!("../../migrations/0051_wallet_purchase_idempotency.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

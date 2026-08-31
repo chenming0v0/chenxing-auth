@@ -97,6 +97,9 @@ describe('ConsoleWallet', () => {
     })
     expect(screen.queryByText('已购买')).toBeNull()
     expect(screen.getByRole('dialog', { name: '购买订阅' })).toBeTruthy()
+    const purchaseCall = apiFetchMock.mock.calls.find(([path, init]) =>
+      path === '/api/v1/auth/wallet/purchase' && init?.method === 'POST')
+    expect(purchaseCall?.[1]?.headers).toEqual({ 'Idempotency-Key': expect.any(String) })
   })
 
   it('redeems a wallet card and refreshes the wallet', async () => {

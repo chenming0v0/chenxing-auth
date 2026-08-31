@@ -168,6 +168,7 @@ fn published_migrator() -> Migrator {
 
 async fn revert_migrations_after_description(pool: &chenxing_auth::sqlx::PgPool) {
     for statement in [
+        "DROP TABLE wallet_purchase_idempotency",
         "DROP TABLE user_quota_addon_purchases",
         "DROP TABLE plan_quota_addons",
         "ALTER TABLE users DROP COLUMN plan_entitlement_version",
@@ -313,11 +314,11 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .await
     .expect("read upgraded migration history");
     // 0030/0031 来自 #50-479 批次合并；0032 修复运行时 migration ledger 权限。
-    // 0033–0050 是后续追加的邀请码、邮箱变更、outbox fence、archive INSERT
+    // 0033–0051 是后续追加的邀请码、邮箱变更、outbox fence、archive INSERT
     // 回收、access-token 撤销、JSONB shape CHECK、签发时 idle 窗口、
     // auth_method 与 secret 哈希配对 CHECK、client 展示字段、钱包与套餐定价、
-    // 兑换码和配额加购。
-    assert_eq!(applied, (1_i64..=50).collect::<Vec<_>>());
+    // 兑换码、配额加购和钱包购买幂等。
+    assert_eq!(applied, (1_i64..=51).collect::<Vec<_>>());
 
     // A v1.1.16 database may already have the 0047 schema change while its
     // ledger stops at 0046. The compatibility repair must record 0047 from
@@ -427,6 +428,7 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     // 步骤应用进来，先把这些 schema 变更回退，模拟才忠实。列/表均为空，
     // 回退不影响被保留的身份数据。
     for statement in [
+        "DROP TABLE wallet_purchase_idempotency",
         "DROP TABLE user_quota_addon_purchases",
         "DROP TABLE plan_quota_addons",
         "ALTER TABLE users DROP COLUMN plan_entitlement_version",
@@ -499,7 +501,7 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .fetch_all(&pool)
     .await
     .expect("read repaired v1.1.2 migration history");
-    assert_eq!(repaired, (1_i64..=50).collect::<Vec<_>>());
+    assert_eq!(repaired, (1_i64..=51).collect::<Vec<_>>());
 
     let preserved: (i64, i64, i64) = chenxing_auth::sqlx::query_as(
         "SELECT \
@@ -562,6 +564,7 @@ async fn flattened_repair_rejects_trigger_names_from_other_schema_or_wrong_table
         .expect("initialize current target schema");
 
     for statement in [
+        "DROP TABLE wallet_purchase_idempotency",
         "DROP TABLE user_quota_addon_purchases",
         "DROP TABLE plan_quota_addons",
         "ALTER TABLE users DROP COLUMN plan_entitlement_version",
