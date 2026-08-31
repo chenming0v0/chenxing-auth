@@ -8,7 +8,7 @@ import { FactorOrchestrator } from './auth/factor-orchestrator'
 import { ExternalProviders } from './auth/external-providers'
 import { passkeyErrorMessage, supportsWebAuthnGet } from '../passkey'
 import { loginWithDiscoverablePasskey } from './auth/passkey-login'
-import { dropDeadRequestId, safeReturnTo } from './auth/navigation'
+import { authModeTarget, dropDeadRequestId, safeReturnTo } from './auth/navigation'
 
 export { safeReturnTo } from './auth/navigation'
 
@@ -33,6 +33,11 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const query = new URLSearchParams(location.search)
   const requestId = query.get('request_id')
   const returnTo = safeReturnTo(query.get('returnTo'))
+  /* #685：登录 ⇄ 注册的切换必须带走待授权上下文，否则用户中途改走注册流程后
+     requestId 丢失，注册完成回到登录页时不再绑定原授权请求，最终落到 /console，
+     第三方授权流程静默断链。只透传白名单里的 request_id 与 returnTo。 */
+  const modeSwitchTo = authModeTarget(mode === 'login' ? '/register' : '/login', query)
+  const registeredLoginTo = authModeTarget('/login', query, { registered: '1' })
   const [username, setUsername] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [email, setEmail] = useState('')
@@ -183,7 +188,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
             invitation_code: registrationStatus?.invitation_code_required ? invitationCode : null,
           }),
         })
-        navigate('/login?registered=1')
+        navigate(registeredLoginTo)
         return
       }
       const response = await apiFetch<LoginResponse | PendingLoginResponse>('/api/v1/auth/login', {
@@ -224,7 +229,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
     <AuthShell
       status={isLogin ? '统一登录' : '创建通行证'}
       action={isLogin ? '创建通行证' : '登录'}
-      actionTo={isLogin ? '/register' : '/login'}
+      actionTo={modeSwitchTo}
     >
       <AuthPanel>
         <div className="flex items-center justify-between">
@@ -340,7 +345,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
         {!pending ? (
           <p className="chenxing-caption mt-6 text-center">
             {isLogin ? '还没有通行证？' : '已有通行证？'}
-            <Link to={isLogin ? '/register' : '/login'} className="chenxing-link ml-1 font-medium">
+            <Link to={modeSwitchTo} className="chenxing-link ml-1 font-medium">
               {isLogin ? '创建辰星通行证' : '直接登录'}
             </Link>
           </p>
