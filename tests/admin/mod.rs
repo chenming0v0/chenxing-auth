@@ -22,6 +22,7 @@ mod issuer;
 mod issuer_routes;
 mod issuer_settings;
 mod management_session_bind;
+mod management_session_expiry;
 mod owner_login_flow;
 mod owner_write_race;
 mod privileged_audit;
