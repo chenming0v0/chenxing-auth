@@ -13,6 +13,12 @@ MODE=deploy
 PREPARE_ONLY=false
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 INSTALL_DIR="$(dirname -- "$SCRIPT_PATH")"
+if [[ "${CHENXING_BOOTSTRAP_TEMP:-}" == 1 && -n "${CHENXING_INSTALL_DIR:-}" ]]; then
+    # 升级时本脚本是从 .release.* 暂存目录里执行的已验证副本，安装目录不能由脚本
+    # 自身位置推导，必须沿用原部署目录；否则 .env 和 compose.yml 会写进临时目录，
+    # 升级会当成全新安装重新生成数据库密码与加密密钥，并把它们随暂存目录丢弃。
+    INSTALL_DIR="${CHENXING_INSTALL_DIR}"
+fi
 RELEASE_VERSION="${CHENXING_RELEASE_VERSION:-}"
 RELEASE_MANIFEST_FILE="${CHENXING_RELEASE_MANIFEST_FILE:-}"
 RELEASE_FETCH_DIR=""
@@ -558,7 +564,6 @@ report_debug_context() {
 IMAGE_OVERRIDE="${CHENXING_IMAGE:-}"
 POSTGRES_IMAGE_OVERRIDE="${POSTGRES_IMAGE:-}"
 REDIS_IMAGE_OVERRIDE="${REDIS_IMAGE:-}"
-INSTALL_DIR="$(dirname -- "$SCRIPT_PATH")"
 ENV_FILE="${INSTALL_DIR}/.env"
 COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
 
@@ -610,6 +615,7 @@ if [[ "$MODE" == upgrade ]]; then
         upgrade_arguments=(--apply --release-version="$RELEASE_VERSION")
         [[ "$DEBUG_MODE" == true ]] && upgrade_arguments+=(--debug)
         CHENXING_BOOTSTRAP_TEMP=1 \
+        CHENXING_INSTALL_DIR="$INSTALL_DIR" \
         CHENXING_RELEASE_MANIFEST_FILE="$RELEASE_MANIFEST_FILE" \
         CHENXING_RELEASE_FETCH_DIR="$RELEASE_FETCH_DIR" \
         CHENXING_RELEASE_MANIFEST_SHA256="$RELEASE_MANIFEST_SHA256" \
