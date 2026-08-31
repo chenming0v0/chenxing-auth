@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -19,6 +19,10 @@ mod retry;
 const OUTBOX_LEASE: time::Duration = time::Duration::minutes(5);
 const MAX_ATTEMPTS: i32 = 10;
 const EMAIL_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+const WORKER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const WORKER_BATCH_TIME_BUDGET: Duration = Duration::from_secs(5);
+const WORKER_BATCH_ENTRY_LIMIT: usize = 100;
+const WORKER_CLEANUP_INTERVAL: Duration = Duration::from_secs(300);
 const VERIFICATION_CODE_KIND: &str = "verification_code";
 const SECURITY_ALERT_KIND: &str = "email_change_security_alert";
 
@@ -92,10 +96,8 @@ impl EmailOutbox {
     pub async fn process_pending_outbox(&self) -> Result<usize, EmailOutboxError> {
         let mut processed = 0;
         while let Some(entry) = self.claim().await? {
-            match self.apply(&entry).await {
-                Ok(true) => processed += 1,
-                Ok(false) => {}
-                Err(error_value) => self.record_failure(&entry, &error_value).await?,
+            if self.process_claimed_entry(&entry).await? {
+                processed += 1;
             }
         }
         Ok(processed)
@@ -103,10 +105,17 @@ impl EmailOutbox {
 
     pub async fn run_worker(self, mut worker: WorkerContext) {
         let mut next_cleanup = tokio::time::Instant::now();
+        let reporter = worker.reporter().clone();
         loop {
-            worker.reporter().heartbeat();
+            reporter.heartbeat();
             let mut failed = false;
-            if let Err(error_value) = self.process_pending_outbox().await {
+            let batch_result = heartbeat_while(
+                self.process_worker_batch(),
+                WORKER_HEARTBEAT_INTERVAL,
+                || reporter.heartbeat(),
+            )
+            .await;
+            if let Err(error_value) = batch_result {
                 failed = true;
                 tracing::error!(
                     error_kind = error_value.failure_code(),
@@ -114,22 +123,57 @@ impl EmailOutbox {
                 );
             }
             if tokio::time::Instant::now() >= next_cleanup {
-                if let Err(error_value) = self.prune_settled_outbox().await {
+                let cleanup_result = heartbeat_while(
+                    self.prune_settled_outbox(),
+                    WORKER_HEARTBEAT_INTERVAL,
+                    || reporter.heartbeat(),
+                )
+                .await;
+                if let Err(error_value) = cleanup_result {
                     failed = true;
                     tracing::error!(
                         error_kind = error_value.failure_code(),
                         "email outbox retention failed"
                     );
                 }
-                next_cleanup = tokio::time::Instant::now() + Duration::from_secs(300);
+                next_cleanup = tokio::time::Instant::now() + WORKER_CLEANUP_INTERVAL;
             }
             if failed {
-                worker.reporter().retryable_failure();
+                reporter.retryable_failure();
             } else {
-                worker.reporter().success();
+                // Success means a bounded pass completed without an infrastructure error. It
+                // does not require the queue to be empty: sustained, healthy delivery remains
+                // ready while queue depth is monitored separately.
+                reporter.success();
             }
             if worker.sleep_or_shutdown(Duration::from_secs(1)).await {
                 break;
+            }
+        }
+    }
+
+    async fn process_worker_batch(&self) -> Result<usize, EmailOutboxError> {
+        let started = tokio::time::Instant::now();
+        let mut handled = 0;
+        let mut processed = 0;
+        while worker_batch_has_capacity(handled, started.elapsed()) {
+            let Some(entry) = self.claim().await? else {
+                break;
+            };
+            handled += 1;
+            if self.process_claimed_entry(&entry).await? {
+                processed += 1;
+            }
+        }
+        Ok(processed)
+    }
+
+    async fn process_claimed_entry(&self, entry: &OutboxEntry) -> Result<bool, EmailOutboxError> {
+        match self.apply(entry).await {
+            Ok(processed) => Ok(processed),
+            Err(error_value) => {
+                self.record_failure(entry, &error_value).await?;
+                Ok(false)
             }
         }
     }
@@ -397,3 +441,29 @@ impl EmailOutbox {
         Ok(())
     }
 }
+
+fn worker_batch_has_capacity(handled: usize, elapsed: Duration) -> bool {
+    handled < WORKER_BATCH_ENTRY_LIMIT && elapsed < WORKER_BATCH_TIME_BUDGET
+}
+
+async fn heartbeat_while<F, T, H>(operation: F, interval: Duration, mut heartbeat: H) -> T
+where
+    F: Future<Output = T>,
+    H: FnMut(),
+{
+    tokio::pin!(operation);
+    let first_tick = tokio::time::Instant::now() + interval;
+    let mut ticker = tokio::time::interval_at(first_tick, interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut operation => return result,
+            _ = ticker.tick() => heartbeat(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "outbox_tests.rs"]
+mod tests;

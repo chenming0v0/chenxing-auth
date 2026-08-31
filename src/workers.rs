@@ -54,7 +54,11 @@ impl WorkerName {
                 WorkerPolicy::new(Duration::from_secs(10), Duration::from_secs(10))
             }
             Self::EmailOutbox => {
-                WorkerPolicy::new(Duration::from_secs(10), Duration::from_secs(10))
+                // SMTP delivery is allowed to spend 30 seconds in the provider call. The
+                // worker also heartbeats during that call, but the lease still needs to be
+                // longer than one valid attempt so scheduler jitter cannot create a false
+                // readiness failure at the operation boundary.
+                WorkerPolicy::new(Duration::from_secs(45), Duration::from_secs(120))
             }
             Self::KeySync => WorkerPolicy::new(Duration::from_secs(20), Duration::from_secs(30)),
             Self::QuotaRefund => {
