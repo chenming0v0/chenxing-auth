@@ -81,6 +81,17 @@ async fn purchase_plan(
     csrf: &str,
     plan_id: i64,
 ) -> (StatusCode, Value) {
+    let key = format!("test-plan-{}", Uuid::new_v4().simple());
+    purchase_plan_with_key(router, cookie, csrf, plan_id, &key).await
+}
+
+async fn purchase_plan_with_key(
+    router: &axum::Router,
+    cookie: &str,
+    csrf: &str,
+    plan_id: i64,
+    key: &str,
+) -> (StatusCode, Value) {
     let response = router
         .clone()
         .oneshot(
@@ -89,6 +100,7 @@ async fn purchase_plan(
                 .uri("/api/v1/auth/wallet/purchase")
                 .header("cookie", cookie)
                 .header("x-csrf-token", csrf)
+                .header("idempotency-key", key)
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({ "plan_id": plan_id }).to_string(),
@@ -97,6 +109,34 @@ async fn purchase_plan(
         )
         .await
         .expect("purchase response");
+    let status = response.status();
+    (status, json(response).await)
+}
+
+async fn purchase_quota_addon(
+    router: &axum::Router,
+    cookie: &str,
+    csrf: &str,
+    addon_id: i64,
+    key: &str,
+) -> (StatusCode, Value) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/quota-addons/purchase")
+                .header("cookie", cookie)
+                .header("x-csrf-token", csrf)
+                .header("idempotency-key", key)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "addon_id": addon_id }).to_string(),
+                ))
+                .expect("quota addon purchase request"),
+        )
+        .await
+        .expect("quota addon purchase response");
     let status = response.status();
     (status, json(response).await)
 }
@@ -253,6 +293,246 @@ async fn purchase_debits_wallet_and_assigns_plan_period() {
     assert_eq!(purchase["reference_type"], "plan");
     assert_eq!(purchase["reference_id"], plan_id.to_string());
 
+    env.cleanup().await;
+}
+
+#[tokio::test]
+async fn purchase_retry_replays_the_committed_result_without_a_second_debit() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
+    let plan = create_plan(
+        &router,
+        &format!("retry-{suffix}"),
+        priced_plan_limits(40, "monthly"),
+    )
+    .await;
+    let plan_id = plan["id"].as_i64().expect("plan id");
+    assert_eq!(
+        credit_wallet(&router, user_id, 100, None).await.0,
+        StatusCode::OK
+    );
+
+    let first = purchase_plan_with_key(&router, &cookie, &csrf, plan_id, "wallet-retry-1").await;
+    let second = purchase_plan_with_key(&router, &cookie, &csrf, plan_id, "wallet-retry-1").await;
+    assert_eq!(first.0, StatusCode::OK, "first: {first:?}");
+    assert_eq!(second.0, StatusCode::OK, "retry: {second:?}");
+    assert_eq!(first.1, second.1);
+
+    let (_, wallet) = get_wallet(&router, Some(&cookie)).await;
+    assert_eq!(wallet.expect("wallet")["balance"], 60);
+    let (_, ledger) = list_ledger(&router, &cookie).await;
+    assert_eq!(ledger["total"], 2, "credit + one purchase");
+    let idempotency_rows: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wallet_purchase_idempotency WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&env.database)
+    .await
+    .expect("idempotency row count");
+    assert_eq!(idempotency_rows, 1);
+    env.cleanup().await;
+}
+
+#[tokio::test]
+async fn purchase_requires_an_idempotency_key_before_mutating_the_wallet() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
+    let plan = create_plan(
+        &router,
+        &format!("required-key-{suffix}"),
+        priced_plan_limits(40, "one_time"),
+    )
+    .await;
+    let plan_id = plan["id"].as_i64().expect("plan id");
+    assert_eq!(
+        credit_wallet(&router, user_id, 100, None).await.0,
+        StatusCode::OK
+    );
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/wallet/purchase")
+                .header("cookie", cookie.as_str())
+                .header("x-csrf-token", csrf.as_str())
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "plan_id": plan_id }).to_string(),
+                ))
+                .expect("missing key request"),
+        )
+        .await
+        .expect("missing key response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json(response).await;
+    assert_eq!(body["code"], "idempotency_key_required");
+    let (_, wallet) = get_wallet(&router, Some(&cookie)).await;
+    assert_eq!(wallet.expect("wallet")["balance"], 100);
+    env.cleanup().await;
+}
+
+#[tokio::test]
+async fn purchase_rejects_reusing_a_key_for_different_input() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
+    let first_plan = create_plan(
+        &router,
+        &format!("first-{suffix}"),
+        priced_plan_limits(40, "one_time"),
+    )
+    .await;
+    let second_plan = create_plan(
+        &router,
+        &format!("second-{suffix}"),
+        priced_plan_limits(40, "one_time"),
+    )
+    .await;
+    let first_id = first_plan["id"].as_i64().expect("first plan id");
+    let second_id = second_plan["id"].as_i64().expect("second plan id");
+    assert_eq!(
+        credit_wallet(&router, user_id, 100, None).await.0,
+        StatusCode::OK
+    );
+
+    let first =
+        purchase_plan_with_key(&router, &cookie, &csrf, first_id, "wallet-conflict-1").await;
+    let conflict =
+        purchase_plan_with_key(&router, &cookie, &csrf, second_id, "wallet-conflict-1").await;
+    assert_eq!(first.0, StatusCode::OK, "first: {first:?}");
+    assert_eq!(conflict.0, StatusCode::CONFLICT, "conflict: {conflict:?}");
+    assert_eq!(conflict.1["code"], "idempotency_key_conflict");
+    let (_, wallet) = get_wallet(&router, Some(&cookie)).await;
+    assert_eq!(wallet.expect("wallet")["balance"], 60);
+    env.cleanup().await;
+}
+
+#[tokio::test]
+async fn concurrent_same_key_purchases_commit_once_and_replay_once() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
+    let plan = create_plan(
+        &router,
+        &format!("same-key-{suffix}"),
+        priced_plan_limits(100, "one_time"),
+    )
+    .await;
+    let plan_id = plan["id"].as_i64().expect("plan id");
+    assert_eq!(
+        credit_wallet(&router, user_id, 100, None).await.0,
+        StatusCode::OK
+    );
+
+    let start = Arc::new(Barrier::new(2));
+    let first = {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        let csrf = csrf.clone();
+        let start = Arc::clone(&start);
+        async move {
+            start.wait().await;
+            purchase_plan_with_key(&router, &cookie, &csrf, plan_id, "wallet-race-1").await
+        }
+    };
+    let second = {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        let csrf = csrf.clone();
+        let start = Arc::clone(&start);
+        async move {
+            start.wait().await;
+            purchase_plan_with_key(&router, &cookie, &csrf, plan_id, "wallet-race-1").await
+        }
+    };
+    let (first, second) = tokio::join!(first, second);
+    assert_eq!(first.0, StatusCode::OK, "first: {first:?}");
+    assert_eq!(second.0, StatusCode::OK, "second: {second:?}");
+    assert_eq!(first.1, second.1);
+    let (_, ledger) = list_ledger(&router, &cookie).await;
+    assert_eq!(ledger["total"], 2);
+    let (_, wallet) = get_wallet(&router, Some(&cookie)).await;
+    assert_eq!(wallet.expect("wallet")["balance"], 0);
+    env.cleanup().await;
+}
+
+#[tokio::test]
+async fn quota_addon_retry_replays_without_duplicate_grant_or_debit() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
+    let plan = create_plan(
+        &router,
+        &format!("addon-plan-{suffix}"),
+        priced_plan_limits(10, "monthly"),
+    )
+    .await;
+    let plan_id = plan["id"].as_i64().expect("plan id");
+    chenxing_auth::sqlx::query(
+        "UPDATE users SET plan_id = $2, plan_expires_at = NOW() + INTERVAL '30 days',
+         plan_entitlement_version = 1 WHERE id = $1",
+    )
+    .bind(user_id)
+    .bind(plan_id)
+    .execute(&env.database)
+    .await
+    .expect("assign active plan");
+    let addon_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO plan_quota_addons
+            (plan_id, code, name, price_points, daily_auth_limit, monthly_auth_limit)
+         VALUES ($1, 'extra', 'Extra', 20, 100, 1000) RETURNING id",
+    )
+    .bind(plan_id)
+    .fetch_one(&env.database)
+    .await
+    .expect("insert quota addon");
+    assert_eq!(
+        credit_wallet(&router, user_id, 100, None).await.0,
+        StatusCode::OK
+    );
+
+    let first = purchase_quota_addon(&router, &cookie, &csrf, addon_id, "addon-retry-1").await;
+    let second = purchase_quota_addon(&router, &cookie, &csrf, addon_id, "addon-retry-1").await;
+    assert_eq!(first.0, StatusCode::OK, "first: {first:?}");
+    assert_eq!(second.0, StatusCode::OK, "retry: {second:?}");
+    assert_eq!(first.1, second.1);
+    let grants: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_quota_addon_purchases WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&env.database)
+    .await
+    .expect("grant count");
+    assert_eq!(grants, 1);
+    let debits: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wallet_ledger WHERE user_id = $1 AND reference_type = 'quota_addon_purchase'",
+    )
+    .bind(user_id)
+    .fetch_one(&env.database)
+    .await
+    .expect("addon debit count");
+    assert_eq!(debits, 1);
+    let (_, wallet) = get_wallet(&router, Some(&cookie)).await;
+    assert_eq!(wallet.expect("wallet")["balance"], 80);
     env.cleanup().await;
 }
 

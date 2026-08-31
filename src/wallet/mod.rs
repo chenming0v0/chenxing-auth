@@ -7,6 +7,7 @@
 
 pub mod domain;
 pub mod handlers;
+pub mod idempotency;
 pub mod redemption_domain;
 pub mod redemption_handlers;
 pub mod redemption_repository;

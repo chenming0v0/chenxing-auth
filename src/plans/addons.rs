@@ -69,7 +69,7 @@ pub struct QuotaAddonPurchaseInput {
     pub addon_id: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct QuotaAddonPurchaseResult {
     pub balance: i64,
     pub addon_id: i64,
@@ -97,6 +97,10 @@ pub enum QuotaAddonError {
     InsufficientBalance,
     #[error("user has no active purchased plan period")]
     NoActivePlan,
+    #[error("idempotency key was already used for a different request")]
+    IdempotencyConflict,
+    #[error("stored wallet idempotency result is invalid")]
+    IdempotencyCorruptResult,
     #[error(transparent)]
     ManagementActor(#[from] crate::users::ManagementActorValidationError),
     #[error(transparent)]

@@ -5,6 +5,7 @@ use super::{
         CreditInput, CreditResult, LedgerEntry, LedgerKind, PurchaseInput, PurchaseResult,
         ValidatedCredit, WalletError, validate_credit, validate_purchase_plan_id,
     },
+    idempotency::WalletIdempotencyContext,
     repository,
 };
 use crate::audit::AuditEvent;
@@ -41,6 +42,10 @@ pub enum WalletServiceError {
     ActorSessionInvalid,
     #[error("the management actor no longer has the required permission")]
     ActorPermissionRequired,
+    #[error("idempotency key was already used for a different request")]
+    IdempotencyConflict,
+    #[error("stored wallet idempotency result is invalid")]
+    IdempotencyCorruptResult,
     #[error("wallet audit operation failed: {0}")]
     Audit(#[from] crate::audit::AuditError),
     #[error("database operation failed: {0}")]
@@ -69,10 +74,32 @@ impl WalletService {
         &self,
         user_id: UserId,
         input: PurchaseInput,
+        idempotency: WalletIdempotencyContext,
         audit_event: AuditEvent,
     ) -> Result<PurchaseResult, WalletServiceError> {
         let plan_id = validate_purchase_plan_id(input.plan_id)?;
         let mut transaction = self.pool.begin().await?;
+        match repository::claim_purchase(&mut transaction, &idempotency).await {
+            Ok(repository::WalletIdempotencyClaim::Replay(result)) => {
+                let value = serde_json::from_value(result)
+                    .map_err(|_| WalletServiceError::IdempotencyCorruptResult)?;
+                transaction.rollback().await?;
+                return Ok(value);
+            }
+            Ok(repository::WalletIdempotencyClaim::New) => {}
+            Err(repository::WalletIdempotencyError::Conflict) => {
+                transaction.rollback().await?;
+                return Err(WalletServiceError::IdempotencyConflict);
+            }
+            Err(repository::WalletIdempotencyError::CorruptResult) => {
+                transaction.rollback().await?;
+                return Err(WalletServiceError::IdempotencyCorruptResult);
+            }
+            Err(repository::WalletIdempotencyError::Database(error)) => {
+                transaction.rollback().await?;
+                return Err(WalletServiceError::Database(error));
+            }
+        }
         if !repository::lock_user(&mut transaction, user_id).await? {
             transaction.rollback().await?;
             return Err(WalletServiceError::UserNotFound);
@@ -111,24 +138,50 @@ impl WalletService {
         )
         .await?;
         crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
-        transaction.commit().await?;
-        Ok(PurchaseResult {
+        let result = PurchaseResult {
             balance: balance_after,
             plan_id: plan.id,
             plan_expires_at,
-        })
+        };
+        repository::complete_purchase(&mut transaction, &idempotency, &result)
+            .await
+            .map_err(map_wallet_idempotency_error)?;
+        transaction.commit().await?;
+        Ok(result)
     }
 
     pub async fn purchase_quota_addon(
         &self,
         user_id: UserId,
         input: QuotaAddonPurchaseInput,
+        idempotency: WalletIdempotencyContext,
         audit_event: AuditEvent,
     ) -> Result<QuotaAddonPurchaseResult, QuotaAddonError> {
         if input.addon_id < 1 {
             return Err(QuotaAddonError::NotFound);
         }
         let mut transaction = self.pool.begin().await?;
+        match repository::claim_purchase(&mut transaction, &idempotency).await {
+            Ok(repository::WalletIdempotencyClaim::Replay(result)) => {
+                let value = serde_json::from_value(result)
+                    .map_err(|_| QuotaAddonError::IdempotencyCorruptResult)?;
+                transaction.rollback().await?;
+                return Ok(value);
+            }
+            Ok(repository::WalletIdempotencyClaim::New) => {}
+            Err(repository::WalletIdempotencyError::Conflict) => {
+                transaction.rollback().await?;
+                return Err(QuotaAddonError::IdempotencyConflict);
+            }
+            Err(repository::WalletIdempotencyError::CorruptResult) => {
+                transaction.rollback().await?;
+                return Err(QuotaAddonError::IdempotencyCorruptResult);
+            }
+            Err(repository::WalletIdempotencyError::Database(error)) => {
+                transaction.rollback().await?;
+                return Err(QuotaAddonError::Database(error));
+            }
+        }
         let plan: Option<(i64, time::OffsetDateTime, i64)> = crate::sqlx::query_as(
             "SELECT plan_id, plan_expires_at, plan_entitlement_version FROM users
              WHERE id=$1 AND plan_id IS NOT NULL AND plan_expires_at > NOW()
@@ -187,12 +240,16 @@ impl WalletService {
         )
         .await?;
         crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
-        transaction.commit().await?;
-        Ok(QuotaAddonPurchaseResult {
+        let result = QuotaAddonPurchaseResult {
             balance,
             addon_id: addon.id,
             plan_expires_at: Some(expires_at),
-        })
+        };
+        repository::complete_purchase(&mut transaction, &idempotency, &result)
+            .await
+            .map_err(map_quota_addon_idempotency_error)?;
+        transaction.commit().await?;
+        Ok(result)
     }
 
     pub async fn credit(
@@ -244,4 +301,24 @@ fn purchasable_plan(plan: &Plan) -> Result<(), WalletServiceError> {
         return Err(WalletServiceError::PlanNotPurchasable);
     }
     Ok(())
+}
+
+fn map_wallet_idempotency_error(error: repository::WalletIdempotencyError) -> WalletServiceError {
+    match error {
+        repository::WalletIdempotencyError::Conflict => WalletServiceError::IdempotencyConflict,
+        repository::WalletIdempotencyError::CorruptResult => {
+            WalletServiceError::IdempotencyCorruptResult
+        }
+        repository::WalletIdempotencyError::Database(error) => WalletServiceError::Database(error),
+    }
+}
+
+fn map_quota_addon_idempotency_error(error: repository::WalletIdempotencyError) -> QuotaAddonError {
+    match error {
+        repository::WalletIdempotencyError::Conflict => QuotaAddonError::IdempotencyConflict,
+        repository::WalletIdempotencyError::CorruptResult => {
+            QuotaAddonError::IdempotencyCorruptResult
+        }
+        repository::WalletIdempotencyError::Database(error) => QuotaAddonError::Database(error),
+    }
 }

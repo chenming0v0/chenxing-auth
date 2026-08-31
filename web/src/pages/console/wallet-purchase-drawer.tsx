@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { apiFetch, type CatalogPlan, type WalletPurchaseResult } from '../../api'
 import { Drawer } from '../../components/drawer'
 import { Badge, Button, Chip, HudPanel, Notice } from '../../components/ui'
+import { newIdempotencyKey } from './developer-shared'
 import { useMutationLock } from '../../use-mutation-lock'
 
 const BILLING_LABEL: Record<string, string> = {
@@ -24,6 +25,7 @@ export function WalletPurchaseDrawer({ onClose, onPurchased }: {
 }) {
   const [plans, setPlans] = useState<CatalogPlan[] | null>(null)
   const [error, setError] = useState('')
+  const purchaseIdempotencyRef = useRef<{ planId: number; key: string } | null>(null)
   const { busy, run } = useMutationLock()
 
   useEffect(() => {
@@ -41,11 +43,16 @@ export function WalletPurchaseDrawer({ onClose, onPurchased }: {
     if (!window.confirm(`确认用 ${formatPoints(plan.price_points)} 辰星点购买「${plan.name}」？`)) return
     setError('')
     await run(async () => {
+      const pending = purchaseIdempotencyRef.current
+      const key = pending?.planId === plan.id ? pending.key : newIdempotencyKey()
+      purchaseIdempotencyRef.current = { planId: plan.id, key }
       try {
         await apiFetch<WalletPurchaseResult>('/api/v1/auth/wallet/purchase', {
           method: 'POST',
+          headers: { 'Idempotency-Key': key },
           body: JSON.stringify({ plan_id: plan.id }),
         })
+        purchaseIdempotencyRef.current = null
         onPurchased()
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : '购买失败。')

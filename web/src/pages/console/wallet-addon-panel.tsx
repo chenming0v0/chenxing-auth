@@ -1,13 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { apiFetch, type QuotaAddon, type QuotaAddonPurchaseResult } from '../../api'
 import { Badge, Button, HudPanel, Icon, Notice } from '../../components/ui'
 import { useMutationLock } from '../../use-mutation-lock'
+import { newIdempotencyKey } from './developer-shared'
 
 function points(value: number): string { return value.toLocaleString('zh-CN') }
 
 export function WalletAddonPanel({ onPurchased }: { onPurchased: () => void }) {
   const [items, setItems] = useState<QuotaAddon[] | null>(null)
   const [error, setError] = useState('')
+  const purchaseIdempotencyRef = useRef<{ addonId: number; key: string } | null>(null)
   const { busy, run } = useMutationLock()
 
   useEffect(() => {
@@ -22,10 +24,16 @@ export function WalletAddonPanel({ onPurchased }: { onPurchased: () => void }) {
     if (!window.confirm(`确认用 ${points(item.price_points)} 辰星点购买「${item.name}」？`)) return
     setError('')
     await run(async () => {
+      const pending = purchaseIdempotencyRef.current
+      const key = pending?.addonId === item.id ? pending.key : newIdempotencyKey()
+      purchaseIdempotencyRef.current = { addonId: item.id, key }
       try {
         await apiFetch<QuotaAddonPurchaseResult>('/api/v1/auth/quota-addons/purchase', {
-          method: 'POST', body: JSON.stringify({ addon_id: item.id }),
+          method: 'POST',
+          headers: { 'Idempotency-Key': key },
+          body: JSON.stringify({ addon_id: item.id }),
         })
+        purchaseIdempotencyRef.current = null
         onPurchased()
       } catch (reason) { setError(reason instanceof Error ? reason.message : '购买失败。') }
     })
