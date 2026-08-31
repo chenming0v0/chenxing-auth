@@ -9,11 +9,15 @@ import { useModalFocus } from '@chenxing/ui'
 import { ExternalIdentities } from './external-identities'
 import type { MessageTone } from './profile-avatar'
 import { SecuritySettings, type SecurityFactorState } from './security-settings'
+import { handleTabListKeyDown } from '../tabs-keyboard'
 
 type NoticeState = { text: string; tone: MessageTone }
 type TotpState = { phase: 'idle' } | { phase: 'ready'; data: SecurityTotpStart }
 
 type AccountTab = 'bindings' | 'security'
+
+/** 顺序必须与下面 tablist 中 AccountTabButton 的渲染顺序一致（键盘导航按 DOM 位置取值）。 */
+const ACCOUNT_TABS: readonly AccountTab[] = ['bindings', 'security']
 
 export function AccountManagement({ userEmail, profileSummary, profileAction, emailAction, passwordAction }: {
   userEmail: string
@@ -232,7 +236,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
           </Badge>
         </div>
 
-        <div className="mt-5 grid grid-cols-2 gap-1 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)] p-1" role="tablist" aria-label="账户管理">
+        <div className="mt-5 grid grid-cols-2 gap-1 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)] p-1" role="tablist" aria-label="账户管理" aria-orientation="horizontal" onKeyDown={(event) => handleTabListKeyDown(event, ACCOUNT_TABS, setActiveTab)}>
           <AccountTabButton tab="bindings" activeTab={activeTab} icon="link" label="账户绑定" onSelect={setActiveTab} />
           <AccountTabButton tab="security" activeTab={activeTab} icon="shield-check" label="安全设置" onSelect={setActiveTab} />
         </div>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { apiFetch, type QuotaAddon, type QuotaAddonPurchaseResult } from '../../api'
+import { apiFetch, invalidateEntitlements, type QuotaAddon, type QuotaAddonPurchaseResult } from '../../api'
 import { Badge, Button, HudPanel, Icon, Notice } from '@chenxing/ui'
 import { useMutationLock } from '../../use-mutation-lock'
 import { newIdempotencyKey } from './developer-shared'
@@ -34,6 +34,10 @@ export function WalletAddonPanel({ onPurchased }: { onPurchased: () => void }) {
           body: JSON.stringify({ addon_id: item.id }),
         })
         purchaseIdempotencyRef.current = null
+        /* 增量包提高了日/月授权额度，共享权益缓存立刻过期（#687）。在 onPurchased() 之前
+           失效，父级刷新和其他页面的下一次读取才拿得到新配额。
+           重放（同一 Idempotency-Key 重试，#701 返回已提交结果）同样走到这里。 */
+        invalidateEntitlements()
         onPurchased()
       } catch (reason) { setError(reason instanceof Error ? reason.message : '购买失败。') }
     })
