@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiFetch, type AuthorizedOAuthApp } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Chip, EmptyState, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
@@ -13,29 +13,41 @@ export function AuthorizedApps() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [hasData, setHasData] = useState(false)
+  /*
+   * 单调 request id（#688）：StrictMode 会重放初始 effect，撤销后的静默刷新也可能与
+   * 在途请求重叠。普通加载与静默刷新必须共享同一条序列，否则两套函数会互相覆盖，
+   * 先发后到的旧快照能让已撤销的授权重新显示为「已连接」。
+   */
+  const listRequestIdRef = useRef(0)
   const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
   const warn = (text: string) => notify(text, 'warning')
 
-  async function loadApps(): Promise<void> {
+  const loadApps = useCallback(async (): Promise<void> => {
+    const requestId = ++listRequestIdRef.current
     setLoading(true)
     setLoadError(null)
     setNotice(null)
     try {
       const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
+      if (requestId !== listRequestIdRef.current) return
       setApps(response.items)
       setHasData(true)
     } catch (reason) {
+      if (requestId !== listRequestIdRef.current) return
       const message = reason instanceof Error ? reason.message : '应用列表加载失败。'
       setLoadError(message)
       warn(message)
     } finally {
-      setLoading(false)
+      // 过期请求不得提前结束更新请求的 loading，否则用户会在数据收敛前继续操作。
+      if (requestId === listRequestIdRef.current) setLoading(false)
     }
-  }
+  }, [])
 
   async function refreshAppsSilently(): Promise<void> {
+    const requestId = ++listRequestIdRef.current
     try {
       const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
+      if (requestId !== listRequestIdRef.current) return
       setApps(response.items)
       setHasData(true)
     } catch {
@@ -43,7 +55,11 @@ export function AuthorizedApps() {
     }
   }
 
-  useEffect(() => { void loadApps() }, [])
+  useEffect(() => {
+    void loadApps()
+    // 卸载后让在途响应失效，避免对已卸载组件 setState
+    return () => { listRequestIdRef.current += 1 }
+  }, [loadApps])
 
   async function revokeApp(app: AuthorizedOAuthApp) {
     if (!window.confirm(`确认撤销“${app.client_name}”的授权吗？撤销后，该应用将立即失去访问账户数据的权限，若要继续使用，必须重新授权。`)) return

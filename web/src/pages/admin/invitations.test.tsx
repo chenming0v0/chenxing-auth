@@ -1,6 +1,12 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { CreatedInvitationCode, InvitationCodeDetail, InvitationCodeSummary } from '../../api'
+import { StrictMode } from 'react'
+import type {
+  CreatedInvitationCode,
+  InvitationCodeDetail,
+  InvitationCodeSummary,
+  WalletRedemptionCardSummary,
+} from '../../api'
 import { installCsrfCookie } from '../../test/csrf-cookie'
 import { InvitationsWorkspace } from './invitations'
 
@@ -40,6 +46,20 @@ const detail: InvitationCodeDetail = {
 }
 
 type CapturedRequest = { path: string; method: string }
+type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void }
+
+const oldCard: WalletRedemptionCardSummary = {
+  id: 30,
+  points: 10,
+  use_count: 0,
+  max_uses: 1,
+  label: '旧响应兑换卡',
+  expires_at: null,
+  disabled_at: null,
+  created_at: '2026-08-23T02:00:00Z',
+}
+
+const newCard: WalletRedemptionCardSummary = { ...oldCard, id: 31, label: '新响应兑换卡' }
 
 let requests: CapturedRequest[] = []
 let list: InvitationCodeSummary[] = []
@@ -49,6 +69,37 @@ let disableStatus = 200
 
 function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise })
+  return { promise, resolve }
+}
+
+/**
+ * 让指定列表端点按调用顺序返回给定的 deferred，用来构造「B 先返回、A 后返回」。
+ * 另一个列表端点返回空数组，不干扰断言。
+ */
+function stubDeferredList(target: string, pending: Array<Deferred<Response>>) {
+  let index = 0
+  requests = []
+  vi.stubGlobal('confirm', vi.fn(() => true) as unknown as typeof confirm)
+  vi.stubGlobal('fetch', (path: string, init?: RequestInit) => {
+    const method = init?.method ?? 'GET'
+    const url = String(path)
+    requests.push({ path: url, method })
+    if (method === 'GET' && url === target) {
+      const next = pending[index]
+      index += 1
+      return next ? next.promise : new Promise<Response>(() => {})
+    }
+    if (method === 'GET' && (url === CODES_PATH || url === CARDS_PATH)) {
+      return Promise.resolve(jsonResponse([]))
+    }
+    return Promise.resolve(jsonResponse({ code: 'internal' }, 500))
+  })
+  return () => index
 }
 
 afterEach(() => {
@@ -184,5 +235,135 @@ describe('邀请码独立页', () => {
     expect(screen.queryByText('还没有邀请码')).toBeNull()
     expect(screen.queryByText('生成一批邀请码后，会显示在这里。')).toBeNull()
     expect(document.querySelectorAll('table')).toHaveLength(1)
+  })
+})
+
+describe('邀请与兑换页签键盘导航（#691）', () => {
+  it('方向键在页签间移动焦点并切换列表', async () => {
+    list = []
+    cardsList = []
+    stubFetch()
+    render(<InvitationsWorkspace />)
+    const codesTab = await screen.findByRole('tab', { name: '邀请码' })
+    const cardsTab = screen.getByRole('tab', { name: '兑换卡' })
+    expect(codesTab.getAttribute('aria-selected')).toBe('true')
+    expect(codesTab.tabIndex).toBe(0)
+    expect(cardsTab.tabIndex).toBe(-1)
+
+    codesTab.focus()
+    fireEvent.keyDown(codesTab, { key: 'ArrowRight' })
+
+    await screen.findByText('还没有兑换卡')
+    expect(screen.getByRole('tab', { name: '兑换卡' }).getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: '兑换卡' }))
+    expect(screen.getByRole('tab', { name: '兑换卡' }).tabIndex).toBe(0)
+    expect(screen.getByRole('tab', { name: '邀请码' }).tabIndex).toBe(-1)
+    expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe('invitations-cards-tab')
+  })
+
+  it('Home / End 与方向键回环让两个页签都能由键盘到达', async () => {
+    list = []
+    cardsList = []
+    stubFetch()
+    render(<InvitationsWorkspace />)
+    const codesTab = await screen.findByRole('tab', { name: '邀请码' })
+    codesTab.focus()
+    fireEvent.keyDown(codesTab, { key: 'End' })
+    await screen.findByText('还没有兑换卡')
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: '兑换卡' }))
+
+    fireEvent.keyDown(screen.getByRole('tab', { name: '兑换卡' }), { key: 'Home' })
+    await screen.findByText('还没有邀请码')
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: '邀请码' }))
+
+    fireEvent.keyDown(screen.getByRole('tab', { name: '邀请码' }), { key: 'ArrowLeft' })
+    await screen.findByText('还没有兑换卡')
+    expect(screen.getByRole('tab', { name: '兑换卡' }).getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('非 tabs 模式的按键不切换页签', async () => {
+    list = []
+    cardsList = []
+    stubFetch()
+    render(<InvitationsWorkspace />)
+    const codesTab = await screen.findByRole('tab', { name: '邀请码' })
+    codesTab.focus()
+    fireEvent.keyDown(codesTab, { key: 'ArrowDown' })
+    fireEvent.keyDown(codesTab, { key: 'Enter' })
+
+    expect(screen.getByRole('tab', { name: '邀请码' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tab', { name: '兑换卡' }).getAttribute('aria-selected')).toBe('false')
+  })
+})
+
+describe('邀请与兑换并发列表加载（#688）', () => {
+  it('StrictMode 双请求下，后返回的旧邀请码列表不覆盖已渲染的新列表', async () => {
+    const requestA = deferred<Response>()
+    const requestB = deferred<Response>()
+    stubDeferredList(CODES_PATH, [requestA, requestB])
+    render(<StrictMode><InvitationsWorkspace /></StrictMode>)
+    await waitFor(() => expect(requests.filter((item) => item.path === CODES_PATH)).toHaveLength(2))
+
+    await act(async () => {
+      requestB.resolve(jsonResponse([multiUse]))
+      await requestB.promise
+    })
+    expect(await screen.findByText('#8')).toBeTruthy()
+
+    await act(async () => {
+      requestA.resolve(jsonResponse([singleUse]))
+      await requestA.promise
+    })
+    expect(screen.getByText('#8')).toBeTruthy()
+    expect(screen.queryByText('#7')).toBeNull()
+  })
+
+  it('旧邀请码请求失败时不写入错误文案，也不把列表清空', async () => {
+    const requestA = deferred<Response>()
+    const requestB = deferred<Response>()
+    stubDeferredList(CODES_PATH, [requestA, requestB])
+    render(<StrictMode><InvitationsWorkspace /></StrictMode>)
+    await waitFor(() => expect(requests.filter((item) => item.path === CODES_PATH)).toHaveLength(2))
+
+    await act(async () => {
+      requestB.resolve(jsonResponse([multiUse]))
+      await requestB.promise
+    })
+    expect(await screen.findByText('#8')).toBeTruthy()
+
+    await act(async () => {
+      requestA.resolve(jsonResponse({ code: 'internal' }, 500))
+      await requestA.promise
+    })
+    expect(screen.queryByText('服务暂时不可用，请稍后重试。')).toBeNull()
+    expect(screen.getByText('#8')).toBeTruthy()
+    expect(screen.queryByText('还没有邀请码')).toBeNull()
+  })
+
+  it('兑换卡列表的重复加载同样只接受最新一次响应', async () => {
+    const requestA = deferred<Response>()
+    const requestB = deferred<Response>()
+    const cardsCalls = stubDeferredList(CARDS_PATH, [requestA, requestB])
+    render(<InvitationsWorkspace />)
+    await screen.findByText('还没有邀请码')
+
+    // 兑换卡仍在途时来回切页签：cards 还是 null，会再发一次请求，两次重叠。
+    fireEvent.click(screen.getByRole('tab', { name: '兑换卡' }))
+    fireEvent.click(screen.getByRole('tab', { name: '邀请码' }))
+    fireEvent.click(screen.getByRole('tab', { name: '兑换卡' }))
+    await waitFor(() => expect(cardsCalls()).toBe(2))
+
+    await act(async () => {
+      requestB.resolve(jsonResponse([newCard]))
+      await requestB.promise
+    })
+    expect(await screen.findByText('#31')).toBeTruthy()
+
+    await act(async () => {
+      requestA.resolve(jsonResponse([oldCard]))
+      await requestA.promise
+    })
+    expect(screen.getByText('#31')).toBeTruthy()
+    expect(screen.queryByText('#30')).toBeNull()
   })
 })

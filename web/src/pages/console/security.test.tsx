@@ -248,6 +248,60 @@ describe('AccountManagement 可选因子（#470）', () => {
   })
 })
 
+describe('AccountManagement 页签键盘导航（#691）', () => {
+  it('方向键在两个页签间移动焦点并同时切换面板', async () => {
+    renderAccountManagement()
+    const bindings = await screen.findByRole('tab', { name: '账户绑定' })
+    const security = screen.getByRole('tab', { name: '安全设置' })
+    expect(bindings.getAttribute('aria-selected')).toBe('true')
+    expect(bindings.tabIndex).toBe(0)
+    expect(security.tabIndex).toBe(-1)
+
+    bindings.focus()
+    fireEvent.keyDown(bindings, { key: 'ArrowRight' })
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: '安全设置' }).getAttribute('aria-selected')).toBe('true'))
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: '安全设置' }))
+    expect(screen.getByRole('tab', { name: '安全设置' }).tabIndex).toBe(0)
+    expect(screen.getByRole('tab', { name: '账户绑定' }).tabIndex).toBe(-1)
+    expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe('security-settings-tab')
+  })
+
+  it('ArrowLeft 在首个页签上回环到末个页签', async () => {
+    renderAccountManagement()
+    const bindings = await screen.findByRole('tab', { name: '账户绑定' })
+    bindings.focus()
+    fireEvent.keyDown(bindings, { key: 'ArrowLeft' })
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: '安全设置' }).getAttribute('aria-selected')).toBe('true'))
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: '安全设置' }))
+  })
+
+  it('Home / End 跳到首末页签', async () => {
+    renderAccountManagement()
+    const bindings = await screen.findByRole('tab', { name: '账户绑定' })
+    bindings.focus()
+    fireEvent.keyDown(bindings, { key: 'End' })
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: '安全设置' }).getAttribute('aria-selected')).toBe('true'))
+
+    fireEvent.keyDown(screen.getByRole('tab', { name: '安全设置' }), { key: 'Home' })
+    await waitFor(() => expect(screen.getByRole('tab', { name: '账户绑定' }).getAttribute('aria-selected')).toBe('true'))
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: '账户绑定' }))
+  })
+
+  it('非 tabs 模式的按键不改变选中项', async () => {
+    renderAccountManagement()
+    const bindings = await screen.findByRole('tab', { name: '账户绑定' })
+    bindings.focus()
+    fireEvent.keyDown(bindings, { key: 'ArrowDown' })
+    fireEvent.keyDown(bindings, { key: 'a' })
+
+    expect(screen.getByRole('tab', { name: '账户绑定' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tab', { name: '安全设置' }).getAttribute('aria-selected')).toBe('false')
+  })
+})
+
 describe('AccountManagement 安全因子加载状态（#681）', () => {
   it('初始加载失败时显示未知状态，不把未知因子声明为未启用或零凭据', async () => {
     loadFactorSummary = () => Promise.resolve(jsonResponse({ code: 'temporarily_unavailable' }, 503))
