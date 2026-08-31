@@ -131,6 +131,9 @@ pub async fn purchase_plan(
     session: SessionWrite,
     ApiJson(input): ApiJson<PurchaseInput>,
 ) -> Response {
+    let Some(credential) = session.user_session_credential() else {
+        return crate::users::ui_auth::invalid_session_response(&state, "invalid_session");
+    };
     let event = AuditEvent::new(
         "user".to_owned(),
         Some(session.user_id.to_string()),
@@ -139,8 +142,14 @@ pub async fn purchase_plan(
         Some(session.user_id.to_string()),
         serde_json::json!({"result": "success"}),
     );
-    match state.wallets.purchase(session.user_id, input, event).await {
+    match state.wallets.purchase(credential, input, event).await {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(WalletServiceError::SessionInvalid) => {
+            crate::users::ui_auth::invalid_session_response(&state, "invalid_session")
+        }
+        Err(WalletServiceError::UserDisabled) => {
+            crate::users::ui_auth::invalid_session_response(&state, "user_disabled")
+        }
         Err(error_value) => wallet_error_response(error_value),
     }
 }
@@ -186,6 +195,9 @@ pub async fn purchase_quota_addon(
     session: SessionWrite,
     ApiJson(input): ApiJson<QuotaAddonPurchaseInput>,
 ) -> Response {
+    let Some(credential) = session.user_session_credential() else {
+        return crate::users::ui_auth::invalid_session_response(&state, "invalid_session");
+    };
     let event = AuditEvent::new(
         "user".into(),
         Some(session.user_id.to_string()),
@@ -196,7 +208,7 @@ pub async fn purchase_quota_addon(
     );
     match state
         .wallets
-        .purchase_quota_addon(session.user_id, input, event)
+        .purchase_quota_addon(credential, input, event)
         .await
     {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
@@ -214,6 +226,12 @@ pub async fn purchase_quota_addon(
             "audit_unavailable",
             "the purchase was rolled back because audit is unavailable",
         ),
+        Err(QuotaAddonError::SessionInvalid) => {
+            crate::users::ui_auth::invalid_session_response(&state, "invalid_session")
+        }
+        Err(QuotaAddonError::UserDisabled) => {
+            crate::users::ui_auth::invalid_session_response(&state, "user_disabled")
+        }
         Err(e) => {
             tracing::error!(error=%e, "quota add-on purchase failed");
             error::internal()
@@ -274,6 +292,10 @@ pub(crate) fn wallet_error_response(error_value: WalletServiceError) -> Response
         }
         WalletServiceError::ActorSessionInvalid | WalletServiceError::ActorPermissionRequired => {
             tracing::error!("actor authorization outcome escaped the wallet handler");
+            error::internal()
+        }
+        WalletServiceError::SessionInvalid | WalletServiceError::UserDisabled => {
+            tracing::error!("user session outcome escaped the wallet purchase handler");
             error::internal()
         }
         WalletServiceError::Audit(error_value) => {

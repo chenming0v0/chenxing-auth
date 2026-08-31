@@ -97,6 +97,10 @@ pub enum QuotaAddonError {
     InsufficientBalance,
     #[error("user has no active purchased plan period")]
     NoActivePlan,
+    #[error("the user session is no longer valid")]
+    SessionInvalid,
+    #[error("the user account is disabled")]
+    UserDisabled,
     #[error(transparent)]
     ManagementActor(#[from] crate::users::ManagementActorValidationError),
     #[error(transparent)]

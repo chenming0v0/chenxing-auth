@@ -162,13 +162,19 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 - `GET /api/v1/auth/status`：返回当前是否登录。没有会话或会话已失效时返回 `authenticated: false`；数据库或 Session 存储故障返回 `500 internal_error`，不会伪装成未登录。
 - `GET /api/v1/auth/me`：返回当前用户资料和当前 Session 到期时间。
-- `PATCH /api/v1/auth/me`：更新 `display_name`，需要用户 CSRF。
+- `PATCH /api/v1/auth/me`：更新 `display_name` / `username`，需要用户 CSRF。该普通资料修改属于低风险写操作，只做请求入口的 Session + CSRF 校验；不会在资料落库前再次锁定 Session 行。
 - `POST /api/v1/auth/password`：校验当前密码并修改密码，成功返回 `204`，同时撤销该用户所有 Session。当前密码为空或超过 128 字符时与密码错误返回同一 `401 invalid_credentials`，不暴露长度。
 - `GET /api/v1/auth/entitlements`：返回当前生效套餐摘要（`code`、`name`、`description`、`validity`）和各项权益用量；`limit` 为 `null` 表示无限，缺失表示数值无上限概念（如 QPS）。
 - `GET /api/v1/auth/security-events?page=1&page_size=20`：分页返回当前用户在热表和归档表中的安全事件，包含 `id`、`action`、`category`、`severity`、`resource_type`、OAuth Client 摘要和时间；`page_size` 最大为 100。`category`/`severity` 由服务端单点映射，未映射的 action 回落 `account`/`info`。
 - `GET /api/v1/auth/security-events/{event_id}`：返回单个安全事件详情（`ip`/`user_agent` 只从 metadata 白名单提取，`ip_location`/`ray_id` 恒为 null，`client` 仅 OAuth 事件填充、Client 已删除时为 null）；事件不存在或不属于当前用户时一律 404，不区分「查不到」与「不是你的」。
 - `GET /api/v1/auth/sessions`：返回当前用户的 Session 元数据，不返回 Session 或 CSRF 秘密。
 - `DELETE /api/v1/auth/sessions/{session_id}`：撤销当前用户拥有的指定 Session，需要用户 CSRF。
+
+普通用户写操作按风险分级。钱包扣款、兑换码入账和增量权益授予属于资产/权益操作，除入口的 Session Cookie 与 CSRF 三件套外，还会把入口捕获的精确 Session ID、token 摘要和 credential generation 带入数据库事务；在任何余额、兑换次数或权益副作用之前，事务会在用户代际锁下复核 Session 未撤销、未超过绝对/空闲期限、代际仍匹配且账号仍为 active。复核失败时整个事务回滚：Session 撤销、过期或代际变化返回 `401 invalid_session`，账号禁用返回 `401 user_disabled`，并清理浏览器认证 Cookie。
+
+- `POST /api/v1/auth/wallet/purchase`：使用辰星点购买套餐，二次复核通过后才扣款并替换当前套餐。
+- `POST /api/v1/auth/quota-addons/purchase`：购买当前周期套餐的增量包，二次复核通过后才扣款并授予额度。
+- `POST /api/v1/auth/wallet/redeem`：兑换辰星点兑换卡，二次复核通过后才入账并消费该用户的兑换次数。
 
 普通用户 OAuth 项目接口：
 

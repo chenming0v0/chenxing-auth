@@ -121,6 +121,9 @@ pub async fn redeem_wallet_code(
     session: SessionWrite,
     ApiJson(input): ApiJson<RedeemCodeInput>,
 ) -> Response {
+    let Some(credential) = session.user_session_credential() else {
+        return crate::users::ui_auth::invalid_session_response(&state, "invalid_session");
+    };
     let audit = AuditEvent::new(
         "user".to_owned(),
         Some(session.user_id.to_string()),
@@ -131,12 +134,18 @@ pub async fn redeem_wallet_code(
     );
     match state
         .redemptions
-        .redeem(session.user_id, &input.code, audit)
+        .redeem(credential, &input.code, audit)
         .await
     {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
         Err(RedemptionError::InvalidCode) => {
             error::bad_request("invalid_redemption_code", "redemption code is invalid")
+        }
+        Err(RedemptionError::SessionInvalid) => {
+            crate::users::ui_auth::invalid_session_response(&state, "invalid_session")
+        }
+        Err(RedemptionError::UserDisabled) => {
+            crate::users::ui_auth::invalid_session_response(&state, "user_disabled")
         }
         Err(value) => {
             tracing::error!(error = %value, "wallet redemption failed");
