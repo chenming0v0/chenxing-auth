@@ -166,6 +166,7 @@ bash ./manage.sh
 
 ## 更多文档
 
+- [Email Outbox Worker 健康与监控](docs/email-worker-health.md)
 - [运维与安全手册](docs/operations.md) — 连接池与语句超时、限流、迁移链、审计与角色分离、密钥目录与轮换、Session 加密、Cookie 契约、SMTP 等全部部署细节
 - [Redis 持久化与恢复](docs/redis-durability.md)
 - [密钥存储部署要求](docs/security/key-storage.md)
