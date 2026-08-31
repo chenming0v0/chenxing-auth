@@ -183,10 +183,12 @@ describe('账户菜单用户信息不做成文档标题（#226）', () => {
     const panel = document.getElementById(panelId) as HTMLElement
     expect(panel).toBeTruthy()
     expect(within(panel).queryByRole('heading')).toBeNull()
-    // 用户名仍在原位置以原样式渲染，只是语义从 h3 变成普通文本标签
-    const nameLabel = within(panel).getByText('测试员')
-    expect(nameLabel.tagName).toBe('P')
-    expect(nameLabel.className).toContain('text-base font-semibold')
+    // 用户名仍在原位置以原样式渲染，只是语义从 h3 变成普通文本标签。
+    // #692 在插槽内侧包了一层断行 span，所以承载语义与样式的是它的 <p> 容器，
+    // 而不是直接持有文本的那个节点。
+    const nameLabel = within(panel).getByText('测试员').closest('p')
+    expect(nameLabel).not.toBeNull()
+    expect(nameLabel?.className).toContain('text-base font-semibold')
   })
 })
 
