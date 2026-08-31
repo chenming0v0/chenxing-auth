@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   apiFetch,
   type CreatedInvitationCode,
@@ -58,30 +58,48 @@ export function InvitationsWorkspace() {
   const [message, setMessage] = useState('')
   const [inviteDetailId, setInviteDetailId] = useState<number | null>(null)
   const [walletDetailId, setWalletDetailId] = useState<number | null>(null)
+  /*
+   * 每个资源一条单调 request id（#688）：StrictMode 会重放初始 effect，创建与停用
+   * 之后的再次加载也会与在途请求重叠。只有当前 id 允许写列表和错误文案，否则先发
+   * 后到的旧响应会让刚生成的记录消失、刚停用的记录退回旧状态。
+   */
+  const codesRequestIdRef = useRef(0)
+  const cardsRequestIdRef = useRef(0)
 
-  async function loadCodes() {
+  const loadCodes = useCallback(async () => {
+    const requestId = ++codesRequestIdRef.current
     try {
       const value = await apiFetch<InvitationCodeSummary[]>(CODES_PATH)
+      if (requestId !== codesRequestIdRef.current) return
       setCodes(Array.isArray(value) ? value : [])
     } catch (reason) {
+      if (requestId !== codesRequestIdRef.current) return
       setCodes([])
       setMessage(reason instanceof Error ? reason.message : '邀请码列表加载失败。')
     }
-  }
+  }, [])
 
-  async function loadCards() {
+  const loadCards = useCallback(async () => {
+    const requestId = ++cardsRequestIdRef.current
     try {
       const value = await apiFetch<WalletRedemptionCardSummary[]>(CARDS_PATH)
+      if (requestId !== cardsRequestIdRef.current) return
       setCards(Array.isArray(value) ? value : [])
     } catch (reason) {
+      if (requestId !== cardsRequestIdRef.current) return
       setCards([])
       setMessage(reason instanceof Error ? reason.message : '兑换卡列表加载失败。')
     }
-  }
+  }, [])
 
   useEffect(() => {
     void loadCodes()
-  }, [])
+    // 卸载后让在途响应失效，避免对已卸载组件 setState
+    return () => {
+      codesRequestIdRef.current += 1
+      cardsRequestIdRef.current += 1
+    }
+  }, [loadCodes])
 
   function selectTab(next: ListTab) {
     if (next === tab) return
