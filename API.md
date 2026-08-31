@@ -335,6 +335,8 @@ GET 使用请求头 `Authorization: Bearer <access_token>`。POST 支持同一 B
 
 管理员 Bearer Token 请求头：`Authorization: Bearer <ADMIN_TOKEN>`。初始化完成后，管理 API 有两条独立通道，任一通过即可继续按角色判定权限：系统 `ADMIN_TOKEN` Bearer（权限等价于 Owner，无用户 ID，豁免浏览器 CSRF），或普通用户 Session。浏览器写操作使用 `__Host-chenxing_session`、`__Host-chenxing_csrf` Cookie 和 `X-CSRF-Token` 三者绑定（loopback HTTP 开发环境使用对应的不带前缀名称）。
 
+浏览器管理写的入口认证只负责快速拒绝、CSRF 绑定和初始 `AdminPermission` 判定；数据库事务型写入的最终授权在业务事务中完成。事务会锁定 actor 用户与本次请求实际使用的精确 Session 行，取得锁后以数据库语句时间重新检查用户状态、角色、权限、Session 代际、撤销状态、绝对过期和该 Session 签发时固化的 idle 窗口。任一条件在锁等待期间失效都返回 `401 invalid_session` 或既有的 `403 admin_forbidden`，业务副作用及其成功审计一并回滚；Session 失效拒绝另记 `admin_authorization_denied`，原因是 `actor_session_changed`，且不包含 Cookie 或 CSRF 凭据。密钥轮换等非数据库副作用在执行前使用同一凭据边界复核，但不会跨外部或阻塞 I/O 持有数据库锁。系统 `ADMIN_TOKEN` 不依赖 Session，保持独立的 Owner 等价语义。
+
 `ADMIN_TOKEN` 为空时整个管理面关闭：Bearer 与浏览器 Session 两条通道都被拒绝，已初始化的管理接口统一返回 403 `admin_disabled`。不存在 Owner 时公开的首个 Owner 初始化接口（`POST /api/v1/admin/bootstrap`）不属于这两条通道，无论是否配置 `ADMIN_TOKEN` 都保持公开。
 
 角色为 `user`、`admin`、`owner`，权限按层级继承。管理员登录不再有独立接口、密码表、Session 或 Cookie；所有角色使用 `/api/v1/auth/login`。
