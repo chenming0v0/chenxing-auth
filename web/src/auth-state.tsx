@@ -25,9 +25,26 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 const AUTH_SYNC_CHANNEL = 'chenxing-auth-sync'
 const AUTH_SYNC_STORAGE_KEY = 'chenxing-auth-sync-event'
 const REVALIDATE_THROTTLE_MS = 5_000
+// 每个认证事件同时经 BroadcastChannel 与 localStorage 发布（后者是前者不可用时的兜底），
+// 支持两者的标签页会收到同一事件两份。去重集合只需覆盖多路交付的极短时间窗，几十条足够；
+// 有界是硬要求，长期驻留的标签页不能让集合无限增长（#689）。
+const AUTH_SYNC_DEDUPE_LIMIT = 32
 
 type AuthSyncEvent = { type: 'logout' | 'login'; nonce: string; occurredAt: number }
 type RefreshOptions = { broadcast?: boolean }
+
+function newAuthEventNonce(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+// 事件身份。nonce 由发送方生成，但跨标签 JSON 不可信：缺失时退回 type+occurredAt，
+// 让每个事件都有键可去重，而不是多一条拒绝分支。
+function authEventKey(event: AuthSyncEvent): string {
+  return typeof event.nonce === 'string' && event.nonce !== ''
+    ? event.nonce
+    : `${event.type}:${event.occurredAt}`
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserMe | null>(null)
@@ -50,9 +67,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refreshSeqRef = useRef<number>(0)
   const userIdRef = useRef<UserMe['id'] | null>(null)
   const authChangedAtRef = useRef(0)
+  // 最近处理过（或自己发出）的事件键，插入序即淘汰序（Set 保序）。
+  const handledAuthEventsRef = useRef<Set<string>>(new Set())
   const statusRef = useRef<AuthContextValue['status']>('loading')
 
   useEffect(() => { statusRef.current = status }, [status])
+
+  /** 首次见到该事件返回 true 并记账；重复交付返回 false。 */
+  const claimAuthEvent = useCallback((key: string) => {
+    const handled = handledAuthEventsRef.current
+    if (handled.has(key)) return false
+    handled.add(key)
+    while (handled.size > AUTH_SYNC_DEDUPE_LIMIT) {
+      const oldest = handled.values().next()
+      if (oldest.done) break
+      handled.delete(oldest.value)
+    }
+    return true
+  }, [])
 
   const clearLocal = useCallback(() => {
     // 递增代数——所有正在进行的 refresh() await 返回后会发现代数不匹配，自动丢弃结果
@@ -65,8 +97,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const broadcastAuthEvent = useCallback((type: AuthSyncEvent['type'], occurredAt = Date.now()) => {
-    const event: AuthSyncEvent = { type, nonce: `${Date.now()}-${Math.random()}`, occurredAt }
+    const event: AuthSyncEvent = { type, nonce: newAuthEventNonce(), occurredAt }
     authChangedAtRef.current = Math.max(authChangedAtRef.current, occurredAt)
+    // 先记账再发布：本标签的效果已在本地执行完毕，任何回环交付（同页多个
+    // BroadcastChannel 对象、或宿主把 storage 事件回送写入方）都必须被丢弃。
+    claimAuthEvent(authEventKey(event))
     try {
       channelRef.current?.postMessage(event)
     } catch {
@@ -77,7 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // Storage can be disabled in privacy-restricted browser contexts.
     }
-  }, [])
+  }, [claimAuthEvent])
 
   const broadcastLogout = useCallback(() => broadcastAuthEvent('logout'), [broadcastAuthEvent])
 
@@ -148,6 +183,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const onRemoteAuthSync = (event: AuthSyncEvent | null) => {
       if (!event || !Number.isFinite(event.occurredAt) || event.occurredAt < authChangedAtRef.current) return
+      // 幂等闸门放在两条通道共用的入口最前面：同一事件经 BroadcastChannel 与
+      // storage 双通道到达时只执行一次。occurredAt 不是稳定唯一键——同毫秒内的
+      // 两个真实事件时间戳相等，只能靠 nonce 区分身份（#689）。
+      if (!claimAuthEvent(authEventKey(event))) return
       authChangedAtRef.current = event.occurredAt
       if (event.type === 'logout') clearLocal()
       else if (event.type === 'login') void refresh({ broadcast: false })
@@ -177,7 +216,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       channelRef.current?.close()
       channelRef.current = null
     }
-  }, [clearLocal, refresh])
+  }, [claimAuthEvent, clearLocal, refresh])
 
   useEffect(() => {
     if (sessionExpiryTimerRef.current) clearTimeout(sessionExpiryTimerRef.current)
