@@ -206,18 +206,44 @@ jobs:
     name: Publish release assets
     permissions:
       contents: write
+      actions: read
     if: >-
       needs.verify-provenance.outputs.valid == 'true' &&
       github.event_name == 'push' &&
       startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: [verify-provenance, rust-binaries]
+    needs: [verify-provenance, rust-binaries, container]
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: binary-*
           merge-multiple: true
           path: dist
+      - name: Package versioned installer and release manifest
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ needs.container.outputs.digest }}
+        run: |
+          set -euo pipefail
+          version="$GITHUB_REF_NAME"
+          [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          script_sha256="$(sha256sum manage.sh | awk '{print $1}')"
+          image="ghcr.io/${GITHUB_REPOSITORY}:${version}@${IMAGE_DIGEST}"
+          cp manage.sh "dist/chenxing-auth-manage.sh"
+          chmod 755 "dist/chenxing-auth-manage.sh"
+          cat > "dist/chenxing-auth-release.env" <<EOF
+          schema=1
+          version=${version}
+          image=${image}
+          image_digest=${IMAGE_DIGEST}
+          script=chenxing-auth-manage.sh
+          script_sha256=${script_sha256}
+          EOF
+          sed -i 's/^          //' "dist/chenxing-auth-release.env"
       - name: Generate checksums
         shell: bash
         run: |
@@ -300,6 +326,8 @@ jobs:
 
   container:
     name: Multi-platform container
+    outputs:
+      digest: ${{ steps.push-image.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -398,10 +426,11 @@ jobs:
           # that context mint a misleading `dev` tag for a releases build.
           tags: |
             type=raw,value=manual-${{ github.sha }},enable=${{ github.event_name == 'workflow_dispatch' }}
-            type=ref,event=tag,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ github.ref_name }},enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=releases,enable=${{ github.event_name == 'workflow_run' }}
             type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' }}
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+      - id: push-image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: Dockerfile.runtime

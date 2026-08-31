@@ -1,25 +1,43 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-DEFAULT_IMAGE="ghcr.io/chenming0v0/chenxing-auth:latest"
 DEFAULT_POSTGRES_IMAGE="postgres:16-alpine"
 DEFAULT_REDIS_IMAGE="redis:7-alpine"
 DEFAULT_PORT="3000"
-DEFAULT_INSTALLER_URL="https://raw.githubusercontent.com/chenming0v0/chenxing-auth/releases/manage.sh"
+RELEASE_REPOSITORY="${CHENXING_RELEASE_REPOSITORY:-chenming0v0/chenxing-auth}"
+RELEASE_MANIFEST_NAME="chenxing-auth-release.env"
+RELEASE_SCRIPT_NAME="chenxing-auth-manage.sh"
 MANAGER_NAME="manage.sh"
 DEBUG_MODE=false
 MODE=deploy
 PREPARE_ONLY=false
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 INSTALL_DIR="$(dirname -- "$SCRIPT_PATH")"
+RELEASE_VERSION="${CHENXING_RELEASE_VERSION:-}"
+RELEASE_MANIFEST_FILE="${CHENXING_RELEASE_MANIFEST_FILE:-}"
+RELEASE_FETCH_DIR=""
+if [[ "${CHENXING_BOOTSTRAP_TEMP:-}" == 1 ]]; then
+    RELEASE_FETCH_DIR="${CHENXING_RELEASE_FETCH_DIR:-}"
+fi
+RELEASE_MANIFEST_SHA256="${CHENXING_RELEASE_MANIFEST_SHA256:-}"
+RELEASE_SCRIPT_SHA256="${CHENXING_SCRIPT_SHA256:-}"
+RELEASE_IMAGE=""
+RELEASE_IMAGE_DIGEST=""
 
 stage() {
     printf '\n==> %s\n' "$1"
 }
 
 fail() {
+    cleanup_release_artifacts || true
     printf '\n安装失败: %s\n' "$1" >&2
     exit 1
+}
+
+cleanup_release_artifacts() {
+    if [[ "$RELEASE_FETCH_DIR" == "$INSTALL_DIR"/.release.* && -d "$RELEASE_FETCH_DIR" ]]; then
+        rm -rf -- "$RELEASE_FETCH_DIR"
+    fi
 }
 
 on_error() {
@@ -29,6 +47,7 @@ on_error() {
     if [[ "$DEBUG_MODE" == true && -f "${COMPOSE_FILE:-}" ]] && command_exists docker; then
         report_application_diagnostics || true
     fi
+    cleanup_release_artifacts || true
     exit "$status"
 }
 trap on_error ERR
@@ -56,29 +75,106 @@ install_manager() {
     fi
 }
 
-fetch_latest_manager() {
-    local temp_file
-    temp_file="$(mktemp "$INSTALL_DIR/.manage.sh.update.XXXXXX")"
+validate_release_version() {
+    [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+}
+
+release_asset_url() {
+    local version="$1" asset="$2"
+    printf 'https://github.com/%s/releases/download/%s/%s' \
+        "$RELEASE_REPOSITORY" "$version" "$asset"
+}
+
+download_release_asset() {
+    local url="$1" output="$2"
     if command_exists curl; then
         if ! curl --fail --silent --show-error --location --retry 3 \
-            --connect-timeout 10 -o "$temp_file" "$DEFAULT_INSTALLER_URL"; then
-            rm -f -- "$temp_file"
-            fail "下载最新版 manage.sh 失败；现有部署未改变。"
+            --connect-timeout 10 -o "$output" "$url"; then
+            fail "下载发布资产失败；现有部署未改变。"
         fi
     elif command_exists wget; then
         if ! wget --quiet --show-progress --tries=3 --timeout=10 \
-            -O "$temp_file" "$DEFAULT_INSTALLER_URL"; then
-            rm -f -- "$temp_file"
-            fail "下载最新版 manage.sh 失败；现有部署未改变。"
+            -O "$output" "$url"; then
+            fail "下载发布资产失败；现有部署未改变。"
         fi
     else
-        rm -f -- "$temp_file"
         fail "升级需要 curl 或 wget。"
     fi
-    bash -n "$temp_file" || {
-        rm -f -- "$temp_file"
-        fail "下载的升级脚本语法校验失败。"
-    }
+}
+
+load_release_manifest() {
+    local line key value
+    declare -A values=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" ]] && continue
+        [[ "$line" == *=* ]] || fail "发布清单格式无效。"
+        key="${line%%=*}"
+        value="${line#*=}"
+        [[ "$key" =~ ^[a-z_]+$ ]] || fail "发布清单字段名无效。"
+        [[ -z "${values[$key]+present}" ]] || fail "发布清单包含重复字段：$key。"
+        values["$key"]="$value"
+    done < "$RELEASE_MANIFEST_FILE"
+
+    for key in schema version image image_digest script script_sha256; do
+        [[ -n "${values[$key]+present}" ]] || fail "发布清单缺少字段：$key。"
+    done
+    [[ "${values[schema]}" == 1 ]] || fail "不支持的发布清单版本。"
+    [[ "${values[version]}" == "$RELEASE_VERSION" ]] || fail "发布清单版本与请求版本不一致。"
+    [[ "${values[script]}" == "$RELEASE_SCRIPT_NAME" ]] || fail "发布清单脚本资产名称不受支持。"
+    [[ "${values[image_digest]}" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "发布清单中的镜像 digest 无效。"
+    [[ "${values[script_sha256]}" =~ ^[0-9a-f]{64}$ ]] || fail "发布清单中的脚本摘要无效。"
+    [[ "${values[image]}" == "ghcr.io/${RELEASE_REPOSITORY}:${RELEASE_VERSION}@${values[image_digest]}" ]] \
+        || fail "发布清单中的镜像未绑定到同一版本。"
+
+    RELEASE_IMAGE="${values[image]}"
+    RELEASE_IMAGE_DIGEST="${values[image_digest]}"
+    RELEASE_SCRIPT_SHA256="${values[script_sha256]}"
+}
+
+verify_release_asset_checksum() {
+    local checksums_file="$1" asset="$2" actual expected
+    expected="$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1; exit }' "$checksums_file")"
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || fail "SHA256SUMS 缺少发布资产：$asset。"
+    actual="$(sha256sum "$RELEASE_FETCH_DIR/$asset" | awk '{print $1}')"
+    [[ "$actual" == "$expected" ]] || fail "发布资产摘要校验失败：$asset。"
+    printf '%s' "$actual"
+}
+
+prepare_release_manifest() {
+    command_exists sha256sum || fail "缺少 sha256sum，无法验证发布资产。"
+    validate_release_version "$RELEASE_VERSION" || fail "发布版本必须是 vX.Y.Z 格式。"
+
+    if [[ -z "$RELEASE_MANIFEST_FILE" ]]; then
+        RELEASE_FETCH_DIR="$(mktemp -d "$INSTALL_DIR/.release.XXXXXX")"
+        RELEASE_MANIFEST_FILE="$RELEASE_FETCH_DIR/$RELEASE_MANIFEST_NAME"
+        download_release_asset \
+            "$(release_asset_url "$RELEASE_VERSION" "$RELEASE_MANIFEST_NAME")" \
+            "$RELEASE_MANIFEST_FILE"
+        download_release_asset \
+            "$(release_asset_url "$RELEASE_VERSION" SHA256SUMS)" \
+            "$RELEASE_FETCH_DIR/SHA256SUMS"
+        RELEASE_MANIFEST_SHA256="$(verify_release_asset_checksum "$RELEASE_FETCH_DIR/SHA256SUMS" "$RELEASE_MANIFEST_NAME")"
+    else
+        [[ -f "$RELEASE_MANIFEST_FILE" && ! -L "$RELEASE_MANIFEST_FILE" ]] \
+            || fail "发布清单必须是普通文件。"
+        RELEASE_MANIFEST_SHA256="$(sha256sum "$RELEASE_MANIFEST_FILE" | awk '{print $1}')"
+    fi
+    load_release_manifest
+}
+
+fetch_verified_manager() {
+    local temp_file actual
+    [[ -n "$RELEASE_FETCH_DIR" ]] || RELEASE_FETCH_DIR="$(mktemp -d "$INSTALL_DIR/.release.XXXXXX")"
+    temp_file="$RELEASE_FETCH_DIR/$RELEASE_SCRIPT_NAME"
+    download_release_asset \
+        "$(release_asset_url "$RELEASE_VERSION" "$RELEASE_SCRIPT_NAME")" \
+        "$temp_file"
+    if [[ -f "$RELEASE_FETCH_DIR/SHA256SUMS" ]]; then
+        verify_release_asset_checksum "$RELEASE_FETCH_DIR/SHA256SUMS" "$RELEASE_SCRIPT_NAME" >/dev/null
+    fi
+    actual="$(sha256sum "$temp_file" | awk '{print $1}')"
+    [[ "$actual" == "$RELEASE_SCRIPT_SHA256" ]] || fail "升级脚本摘要与发布清单不一致。"
+    bash -n "$temp_file" || fail "下载的升级脚本语法校验失败。"
     printf '%s' "$temp_file"
 }
 
@@ -170,6 +266,13 @@ set_env_value() {
     mv -f "$temp" "$ENV_FILE"
 }
 
+persist_release_lock() {
+    set_env_value CHENXING_RELEASE_VERSION "$RELEASE_VERSION"
+    set_env_value CHENXING_RELEASE_MANIFEST_SHA256 "$RELEASE_MANIFEST_SHA256"
+    set_env_value CHENXING_SCRIPT_SHA256 "$RELEASE_SCRIPT_SHA256"
+    set_env_value CHENXING_IMAGE "$RELEASE_IMAGE"
+}
+
 default_database_urls() {
     local runtime_user runtime_password migration_user migration_password database
     runtime_user="$(url_encode "$POSTGRES_RUNTIME_USER")"
@@ -187,6 +290,9 @@ generate_env() {
     umask 077
     cat > "$ENV_FILE" <<EOF
 COMPOSE_PROJECT_NAME=chenxing-auth
+CHENXING_RELEASE_VERSION=${RELEASE_VERSION}
+CHENXING_RELEASE_MANIFEST_SHA256=${RELEASE_MANIFEST_SHA256}
+CHENXING_SCRIPT_SHA256=${RELEASE_SCRIPT_SHA256}
 CHENXING_IMAGE=${CHENXING_IMAGE}
 POSTGRES_IMAGE=${POSTGRES_IMAGE}
 REDIS_IMAGE=${REDIS_IMAGE}
@@ -456,7 +562,10 @@ INSTALL_DIR="$(dirname -- "$SCRIPT_PATH")"
 ENV_FILE="${INSTALL_DIR}/.env"
 COMPOSE_FILE="${INSTALL_DIR}/compose.yml"
 
-for argument in "$@"; do
+arguments=("$@")
+argument_index=0
+while (( argument_index < ${#arguments[@]} )); do
+    argument="${arguments[$argument_index]}"
     case "$argument" in
         --debug)
             DEBUG_MODE=true
@@ -467,14 +576,23 @@ for argument in "$@"; do
         --prepare-only)
             PREPARE_ONLY=true
             ;;
+        --release-version)
+            (( argument_index += 1 ))
+            (( argument_index < ${#arguments[@]} )) || fail "--release-version 缺少版本值。"
+            RELEASE_VERSION="${arguments[$argument_index]}"
+            ;;
+        --release-version=*)
+            RELEASE_VERSION="${argument#*=}"
+            ;;
         *)
-            fail "未知参数：$argument。支持 --debug 和 --prepare-only。"
+            fail "未知参数：$argument。支持 --debug、--prepare-only 和 --release-version=vX.Y.Z。"
             ;;
     esac
+    (( argument_index += 1 ))
 done
 
 if [[ "${CHENXING_BOOTSTRAP_TEMP:-}" == 1 ]]; then
-    trap 'rm -f -- "${BASH_SOURCE[0]}"' EXIT
+    trap 'rm -f -- "${BASH_SOURCE[0]}"; cleanup_release_artifacts' EXIT
 fi
 
 if [[ "$MODE" == deploy && "$PREPARE_ONLY" == false && -f "$ENV_FILE" ]]; then
@@ -484,13 +602,31 @@ fi
 command_exists openssl || fail "缺少 openssl，无法生成部署密钥。"
 
 if [[ "$MODE" == upgrade ]]; then
-    latest_manager="$(fetch_latest_manager)"
-    upgrade_arguments=(--apply)
-    [[ "$DEBUG_MODE" == true ]] && upgrade_arguments+=(--debug)
-    CHENXING_BOOTSTRAP_TEMP=1 exec bash "$latest_manager" "${upgrade_arguments[@]}"
+    RELEASE_VERSION="${RELEASE_VERSION:-$(read_env_value CHENXING_RELEASE_VERSION)}"
+    [[ -n "$RELEASE_VERSION" ]] || fail "升级必须显式指定 --release-version=vX.Y.Z；不会自动跟随可变 latest。"
+    if [[ "${CHENXING_BOOTSTRAP_TEMP:-}" != 1 ]]; then
+        prepare_release_manifest
+        latest_manager="$(fetch_verified_manager)"
+        upgrade_arguments=(--apply --release-version="$RELEASE_VERSION")
+        [[ "$DEBUG_MODE" == true ]] && upgrade_arguments+=(--debug)
+        CHENXING_BOOTSTRAP_TEMP=1 \
+        CHENXING_RELEASE_MANIFEST_FILE="$RELEASE_MANIFEST_FILE" \
+        CHENXING_RELEASE_FETCH_DIR="$RELEASE_FETCH_DIR" \
+        CHENXING_RELEASE_MANIFEST_SHA256="$RELEASE_MANIFEST_SHA256" \
+        CHENXING_SCRIPT_SHA256="$RELEASE_SCRIPT_SHA256" \
+        exec bash "$latest_manager" "${upgrade_arguments[@]}"
+    fi
 fi
 
-CHENXING_IMAGE="${IMAGE_OVERRIDE:-$DEFAULT_IMAGE}"
+if [[ -z "$RELEASE_VERSION" ]]; then
+    fail "首次部署必须显式指定 --release-version=vX.Y.Z；不会使用可变镜像标签。"
+fi
+prepare_release_manifest
+
+if [[ -n "$IMAGE_OVERRIDE" && "$IMAGE_OVERRIDE" != "$RELEASE_IMAGE" ]]; then
+    fail "CHENXING_IMAGE 必须与发布清单中的不可变镜像完全一致。"
+fi
+CHENXING_IMAGE="$RELEASE_IMAGE"
 POSTGRES_IMAGE="${POSTGRES_IMAGE_OVERRIDE:-$DEFAULT_POSTGRES_IMAGE}"
 REDIS_IMAGE="${REDIS_IMAGE_OVERRIDE:-$DEFAULT_REDIS_IMAGE}"
 
@@ -502,7 +638,6 @@ secure_env_file
 if [[ -e "$ENV_FILE" ]]; then
     printf '检测到已有 .env，将保留数据库密码、Token 和加密密钥。\n'
     append_env_default COMPOSE_PROJECT_NAME chenxing-auth
-    append_env_default CHENXING_IMAGE "$DEFAULT_IMAGE"
     append_env_default POSTGRES_IMAGE "$DEFAULT_POSTGRES_IMAGE"
     append_env_default REDIS_IMAGE "$DEFAULT_REDIS_IMAGE"
     append_env_default REDIS_NAMESPACE legacy
@@ -528,7 +663,7 @@ fi
 
 write_compose
 
-CHENXING_IMAGE="${IMAGE_OVERRIDE:-$(read_env_value CHENXING_IMAGE)}"
+CHENXING_IMAGE="$RELEASE_IMAGE"
 POSTGRES_IMAGE="${POSTGRES_IMAGE_OVERRIDE:-$(read_env_value POSTGRES_IMAGE)}"
 REDIS_IMAGE="${REDIS_IMAGE_OVERRIDE:-$(read_env_value REDIS_IMAGE)}"
 export CHENXING_IMAGE POSTGRES_IMAGE REDIS_IMAGE
@@ -562,8 +697,10 @@ decoded_key_bytes="$(printf '%s' "$AUTH_ENCRYPTION_KEY" | openssl base64 -d -A |
 [[ "$decoded_key_bytes" -eq 32 ]] || fail ".env 中的 AUTH_ENCRYPTION_KEY 必须是 Base64 编码的 32 字节密钥。"
 
 if [[ "$PREPARE_ONLY" == true ]]; then
+    persist_release_lock
     install_manager
     printf '已生成 %s 和 %s。\n' "$ENV_FILE" "$COMPOSE_FILE"
+    cleanup_release_artifacts
     exit 0
 fi
 
@@ -604,6 +741,9 @@ if ! wait_for_application; then
     report_application_diagnostics
     fail "应用未能在规定时间内就绪。"
 fi
+
+persist_release_lock
+cleanup_release_artifacts
 
 stage "部署完成"
 install_manager

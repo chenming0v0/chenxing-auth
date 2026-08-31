@@ -103,6 +103,10 @@ fn release_workflow_publishes_versioned_archives_and_checksums() {
     for marker in [
         "actions/download-artifact@v4",
         "softprops/action-gh-release@v2",
+        "Package versioned installer and release manifest",
+        "chenxing-auth-release.env",
+        "chenxing-auth-manage.sh",
+        "needs.container.outputs.digest",
         "SHA256SUMS",
         "(cd dist && sha256sum * > SHA256SUMS)",
         "Verify downloaded release assets",
@@ -912,7 +916,7 @@ fn installer_validates_compose_and_reports_application_logs() {
 #[test]
 fn remote_installer_uses_published_images_and_keeps_download_progress_visible() {
     for marker in [
-        "ghcr.io/chenming0v0/chenxing-auth:latest",
+        "ghcr.io/${RELEASE_REPOSITORY}:${RELEASE_VERSION}@${values[image_digest]}",
         "postgres:16-alpine",
         "redis:7-alpine",
         "docker pull \"$CHENXING_IMAGE\"",
@@ -943,6 +947,36 @@ fn remote_installer_uses_published_images_and_keeps_download_progress_visible() 
         assert!(!line.contains("--quiet"));
         assert!(!line.contains("/dev/null"));
     }
+}
+
+#[test]
+fn remote_installer_rejects_mutable_scripts_and_records_release_lock() {
+    for marker in [
+        "RELEASE_MANIFEST_NAME=\"chenxing-auth-release.env\"",
+        "RELEASE_SCRIPT_NAME=\"chenxing-auth-manage.sh\"",
+        "https://github.com/%s/releases/download/%s/%s",
+        "verify_release_asset_checksum",
+        "sha256sum \"$temp_file\"",
+        "CHENXING_RELEASE_MANIFEST_SHA256",
+        "CHENXING_SCRIPT_SHA256",
+        "persist_release_lock",
+        "CHENXING_BOOTSTRAP_TEMP=1",
+        "--release-version=",
+    ] {
+        assert!(
+            REMOTE_INSTALL_SCRIPT.contains(marker),
+            "remote installer is missing release-integrity marker: {marker}"
+        );
+    }
+    assert!(!REMOTE_INSTALL_SCRIPT.contains("raw.githubusercontent.com"));
+    assert!(!REMOTE_INSTALL_SCRIPT.contains(":latest"));
+    let verify_at = REMOTE_INSTALL_SCRIPT
+        .find("actual=\"$(sha256sum \"$temp_file\"")
+        .expect("upgrade script must hash the downloaded file");
+    let exec_at = REMOTE_INSTALL_SCRIPT
+        .find("exec bash \"$latest_manager\"")
+        .expect("upgrade script must exec only the verified copy");
+    assert!(verify_at < exec_at);
 }
 
 #[test]
@@ -1608,12 +1642,6 @@ fn remote_manager_pulls_the_release_before_running_migrations() {
 
 #[test]
 fn remote_manager_places_curl_output_option_before_the_url() {
-    assert!(
-        REMOTE_INSTALL_SCRIPT
-            .contains("--connect-timeout 10 -o \"$temp_file\" \"$DEFAULT_INSTALLER_URL\"")
-    );
-    assert!(
-        !REMOTE_INSTALL_SCRIPT
-            .contains("--connect-timeout 10 -- \"$DEFAULT_INSTALLER_URL\" -o \"$temp_file\"")
-    );
+    assert!(REMOTE_INSTALL_SCRIPT.contains("--connect-timeout 10 -o \"$output\" \"$url\""));
+    assert!(!REMOTE_INSTALL_SCRIPT.contains("--connect-timeout 10 -- \"$url\" -o \"$output\""));
 }
