@@ -14,21 +14,32 @@
 ## Docker 安装器与升级
 
 安装器会生成独立部署目录和权限为 `0600` 的 `.env`，并依次拉取辰星认证中枢、
-PostgreSQL 和 Redis 镜像。三个 `docker pull` 的分层下载与解压进度不会隐藏；随后会
-显示数据库迁移、容器启动和就绪检查过程。安装器只以应用容器内的 `GET /health/ready` 返回 200 为准；该端点同时确认数据库、Redis、五个关键后台 worker 和签名密钥同步均就绪，只有 liveness 成功而依赖尚未就绪时不会误报成功。若就绪端点持续失败，超时诊断会输出 Compose 服务状态、应用容器 health 状态和应用日志。默认使用
-`ghcr.io/chenming0v0/chenxing-auth:latest`，可通过 `CHENXING_IMAGE` 覆盖。升级已有部署也必须
-重新运行同一安装器，不能只执行 `docker compose pull app && docker compose up -d app`：安装器会
-先拉取应用镜像，再用同一镜像执行 `migrate`，迁移成功后才启动 Web 服务。
+PostgreSQL 和 Redis 镜像。生产部署必须显式指定一个版本化 Release tag
+（`CHENXING_RELEASE_VERSION=vX.Y.Z`）；不会跟随 `raw` 分支、`latest` 或其他可变应用标签。
+安装器从该 tag 下载 `chenxing-auth-release.env`、`chenxing-auth-manage.sh` 和 `SHA256SUMS`，
+校验清单摘要和脚本 SHA-256 后才执行升级脚本。清单要求镜像引用为
+`ghcr.io/chenming0v0/chenxing-auth:vX.Y.Z@sha256:<digest>`，因此 app 与 migrate 始终使用同一
+不可变镜像身份。三个 `docker pull` 的分层下载与解压进度不会隐藏；随后会显示数据库迁移、
+容器启动和就绪检查过程。安装器只以应用容器内的 `GET /health/ready` 返回 200 为准；该端点
+同时确认数据库、Redis、五个关键后台 worker 和签名密钥同步均就绪，只有 liveness 成功而依赖
+尚未就绪时不会误报成功。若就绪端点持续失败，超时诊断会输出 Compose 服务状态、应用容器
+health 状态和应用日志。
 
 `manage.sh` 以自身所在目录作为部署目录，因此可以放在 `/root/chenxing-auth`、`/opt/chenxing-auth`
 或其他绝对路径下，从任何工作目录调用都不会写错位置。该目录长期只保留三个文件：`.env`、
-`compose.yml` 和 `manage.sh`。后续升级仍然执行同一个命令：
+`compose.yml` 和 `manage.sh`。后续升级必须指定目标 Release：
 
-已有 `.env` 时，`manage.sh` 会自动从同一 raw 地址把最新版下载到当前部署目录的隐藏临时文件，
-语法校验后由新版本执行升级，结束后删除临时文件。升级失败会停止在迁移或启动阶段；`--debug`
-只输出脱敏的 Compose 状态、镜像、健康状态和最近日志，不会输出 `.env` 或展开后的 Compose
-配置。脚本不会删除目录中已有的未知文件；全新部署本身不在项目目录保存数据库、Redis、密钥或
-临时备份，它们分别使用 Docker named volume。
+```bash
+CHENXING_RELEASE_VERSION=vX.Y.Z bash ./manage.sh
+```
+
+升级开始时只解析一次版本，并把清单摘要、脚本摘要、版本和最终镜像 digest 写入 `.env` 的
+`CHENXING_RELEASE_*` 字段。升级脚本先下载到隐藏临时目录，完整性校验和 `bash -n` 均成功后
+才 `exec`；临时文件在成功或失败时清理。迁移或启动失败会停止升级，不替换现有 `manage.sh`
+和已记录的发布锁。要重放或回滚，指定另一个已发布 tag 重新运行；不要只执行
+`docker compose pull app && docker compose up -d app`。`--debug` 只输出脱敏的 Compose 状态、
+镜像、健康状态和最近日志，不会输出 `.env` 或展开后的 Compose 配置。脚本不会删除目录中已有
+的未知文件；数据库、Redis、密钥和临时发布文件分别使用 Docker named volume 或短期临时目录。
 
 该源码部署脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码、runtime 数据库密码和 `ADMIN_TOKEN`，不生成 `APP_ISSUER`；它会先校验生产 Compose 配置，再启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。没有 Issuer 时脚本仍会完成部署，服务进入上面的保护模式。已有 `.env` 不会被覆盖，但缺少 runtime 角色凭据时会自动追加；旧 `.env` 中的 `APP_ISSUER` 仍按兼容规则读取。已有数据库会按冻结的历史迁移 checksum 原地继续升级并保留业务数据；健康检查失败时脚本会输出 Compose 状态和应用日志，便于定位启动问题。
 

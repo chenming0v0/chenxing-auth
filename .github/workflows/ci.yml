@@ -84,7 +84,21 @@ jobs:
           APP_PORT=8080 docker compose --env-file .env -f docker-compose.prod.yml config --quiet
           mkdir -p "$remote_install_dir"
           cp manage.sh "$remote_install_dir/manage.sh"
-          CHENXING_PORT=3000 bash "$remote_install_dir/manage.sh" --prepare-only
+          test_release_version=v0.0.0
+          test_script_sha256="$(sha256sum manage.sh | awk '{print $1}')"
+          test_manifest="$RUNNER_TEMP/chenxing-release-manifest.env"
+          cat > "$test_manifest" <<EOF
+          schema=1
+          version=${test_release_version}
+          image=ghcr.io/chenming0v0/chenxing-auth:${test_release_version}@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          image_digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
+          script=chenxing-auth-manage.sh
+          script_sha256=${test_script_sha256}
+          EOF
+          sed -i 's/^          //' "$test_manifest"
+          CHENXING_PORT=3000 CHENXING_RELEASE_VERSION="$test_release_version" \
+            CHENXING_RELEASE_MANIFEST_FILE="$test_manifest" \
+            bash "$remote_install_dir/manage.sh" --prepare-only
           docker compose --env-file "$remote_install_dir/.env" \
             -f "$remote_install_dir/compose.yml" config --quiet
       - name: Verify Redis credential state survives a crash
