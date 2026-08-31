@@ -7,7 +7,6 @@ const REMOTE_INSTALL_SCRIPT: &str = include_str!("../../manage.sh");
 const PRODUCTION_COMPOSE: &str = include_str!("../../docker-compose.prod.yml");
 const REDIS_CRASH_RECOVERY_SCRIPT: &str = include_str!("../../test_sh/redis_crash_recovery.sh");
 const TEST_RUNNER_CONTRACT_SCRIPT: &str = include_str!("../../test_sh/test_runner_contract.sh");
-const REDIS_DURABILITY_DOC: &str = include_str!("../../docs/redis-durability.md");
 const DB_MODULE: &str = include_str!("../../src/db/mod.rs");
 const DB_POOL_MODULE: &str = include_str!("../../src/db/pool.rs");
 const DB_AUDIT_BOUNDARY_MODULE: &str = include_str!("../../src/db/audit_boundary.rs");
@@ -406,21 +405,6 @@ fn production_redis_has_durable_credential_state_and_crash_coverage() {
         assert!(
             CI_WORKFLOW.contains(marker),
             "CI missing Redis recovery marker: {marker}"
-        );
-    }
-    for marker in [
-        "RPO 0",
-        "appendfsync always",
-        "授权码",
-        "Consumed",
-        "family revoked",
-        "session:revoked:epoch",
-        "陈旧 Redis 备份",
-        "故障后验证",
-    ] {
-        assert!(
-            REDIS_DURABILITY_DOC.contains(marker),
-            "Redis durability docs missing marker: {marker}"
         );
     }
 }

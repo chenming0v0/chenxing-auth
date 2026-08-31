@@ -475,6 +475,10 @@ pub fn validated_request_with_challenge(
         state: "plan-state".to_owned(),
         nonce: None,
         code_challenge: code_challenge.to_owned(),
+        prompt: None,
+        max_age: None,
+        reauth_required: false,
+        reauth_session_token_hash: None,
         owner_user_id: Some(user_id),
         session_token_hash: None,
     }

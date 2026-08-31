@@ -4,10 +4,12 @@ use axum::{
 };
 use chenxing_auth::{
     audit::{AuditAction, AuditEvent},
+    clients::idempotency::IdempotencyKey,
     plans::addons::{QuotaAddonError, QuotaAddonPurchaseInput},
     users::UserSessionCredential,
     wallet::{
-        domain::PurchaseInput, redemption_service::RedemptionError, service::WalletServiceError,
+        domain::PurchaseInput, idempotency::WalletIdempotencyContext,
+        redemption_service::RedemptionError, service::WalletServiceError,
     },
 };
 use serde_json::Value;
@@ -169,6 +171,20 @@ fn priced_plan_limits(price_points: i64, billing_period: &str) -> serde_json::Ma
         Value::String(billing_period.to_owned()),
     );
     limits
+}
+
+/// Service-level tests exercise the Session and lock fences, not idempotency
+/// replay, so every call gets a fresh key.
+fn plan_idempotency(user_id: i64, plan_id: i64) -> WalletIdempotencyContext {
+    let key = IdempotencyKey::parse(&format!("svc-plan-{}", Uuid::new_v4().simple()))
+        .expect("idempotency key");
+    WalletIdempotencyContext::plan(user_id, &key, plan_id)
+}
+
+fn addon_idempotency(user_id: i64, addon_id: i64) -> WalletIdempotencyContext {
+    let key = IdempotencyKey::parse(&format!("svc-addon-{}", Uuid::new_v4().simple()))
+        .expect("idempotency key");
+    WalletIdempotencyContext::addon(user_id, &key, addon_id)
 }
 
 fn wallet_audit(user_id: i64, action: AuditAction, resource_type: &str) -> AuditEvent {
@@ -756,6 +772,7 @@ async fn revoked_session_proof_is_rejected_by_every_wallet_side_effect_boundary(
             .purchase(
                 credential,
                 PurchaseInput { plan_id },
+                plan_idempotency(user_id, plan_id),
                 wallet_audit(user_id, AuditAction::PlanPurchase, "user"),
             )
             .await
@@ -777,6 +794,7 @@ async fn revoked_session_proof_is_rejected_by_every_wallet_side_effect_boundary(
         .purchase_quota_addon(
             credential,
             QuotaAddonPurchaseInput { addon_id: 1 },
+            addon_idempotency(user_id, 1),
             wallet_audit(user_id, AuditAction::QuotaAddonPurchase, "user"),
         )
         .await;
@@ -857,6 +875,7 @@ async fn disabled_user_is_rejected_before_plan_purchase_side_effects() {
         .purchase(
             credential,
             PurchaseInput { plan_id },
+            plan_idempotency(user_id, plan_id),
             wallet_audit(user_id, AuditAction::PlanPurchase, "user"),
         )
         .await;
@@ -917,6 +936,7 @@ async fn session_expiry_while_waiting_for_plan_lock_prevents_purchase() {
             .purchase(
                 credential,
                 PurchaseInput { plan_id },
+                plan_idempotency(user_id, plan_id),
                 wallet_audit(user_id, AuditAction::PlanPurchase, "user"),
             )
             .await

@@ -6,6 +6,10 @@ use std::fmt;
 
 use crate::state::AppState;
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsentDecision {
     Approve,
@@ -48,6 +52,19 @@ pub struct PendingAuthorization {
     /// Missing on legacy payloads and therefore rejected by continuation paths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issuer_generation: Option<i64>,
+    /// Normalized OpenID Connect `prompt` value retained across SPA login and consent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Maximum permitted authentication age retained across SPA login and consent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age: Option<u64>,
+    /// A re-authentication request must not be satisfied by rebinding to the
+    /// same pre-existing session. The hash is retained only as a comparison
+    /// value; the plaintext session token never enters the pending payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reauth_session_token_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reauth_required: bool,
     pub nonce: Option<String>,
     pub code_challenge: String,
     pub code_challenge_method: String,
@@ -93,6 +110,16 @@ impl fmt::Debug for PendingAuthorization {
             .field("scope", &self.scope)
             .field("state", &"<redacted>")
             .field("issuer_generation", &self.issuer_generation)
+            .field("prompt", &self.prompt)
+            .field("max_age", &self.max_age)
+            .field(
+                "reauth_session_token_hash",
+                &self
+                    .reauth_session_token_hash
+                    .as_ref()
+                    .map(|_| "<redacted>"),
+            )
+            .field("reauth_required", &self.reauth_required)
             .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
             .field("code_challenge", &"<redacted>")
             .field("code_challenge_method", &self.code_challenge_method)
@@ -118,6 +145,14 @@ struct PendingAuthorizationPayload {
     state: String,
     #[serde(default)]
     issuer_generation: Option<i64>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    max_age: Option<u64>,
+    #[serde(default)]
+    reauth_session_token_hash: Option<String>,
+    #[serde(default)]
+    reauth_required: bool,
     nonce: Option<String>,
     code_challenge: String,
     code_challenge_method: String,
@@ -140,6 +175,16 @@ impl fmt::Debug for PendingAuthorizationPayload {
             .field("scope", &self.scope)
             .field("state", &"<redacted>")
             .field("issuer_generation", &self.issuer_generation)
+            .field("prompt", &self.prompt)
+            .field("max_age", &self.max_age)
+            .field(
+                "reauth_session_token_hash",
+                &self
+                    .reauth_session_token_hash
+                    .as_ref()
+                    .map(|_| "<redacted>"),
+            )
+            .field("reauth_required", &self.reauth_required)
             .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
             .field("code_challenge", &"<redacted>")
             .field("code_challenge_method", &self.code_challenge_method)
@@ -177,6 +222,10 @@ impl<'de> Deserialize<'de> for PendingAuthorization {
             scope: payload.scope,
             state: payload.state,
             issuer_generation: payload.issuer_generation,
+            prompt: payload.prompt,
+            max_age: payload.max_age,
+            reauth_session_token_hash: payload.reauth_session_token_hash,
+            reauth_required: payload.reauth_required,
             nonce: payload.nonce,
             code_challenge: payload.code_challenge,
             code_challenge_method: payload.code_challenge_method,
@@ -267,6 +316,10 @@ mod tests {
             redirect_uri: "https://client.example/callback".to_owned(),
             scope: "openid".to_owned(),
             state: "state-no-holder".to_owned(),
+            prompt: None,
+            max_age: None,
+            reauth_session_token_hash: None,
+            reauth_required: false,
             nonce: None,
             code_challenge: "challenge".to_owned(),
             code_challenge_method: "S256".to_owned(),
@@ -290,6 +343,10 @@ mod tests {
             redirect_uri: "https://client.example/callback".to_owned(),
             scope: "openid".to_owned(),
             state: "state-with-holder".to_owned(),
+            prompt: None,
+            max_age: None,
+            reauth_session_token_hash: None,
+            reauth_required: false,
             nonce: None,
             code_challenge: "challenge".to_owned(),
             code_challenge_method: "S256".to_owned(),
@@ -310,6 +367,39 @@ mod tests {
     }
 
     #[test]
+    fn pending_preserves_oidc_prompt_and_reauthentication_constraints() {
+        let pending = PendingAuthorization {
+            request_id: "req-oidc".to_owned(),
+            client_id: "client-1".to_owned(),
+            redirect_uri: "https://client.example/callback".to_owned(),
+            scope: "openid".to_owned(),
+            state: "state-oidc".to_owned(),
+            prompt: Some("login".to_owned()),
+            max_age: Some(0),
+            reauth_session_token_hash: Some("old-session-hash".to_owned()),
+            reauth_required: true,
+            nonce: None,
+            code_challenge: "challenge".to_owned(),
+            code_challenge_method: "S256".to_owned(),
+            session_token_hash: Some("new-session-hash".to_owned()),
+            holder_hash: Some("holder-hash".to_owned()),
+            issuer_generation: Some(9),
+            cas_revision: 1,
+        };
+        let serialized = serde_json::to_string(&pending).expect("serialize OIDC pending");
+        let restored: PendingAuthorization =
+            serde_json::from_str(&serialized).expect("deserialize OIDC pending");
+        assert_eq!(restored.prompt.as_deref(), Some("login"));
+        assert_eq!(restored.max_age, Some(0));
+        assert_eq!(
+            restored.reauth_session_token_hash.as_deref(),
+            Some("old-session-hash")
+        );
+        assert!(restored.reauth_required);
+        assert_eq!(restored.cas_revision, 1);
+    }
+
+    #[test]
     fn future_fields_do_not_change_cas_identity() {
         let pending = PendingAuthorization {
             request_id: "req-future".to_owned(),
@@ -317,6 +407,10 @@ mod tests {
             redirect_uri: "https://client.example/callback".to_owned(),
             scope: "openid".to_owned(),
             state: "state-future".to_owned(),
+            prompt: None,
+            max_age: None,
+            reauth_session_token_hash: None,
+            reauth_required: false,
             nonce: None,
             code_challenge: "challenge".to_owned(),
             code_challenge_method: "S256".to_owned(),

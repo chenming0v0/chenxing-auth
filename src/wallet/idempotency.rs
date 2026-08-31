@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use crate::{clients::idempotency::IdempotencyKey, users::domain::UserId};
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct WalletIdempotencyContext {
+pub struct WalletIdempotencyContext {
     user_id: UserId,
     operation: &'static str,
     key_digest: [u8; 32],
@@ -53,7 +53,7 @@ impl WalletIdempotencyContext {
 }
 
 impl WalletIdempotencyContext {
-    pub(crate) fn plan(user_id: UserId, key: &IdempotencyKey, plan_id: i64) -> Self {
+    pub fn plan(user_id: UserId, key: &IdempotencyKey, plan_id: i64) -> Self {
         Self::from_key(
             user_id,
             "wallet.plan_purchase",
@@ -63,7 +63,7 @@ impl WalletIdempotencyContext {
         )
     }
 
-    pub(crate) fn addon(user_id: UserId, key: &IdempotencyKey, addon_id: i64) -> Self {
+    pub fn addon(user_id: UserId, key: &IdempotencyKey, addon_id: i64) -> Self {
         Self::from_key(
             user_id,
             "wallet.quota_addon_purchase",

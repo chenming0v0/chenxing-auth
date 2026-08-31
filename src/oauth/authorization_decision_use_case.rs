@@ -5,7 +5,8 @@ use std::fmt;
 use super::{
     authorization::{
         AuthorizationRequest, RegisteredClient, ValidatedAuthorizationRequest,
-        redirect_uri_matches, validate_authorization_request_with_allowlist,
+        reauthentication_is_satisfied, redirect_uri_matches,
+        validate_authorization_request_with_allowlist,
     },
     authorization_code_handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
     consent::{ConsentDecision, PendingAuthorization},
@@ -52,6 +53,8 @@ pub enum DecisionError {
     SessionMismatch,
     #[error("authorization session is no longer valid")]
     SessionInactive,
+    #[error("a recent authentication is required")]
+    LoginRequired,
     #[error("authorization storage is unavailable")]
     Storage,
     #[error("authorization quota exceeded")]
@@ -120,6 +123,11 @@ pub async fn decide_authorization(
     if matches!(command.decision, ConsentDecision::Deny) {
         return deny_authorization(state, &command, pending).await;
     }
+    if pending_requires_reauthentication(&pending)
+        && pending.reauth_session_token_hash.as_deref() == pending.session_token_hash.as_deref()
+    {
+        return Err(DecisionError::LoginRequired);
+    }
     approve_authorization(state, issuer, &command, pending).await
 }
 
@@ -171,7 +179,9 @@ async fn approve_authorization(
 ) -> Result<AuthorizationDecision, DecisionError> {
     let validated = validated_pending(state, &pending).await?;
     let consumed = consume_pending(state, command.request_id, &pending).await?;
-    if let Err(error_value) = session_still_active(state, command.session_token).await {
+    if let Err(error_value) =
+        session_still_active(state, command.session_token, &consumed.request).await
+    {
         restore_pending(state, &consumed.request, consumed.remaining_ttl_ms).await;
         return Err(error_value);
     }
@@ -201,6 +211,14 @@ async fn approve_authorization(
         Ok(AuthorizationCodeIssue::QuotaExceeded) => {
             restore_pending(state, &consumed.request, consumed.remaining_ttl_ms).await;
             Err(DecisionError::QuotaExceeded)
+        }
+        Err(super::authorization_code_handlers::AuthorizationCodeIssueError::LoginRequired) => {
+            restore_pending(state, &consumed.request, consumed.remaining_ttl_ms).await;
+            Err(DecisionError::LoginRequired)
+        }
+        Err(super::authorization_code_handlers::AuthorizationCodeIssueError::InvalidSession) => {
+            restore_pending(state, &consumed.request, consumed.remaining_ttl_ms).await;
+            Err(DecisionError::SessionInactive)
         }
         Err(_) => {
             restore_pending(state, &consumed.request, consumed.remaining_ttl_ms).await;
@@ -282,6 +300,8 @@ async fn validated_pending(
             nonce: pending.nonce.clone(),
             code_challenge: Some(pending.code_challenge.clone()),
             code_challenge_method: Some(pending.code_challenge_method.clone()),
+            prompt: pending.prompt.clone(),
+            max_age: pending.max_age,
         },
         &state.config.client_registration_limits.allowed_scopes,
     )
@@ -290,6 +310,8 @@ async fn validated_pending(
     // session. The authorization code must inherit that binding, otherwise a
     // logged-out user could still redeem the code within its TTL.
     validated.session_token_hash = pending.session_token_hash.clone();
+    validated.reauth_required = pending_requires_reauthentication(pending);
+    validated.reauth_session_token_hash = pending.reauth_session_token_hash.clone();
     Ok(validated)
 }
 
@@ -297,7 +319,11 @@ async fn validated_pending(
 ///
 /// The extractor only authenticates at request entry. Between consume and
 /// code issue the session may have been revoked or the user disabled.
-async fn session_still_active(state: &AppState, session_token: &str) -> Result<(), DecisionError> {
+async fn session_still_active(
+    state: &AppState,
+    session_token: &str,
+    pending: &PendingAuthorization,
+) -> Result<(), DecisionError> {
     let session = match state.sessions.find(session_token).await {
         Ok(Some(session)) if session.is_active_at(state.clock.now()) => session,
         Ok(_) => return Err(DecisionError::SessionInactive),
@@ -306,6 +332,17 @@ async fn session_still_active(state: &AppState, session_token: &str) -> Result<(
             return Err(DecisionError::Storage);
         }
     };
+    let current_session_hash = session_token_hash(session_token);
+    if !reauthentication_is_satisfied(
+        &current_session_hash,
+        pending.reauth_session_token_hash.as_deref(),
+        session.created_at,
+        state.clock.now(),
+        pending.max_age,
+        pending_requires_reauthentication(pending),
+    ) {
+        return Err(DecisionError::LoginRequired);
+    }
     match active_user_id(state, &session.user_id).await {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(DecisionError::SessionInactive),
@@ -314,6 +351,14 @@ async fn session_still_active(state: &AppState, session_token: &str) -> Result<(
             Err(DecisionError::Storage)
         }
     }
+}
+
+fn pending_requires_reauthentication(pending: &PendingAuthorization) -> bool {
+    pending.reauth_required
+        || pending
+            .prompt
+            .as_deref()
+            .is_some_and(|prompt| prompt.split_whitespace().any(|value| value == "login"))
 }
 
 async fn restore_pending(state: &AppState, pending: &PendingAuthorization, remaining_ttl_ms: u64) {
@@ -373,6 +418,10 @@ mod tests {
             redirect_uri: redirect_uri.to_owned(),
             scope: "openid".to_owned(),
             state: "state-1".to_owned(),
+            prompt: None,
+            max_age: None,
+            reauth_session_token_hash: None,
+            reauth_required: false,
             nonce: None,
             code_challenge: "challenge".to_owned(),
             code_challenge_method: "S256".to_owned(),
