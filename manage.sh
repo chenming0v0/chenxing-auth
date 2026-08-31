@@ -29,6 +29,7 @@ RELEASE_MANIFEST_SHA256="${CHENXING_RELEASE_MANIFEST_SHA256:-}"
 RELEASE_SCRIPT_SHA256="${CHENXING_SCRIPT_SHA256:-}"
 RELEASE_IMAGE=""
 RELEASE_IMAGE_DIGEST=""
+VERIFIED_MANAGER_PATH=""
 
 stage() {
     printf '\n==> %s\n' "$1"
@@ -168,6 +169,10 @@ prepare_release_manifest() {
     load_release_manifest
 }
 
+# 已验证脚本副本的路径通过这个变量返回，而不是通过 stdout 命令替换。命令替换会在子
+# shell 里运行整个函数，函数里 mktemp 出的 RELEASE_FETCH_DIR 随子 shell 一起消失，父
+# 进程既无法把它传给 exec 后的子进程，也无法在自身失败时清理——结果是每次升级都在安装
+# 目录留下一个含 mode 700 管理脚本副本的 .release.* 暂存目录。
 fetch_verified_manager() {
     local temp_file actual
     [[ -n "$RELEASE_FETCH_DIR" ]] || RELEASE_FETCH_DIR="$(mktemp -d "$INSTALL_DIR/.release.XXXXXX")"
@@ -181,7 +186,7 @@ fetch_verified_manager() {
     actual="$(sha256sum "$temp_file" | awk '{print $1}')"
     [[ "$actual" == "$RELEASE_SCRIPT_SHA256" ]] || fail "升级脚本摘要与发布清单不一致。"
     bash -n "$temp_file" || fail "下载的升级脚本语法校验失败。"
-    printf '%s' "$temp_file"
+    VERIFIED_MANAGER_PATH="$temp_file"
 }
 
 read_env_value() {
@@ -598,6 +603,8 @@ done
 
 if [[ "${CHENXING_BOOTSTRAP_TEMP:-}" == 1 ]]; then
     trap 'rm -f -- "${BASH_SOURCE[0]}"; cleanup_release_artifacts' EXIT
+else
+    trap cleanup_release_artifacts EXIT
 fi
 
 if [[ "$MODE" == deploy && "$PREPARE_ONLY" == false && -f "$ENV_FILE" ]]; then
@@ -611,16 +618,19 @@ if [[ "$MODE" == upgrade ]]; then
     [[ -n "$RELEASE_VERSION" ]] || fail "升级必须显式指定 --release-version=vX.Y.Z；不会自动跟随可变 latest。"
     if [[ "${CHENXING_BOOTSTRAP_TEMP:-}" != 1 ]]; then
         prepare_release_manifest
-        latest_manager="$(fetch_verified_manager)"
+        fetch_verified_manager
         upgrade_arguments=(--apply --release-version="$RELEASE_VERSION")
         [[ "$DEBUG_MODE" == true ]] && upgrade_arguments+=(--debug)
+        # exec 之前不清理：正在交接的已验证副本就在暂存目录里。exec 成功后本进程的
+        # trap 不再运行，改由子进程通过 CHENXING_RELEASE_FETCH_DIR 负责清理；exec 失败
+        # 时 ERR trap 仍会走 cleanup_release_artifacts。
         CHENXING_BOOTSTRAP_TEMP=1 \
         CHENXING_INSTALL_DIR="$INSTALL_DIR" \
         CHENXING_RELEASE_MANIFEST_FILE="$RELEASE_MANIFEST_FILE" \
         CHENXING_RELEASE_FETCH_DIR="$RELEASE_FETCH_DIR" \
         CHENXING_RELEASE_MANIFEST_SHA256="$RELEASE_MANIFEST_SHA256" \
         CHENXING_SCRIPT_SHA256="$RELEASE_SCRIPT_SHA256" \
-        exec bash "$latest_manager" "${upgrade_arguments[@]}"
+        exec bash "$VERIFIED_MANAGER_PATH" "${upgrade_arguments[@]}"
     fi
 fi
 
@@ -749,7 +759,6 @@ if ! wait_for_application; then
 fi
 
 persist_release_lock
-cleanup_release_artifacts
 
 stage "部署完成"
 install_manager

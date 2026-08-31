@@ -15,6 +15,19 @@ assert_private_mode() {
     fi
 }
 
+assert_no_release_staging() {
+    local root="$1" leftovers
+    # `find -type f` alone cannot see this: the upgrade path stages the verified
+    # manager copy (mode 700, security material) inside a `.release.XXXXXX`
+    # directory. If the staging directory survives, every upgrade leaves another
+    # executable copy of the installer behind in the deployment directory.
+    leftovers="$(find "$root" -maxdepth 1 -name '.release.*' -printf '%f\n' | sort | tr '\n' ' ')"
+    if [[ -n "$leftovers" ]]; then
+        printf '%s\n' "release staging directories survived in $root: $leftovers" >&2
+        return 1
+    fi
+}
+
 external_key='external-value-must-not-be-used'
 export AUTH_ENCRYPTION_KEY="$external_key"
 mkdir -p "$WORK_DIR/install"
@@ -39,6 +52,7 @@ compose_file="$WORK_DIR/install/compose.yml"
 manager_file="$WORK_DIR/install/manage.sh"
 [[ -f "$manager_file" ]]
 [[ "$(find "$WORK_DIR/install" -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')" == '.env compose.yml manage.sh ' ]]
+assert_no_release_staging "$WORK_DIR/install"
 [[ "$(stat -c '%a' "$manager_file")" == 700 ]]
 actual_key="$(awk -F= '$1 == "AUTH_ENCRYPTION_KEY" { print substr($0, index($0, "=") + 1); exit }' "$env_file")"
 ring="$(awk -F= '$1 == "AUTH_ENCRYPTION_KEYS" { print substr($0, index($0, "=") + 1); exit }' "$env_file")"
@@ -119,6 +133,7 @@ FAKE_MANAGER_SOURCE="$ROOT_DIR/manage.sh" CHENXING_RELEASE_VERSION="$release_ver
     CHENXING_RELEASE_MANIFEST_FILE="$release_manifest" PATH="$upgrade_bin:$PATH" \
     bash "$upgrade_root/manage.sh" >/dev/null
 [[ "$(find "$upgrade_root" -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')" == '.env compose.yml manage.sh ' ]]
+assert_no_release_staging "$upgrade_root"
 
 # Exercise the source installer upgrade path with a minimal temporary checkout.
 # The fake Docker implementation records whether `up` was reached and reports
