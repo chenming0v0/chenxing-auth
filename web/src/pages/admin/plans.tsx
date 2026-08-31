@@ -19,7 +19,7 @@ export function AdminPlans() {
         title="套餐管理"
         description="定义辰星通行证的套餐矩阵：额度、并发与默认回退。套餐数量不设上限，额度留空即为无限。"
       />
-      <AdminGate access={access} permission="manage_settings"><PlansManager /></AdminGate>
+      <AdminGate access={access} permission="manage_plans"><PlansManager /></AdminGate>
     </ConsoleLayout>
   )
 }

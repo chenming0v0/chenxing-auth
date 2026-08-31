@@ -33,7 +33,7 @@ pub use super::registration_email_settings_handlers::{
 
 pub async fn get_passkey_setting(State(state): State<AppState>, admin: AdminRead) -> Response {
     if let Err(response) = admin
-        .authorize(&state, AdminPermission::ManageSettings)
+        .authorize(&state, AdminPermission::ManageSystemSettings)
         .await
     {
         return response;
@@ -53,7 +53,7 @@ pub async fn update_passkey_setting(
     ApiJson(input): ApiJson<PasskeySetting>,
 ) -> Response {
     let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSystemSettings).await {
             Ok(authorization) => authorization,
             Err(response) => return response,
         };
@@ -134,7 +134,7 @@ impl EmailPolicySettingResponse {
 
 pub async fn get_email_policy_setting(State(state): State<AppState>, admin: AdminRead) -> Response {
     if let Err(response) = admin
-        .authorize(&state, AdminPermission::ManageSettings)
+        .authorize(&state, AdminPermission::ManageSystemSettings)
         .await
     {
         return response;
@@ -187,7 +187,7 @@ pub async fn update_email_policy_setting(
     ApiJson(input): ApiJson<UpdateEmailPolicySetting>,
 ) -> Response {
     let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSystemSettings).await {
             Ok(authorization) => authorization,
             Err(response) => return response,
         };
@@ -241,7 +241,7 @@ pub async fn update_email_policy_setting(
 
 pub async fn get_smtp_setting(State(state): State<AppState>, admin: AdminRead) -> Response {
     if let Err(response) = admin
-        .authorize(&state, AdminPermission::ManageSettings)
+        .authorize(&state, AdminPermission::ManageSystemSettings)
         .await
     {
         return response;
@@ -261,7 +261,7 @@ pub async fn update_smtp_setting(
     ApiJson(input): ApiJson<SmtpSettingUpdate>,
 ) -> Response {
     let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSystemSettings).await {
             Ok(authorization) => authorization,
             Err(response) => return response,
         };
@@ -308,7 +308,7 @@ pub async fn get_session_lifetime_setting(
     admin: AdminRead,
 ) -> Response {
     if let Err(response) = admin
-        .authorize(&state, AdminPermission::ManageSettings)
+        .authorize(&state, AdminPermission::ManageSystemSettings)
         .await
     {
         return response;
@@ -328,7 +328,7 @@ pub async fn update_session_lifetime_setting(
     ApiJson(input): ApiJson<SessionLifetimeSetting>,
 ) -> Response {
     let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSystemSettings).await {
             Ok(authorization) => authorization,
             Err(response) => return response,
         };
@@ -369,7 +369,7 @@ pub async fn get_security_limits_setting(
     admin: AdminRead,
 ) -> Response {
     if let Err(response) = admin
-        .authorize(&state, AdminPermission::ManageSettings)
+        .authorize(&state, AdminPermission::ManageAuthenticationPolicy)
         .await
     {
         return response;
@@ -389,7 +389,9 @@ pub async fn update_security_limits_setting(
     ApiJson(input): ApiJson<SecurityLimitsSetting>,
 ) -> Response {
     let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageAuthenticationPolicy)
+            .await
+        {
             Ok(authorization) => authorization,
             Err(response) => return response,
         };

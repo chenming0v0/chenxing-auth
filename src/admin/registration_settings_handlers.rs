@@ -1,7 +1,7 @@
 //! 公开注册开关的管理端点（`/api/v1/admin/settings/registration`）。
 //!
 //! 与其余管理设置同构：读走 [`AdminRead`]，写走 [`AdminWrite`]（CSRF 三绑定在
-//! `authorize()` 内无条件校验），权限均为 [`AdminPermission::ManageSettings`]，
+//! `authorize()` 内无条件校验），权限均为 [`AdminPermission::ManageSystemSettings`]，
 //! 写入与审计同事务。单独成文件是因为 `settings_handlers.rs` 已接近行数上限。
 
 use axum::{
@@ -25,7 +25,7 @@ use crate::{
 
 pub async fn get_registration_setting(State(state): State<AppState>, admin: AdminRead) -> Response {
     if let Err(response) = admin
-        .authorize(&state, AdminPermission::ManageSettings)
+        .authorize(&state, AdminPermission::ManageSystemSettings)
         .await
     {
         return response;
@@ -48,7 +48,7 @@ pub async fn update_registration_setting(
     ApiJson(input): ApiJson<RegistrationSetting>,
 ) -> Response {
     let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSystemSettings).await {
             Ok(authorization) => authorization,
             Err(response) => return response,
         };

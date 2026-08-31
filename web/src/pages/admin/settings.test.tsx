@@ -122,7 +122,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const PERMISSIONS = ['manage_settings', 'rotate_keys']
+const PERMISSIONS = ['manage_system_settings', 'manage_authentication_policy', 'rotate_keys']
 
 async function renderWorkspace(permissions: string[] = PERMISSIONS) {
   render(

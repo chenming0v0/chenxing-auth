@@ -169,7 +169,7 @@ Expected: FAIL because roles currently live in the admin domain.
 
 - [ ] **Step 3: Implement `UserRole` and `UserPermission`**
 
-Move the permission matrix into `src/users/domain.rs`. Include `ManageUsers`, `ManageClients`, `ReadAudit`, `ManageSettings`, `ManageIdentityProviders`, `RotateKeys`, and `ManageRoles`. Map `admin` to all management permissions except `RotateKeys` and `ManageRoles`; map `owner` to all permissions.
+Move the permission matrix into `src/users/domain.rs`. Include `ManageUsers`, `ManageClients`, `ReadAudit`, `ManageSettings`, Owner-only `ManageSystemSettings`, `ManageAuthenticationPolicy`, `ManagePlans`, `ManageIdentityProviders`, `RotateKeys`, and `ManageRoles`. Map `admin` only to user/client/audit/operations settings; system settings, authentication policy, plans, identity providers, key rotation, and role management remain Owner-only.
 
 - [ ] **Step 4: Return role in every authenticated profile**
 

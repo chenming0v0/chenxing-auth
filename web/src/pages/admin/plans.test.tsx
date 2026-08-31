@@ -15,7 +15,7 @@ vi.mock('./shared', async (importOriginal) => {
   return {
     ...actual,
     useAdminAccess: () => ({
-      data: { user_id: 1, username: 'owner', role: 'owner', permissions: ['manage_settings'], status: 'active' },
+      data: { user_id: 1, username: 'owner', role: 'owner', permissions: ['manage_plans'], status: 'active' },
       loading: false,
       error: '',
     }),

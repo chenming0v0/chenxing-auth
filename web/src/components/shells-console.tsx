@@ -16,6 +16,9 @@ function ConsoleNavGroups() {
   /* 管理/系统分组只对已登录的管理角色显示；user 为 null 时必须显式排除，
      与 NavMenu 的 showAdmin 判定保持一致（user?.role !== 'user' 在 null 时恒真） */
   const showAdmin = user != null && user.role !== 'user'
+  const canSeeItem = (item: (typeof navGroups)[number]['items'][number]) => (
+    !item.ownerOnly || user?.role === 'owner'
+  )
   const visible = navGroups.filter(
     (group) => group.label === '账户' || group.label === '开发者' || showAdmin,
   )
@@ -24,7 +27,7 @@ function ConsoleNavGroups() {
       {visible.map((group) => (
         <div key={group.label}>
           <p className="chenxing-nav-label">{group.label}</p>
-          {group.items.map((item) => (
+          {group.items.filter(canSeeItem).map((item) => (
             <NavLink
               key={item.path}
               to={item.path}
@@ -59,7 +62,9 @@ function Sidebar() {
     管理与系统分组的四项；桌面端由 CSS 隐藏。 */
 function BottomNav() {
   const location = useLocation()
-  const groupItems = (label: string) => navGroups.find((group) => group.label === label)?.items ?? []
+  const { user } = useAuth()
+  const groupItems = (label: string) => (navGroups.find((group) => group.label === label)?.items ?? [])
+    .filter((item) => !item.ownerOnly || user?.role === 'owner')
   const developer = groupItems('开发者')
   const core = location.pathname.startsWith('/admin')
     ? [...groupItems('管理'), ...groupItems('系统')].filter((item) => (

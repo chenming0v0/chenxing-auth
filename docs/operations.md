@@ -181,6 +181,10 @@ Session payload 使用 AES-256-GCM 并携带 key id。`AUTH_ENCRYPTION_KEY` 保�
 - Owner bootstrap、统一用户登录、注销、HttpOnly Session/CSRF Cookie
 - 统一用户管理 Web 控制台与 PostgreSQL 持久化的注册邮件发件地址设置
 - `user`、`admin`、`owner` 层级角色与最小权限矩阵
+- Issue #697：登录与 MFA 限流（`ManageAuthenticationPolicy`）、系统设置
+  （`ManageSystemSettings`）、套餐定义（`ManagePlans`）和外部身份提供商
+  （`ManageIdentityProviders`）均为 Owner-only；邀请码和钱包兑换码仍由
+  `ManageSettings` 运营权限管理。
 - 用户列表、用户启停、角色管理、特权用户列表、审计查询和管理后台入口
 - `/oauth/revoke` RFC 7009 风格 Token 撤销以及 Discovery 中的撤销端点
 - `BusinessExtension` 扩展 trait 与结构化业务 Claim 类型

@@ -25,7 +25,7 @@ export function AdminSettings() {
         <Icon name="lock" size={14} />
         敏感凭证为只写字段，保存后不会回显；日志与列表均不返回明文或哈希。
       </p>
-      <AdminGate access={access} permission="manage_settings">
+      <AdminGate access={access} permission="manage_system_settings">
         <SettingsWorkspace access={access} />
       </AdminGate>
     </ConsoleLayout>

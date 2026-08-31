@@ -3,7 +3,8 @@
 ## 目标
 
 将 `/admin`、`/admin/users`、`/admin/settings` 接入管理身份、权限隔离、分页
-查询和系统配置 API。该 issue 不改变后端权限模型。
+查询和系统配置 API。系统设置、身份提供商、套餐定义和登录/MFA 限流均为 Owner-only；
+邀请码、钱包兑换码等运营设置仍使用 `ManageSettings`，用户/Client/审计沿用各自权限。
 
 ## 前端接入位置
 
@@ -30,7 +31,8 @@
 
 - `ADMIN_TOKEN` 为空时，除无 Owner 的首次 bootstrap 外，管理接口一律拒绝；不能
   用前端空 token 绕过。
-- 每个按钮按 `AdminPermission` 显示/禁用，不能只依赖路由可见性。
+- 每个按钮按 `AdminPermission` 显示/禁用，不能只依赖路由可见性；Owner-only 入口对普通
+  Admin 隐藏，服务端必须再次拒绝。
 - 浏览器 Session 管理写操作必须同时校验管理员 HttpOnly Cookie、CSRF Cookie 和
   `X-CSRF-Token`；Bearer 只用于设计好的 API 客户端场景。
 - 所有查询使用服务端分页，前端搜索长度和 page bounds 与 OpenAPI 约束一致。

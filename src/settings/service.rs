@@ -195,7 +195,7 @@ impl SettingsService {
         crate::users::repository::management_actor::validate_management_actor_in_transaction(
             &mut transaction,
             credential,
-            UserPermission::ManageSettings,
+            UserPermission::ManageSystemSettings,
         )
         .await?;
         self.persist_registration_email_from(&mut transaction, &value)
@@ -346,7 +346,7 @@ impl SettingsService {
         crate::users::repository::management_actor::validate_management_actor_in_transaction(
             &mut transaction,
             credential,
-            UserPermission::ManageSettings,
+            UserPermission::ManageAuthenticationPolicy,
         )
         .await?;
         repository::set_security_limits(&mut *transaction, &value).await?;

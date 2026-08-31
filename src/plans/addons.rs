@@ -172,7 +172,7 @@ pub async fn create(
     crate::users::repository::management_actor::validate_management_actor_in_transaction(
         &mut tx,
         credential,
-        UserPermission::ManageSettings,
+        UserPermission::ManagePlans,
     )
     .await?;
     let exists: bool =
@@ -207,7 +207,7 @@ pub async fn update(
     crate::users::repository::management_actor::validate_management_actor_in_transaction(
         &mut tx,
         credential,
-        UserPermission::ManageSettings,
+        UserPermission::ManagePlans,
     )
     .await?;
     let row: Option<AddonRow> = crate::sqlx::query_as(
@@ -235,7 +235,7 @@ pub async fn archive(
     crate::users::repository::management_actor::validate_management_actor_in_transaction(
         &mut tx,
         credential,
-        UserPermission::ManageSettings,
+        UserPermission::ManagePlans,
     )
     .await?;
     let affected = crate::sqlx::query(

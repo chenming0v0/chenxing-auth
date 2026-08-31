@@ -368,7 +368,7 @@ Issuer 设置接口仅 Owner（`manage_issuer`）可用。GET 返回 `persisted`
 
 ### `GET/PUT /api/v1/admin/settings/smtp`
 
-需要 `ManageSettings`。GET 返回 `host`、`port`、`username`、`from_address`、`ssl_enabled`、`force_auth_login`、`password_configured`。未配置密码时 `password_configured` 为 `false`。响应、日志和审计永不包含 `password` 或 `password_ciphertext`。
+需要 Owner 专属的 `ManageSystemSettings`。GET 返回 `host`、`port`、`username`、`from_address`、`ssl_enabled`、`force_auth_login`、`password_configured`。未配置密码时 `password_configured` 为 `false`。响应、日志和审计永不包含 `password` 或 `password_ciphertext`。
 
 PUT 用 `password_action` 表达密码三态，不要再靠空字符串猜测：
 
@@ -378,7 +378,7 @@ PUT 用 `password_action` 表达密码三态，不要再靠空字符串猜测：
 
 省略 `password_action` 只兼容旧客户端：此时省略或 `null` 的 `password` 视为 `keep`，非空 `password` 视为 `set`。空字符串不再等于 `keep`。`keep`/`clear` 携带任何 `password` 值、`set` 缺密码，或空字符串，一律 `400 invalid_smtp_setting`。成功响应与 GET 相同，审计只记录 `password_action` 和 `password_configured`。
 
-`GET /api/v1/admin/settings/passkey`、`GET /api/v1/admin/settings/email-policy` 和 `GET /api/v1/admin/settings/security-limits` 的 JSON body 始终是设置对象本身。若库里的行无法用于安全热路径，响应额外带 `X-Chenxing-Setting-Diagnostic: invalid` 或 `corrupt`，便于管理员保存修复；有效值和未配置行不带该头。头和 body 都不回显损坏 JSON、域名或阈值。
+`/api/v1/admin/settings/passkey`、`/api/v1/admin/settings/email-policy`、`/api/v1/admin/settings/registration`、`/api/v1/admin/settings/registration-email` 和 `/api/v1/admin/settings/session-lifetime` 需要 Owner 专属的 `ManageSystemSettings`；`/api/v1/admin/settings/security-limits` 需要 Owner 专属的 `ManageAuthenticationPolicy`。各 GET 的 JSON body 始终是设置对象本身。若库里的行无法用于安全热路径，响应额外带 `X-Chenxing-Setting-Diagnostic: invalid` 或 `corrupt`，便于 Owner 保存修复；有效值和未配置行不带该头。头和 body 都不回显损坏 JSON、域名或阈值。
 
 ### 用户管理
 
@@ -414,14 +414,14 @@ Passkey 重置成功响应：
 
 套餐定义 OAuth Client 数量、日/月授权配额和 QPS 上限；未显式分配套餐或套餐过期的用户回落到默认套餐。
 
-- `GET /api/v1/admin/plans`：列出全部套餐（含已归档），每个元素带 `assigned_users`，需要 `ManageSettings`。
+- `GET /api/v1/admin/plans`：列出全部套餐（含已归档），每个元素带 `assigned_users`，需要 Owner 专属的 `ManagePlans`。
 - `POST /api/v1/admin/plans`：创建套餐，提交 `code`、`name`、`description`、`oauth_clients_limit`（0–1000）、`daily_auth_limit`（0–1000000）、`monthly_auth_limit`（0–31000000 或 `null` 表示无限）、`max_qps`（1–10000 或 `null` 表示不限）、`is_default`；`code` 服务端归一化为小写。成功 `201`。越界返回 `400 invalid_plan`。
 - `PUT /api/v1/admin/plans/{id}`：更新套餐，字段同创建，成功返回更新后的套餐。
 - `POST /api/v1/admin/plans/{id}/archive`：归档套餐；默认套餐不可归档，返回 `409 default_plan_protected`。
 - `POST /api/v1/admin/plans/{id}/restore`：恢复套餐。
-- `POST /api/v1/admin/users/{user_id}/plan`：为用户分配套餐，提交 `{"plan_id":1,"expires_at":"2026-12-31T00:00:00Z"}`；`expires_at` 传 `null` 或省略表示永久有效，归档套餐不可分配。目标为 Owner 时除 `ManageUsers` 外还需要 `ManageRoles`。
+- `POST /api/v1/admin/users/{user_id}/plan`：为用户分配已有套餐，基线权限为 `ManageUsers`；提交 `{"plan_id":1,"expires_at":"2026-12-31T00:00:00Z"}`；`expires_at` 传 `null` 或省略表示永久有效，归档套餐不可分配。目标为 Owner 时除 `ManageUsers` 外还需要 `ManageRoles`；套餐定义和增量包 CRUD 另需 Owner 专属的 `ManagePlans`。
 
-套餐 CRUD（create/update/archive/restore）需要 `ManageSettings` 权限；为普通用户分配套餐需要 `ManageUsers`，为 Owner 分配套餐还需要 `ManageRoles`。两种操作均记录审计事件。
+套餐 CRUD（create/update/archive/restore）和配额增量包管理需要 Owner 专属的 `ManagePlans` 权限；为普通用户分配套餐需要 `ManageUsers`，为 Owner 分配套餐还需要 `ManageRoles`。两种操作均记录审计事件。
 
 ### Client 管理
 
@@ -448,7 +448,7 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 
 ### 自定义 OAuth 提供商管理
 
-管理界面在 React 控制台的 `/admin/settings`。旧地址 `GET /admin/settings/oauth` 仅 303 转发到 `/admin/settings`（查询串原样保留），旧地址 `GET /admin/login` 仅 303 转发到 `/login`。也可以直接使用以下 API。提供商默认停用，确认配置无误后再启用。
+管理界面在 React 控制台的 `/admin/oauth-providers`。只有 Owner（`manage_identity_providers`）可以读取或修改提供商；普通 Admin 不显示该入口，服务端也返回 403。旧地址 `GET /admin/settings/oauth` 仅 303 转发到 `/admin/settings`（查询串原样保留），旧地址 `GET /admin/login` 仅 303 转发到 `/login`。也可以直接使用以下 API。提供商默认停用，确认配置无误后再启用。
 
 提供商一律按 **OAuth 2.0 + UserInfo** 信任模型接入，摘要中的 `trust_model` 恒为 `oauth2_userinfo`；本平台不为自定义提供商验证 ID Token，也不接受 issuer/JWKS/算法策略配置。详见上文「信任模型：OAuth 2.0 + UserInfo」。
 
@@ -491,7 +491,7 @@ HttpOnly Session Cookie、CSRF Cookie 和匹配的 `X-CSRF-Token`；`ADMIN_TOKEN
 
 ### 管理后台 UI API
 
-- `GET /api/v1/admin/auth/me`：从普通用户 Session 返回当前管理用户的统一 `user_id`、角色、权限和身份摘要；Bearer Token 自动化请求的 `user_id` 为 `null`。Owner 是最高级角色，拥有全部权限。
+- `GET /api/v1/admin/auth/me`：从普通用户 Session 返回当前管理用户的统一 `user_id`、角色、权限和身份摘要；Bearer Token 自动化请求的 `user_id` 为 `null`。Owner 是最高级角色，拥有全部权限；普通 Admin 仅有用户、Client、审计和运营设置权限，`manage_system_settings`、`manage_authentication_policy`、`manage_plans`、`manage_identity_providers`、`manage_roles`、`rotate_keys` 与 `manage_auth_factors` 均为 Owner-only。
 - `GET /api/v1/admin/overview`：返回全局用户、OAuth Client、管理员和审计计数。
 - `GET /api/v1/admin/users/query?page=1&page_size=20&search=...&status=active`：分页筛选用户，需要 `ManageUsers`。每个 `items` 条目包含当前生效套餐 `plan`（`id`、`code`、`name`、`expires_at`）；未显式挂载套餐或挂载已到期时返回 active 默认套餐，`expires_at: null` 表示永久有效。
 - 用户查询响应条目示例：
@@ -520,11 +520,13 @@ HttpOnly Session Cookie、CSRF Cookie 和匹配的 `X-CSRF-Token`；`ADMIN_TOKEN
 
 ## 权限矩阵
 
-| 角色 | 用户/管理员 | Client | OAuth 提供商 | 套餐 | 审计 | 密钥轮换 |
-| --- | --- | --- | --- | --- | --- | --- |
-| `owner` | 是 | 是 | 是 | 是 | 是 | 是 |
-| `admin` | 是 | 是 | 是 | 是 | 是 | 否 |
-| `user` | 否 | 本人 | 否 | 否 | 否 | 否 |
+| 角色 | 用户/管理员 | Client | 运营设置* | 系统设置 | OAuth 提供商 | 套餐定义 | 审计 | 密钥轮换 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `owner` | 是 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
+| `admin` | 是 | 是 | 是 | 否 | 否 | 否 | 是 | 否 |
+| `user` | 否 | 本人 | 否 | 否 | 否 | 否 | 否 | 否 |
+
+\* 运营设置指邀请码和钱包兑换码等 `ManageSettings` 能力；登录/MFA 限流、其他系统设置、身份提供商和套餐定义均为 Owner-only。
 
 ## 前端接入建议
 

@@ -31,7 +31,7 @@
 - `entitlements` 是**有序数组**，前端按顺序渲染卡片，后端加新权益项只要往数组里加即可，前端无需改动。
 - `used`/`limit` 都是整数。`limit: null` → 前端显示 ∞；无 `limit` 字段 → 只显示数字。
 
-### 管理端（套餐 CRUD，需要 ManageSettings 或新建 ManagePlans 权限）
+### 管理端（套餐 CRUD，需要 Owner-only `ManagePlans` 权限）
 ```
 GET    /api/v1/admin/plans                 列出全部套餐（含 archived）
 POST   /api/v1/admin/plans                 新建
@@ -106,7 +106,7 @@ POST   /api/v1/admin/users/{user_id}/plan  给用户分配套餐 body: { "plan_i
 
 ## 5. 管理端 handler + 路由
 
-- 新 `src/admin/plan_handlers.rs`：list/create/update/archive/restore/assign，全部走 `current_admin_permission(&state, &headers, AdminPermission::ManageSettings)`（见 `src/admin/ui_handlers.rs` 用法）或新增 `ManagePlans` 权限枚举。
+- 新 `src/admin/plan_handlers.rs`：list/create/update/archive/restore/assign，套餐 CRUD 走 Owner-only `AdminPermission::ManagePlans`；用户分配仍走 `ManageUsers`，目标为 Owner 时额外要求 `ManageRoles`。
 - 在 `src/api.rs` 注册 §0 那批 `/api/v1/admin/plans*` 路由。
 - 写操作记 `audit`（照 provider_handlers 的 `state.audit.record(...)`）。
 

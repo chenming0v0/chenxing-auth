@@ -29,6 +29,9 @@ fn user_permission_matrix_is_least_privilege() {
     assert!(UserRole::Owner.allows(RotateKeys));
     assert!(UserRole::Owner.allows(ReadAudit));
     assert!(UserRole::Owner.allows(ManageSettings));
+    assert!(UserRole::Owner.allows(ManageSystemSettings));
+    assert!(UserRole::Owner.allows(ManageAuthenticationPolicy));
+    assert!(UserRole::Owner.allows(ManagePlans));
     assert!(UserRole::Owner.allows(ManageIdentityProviders));
     assert!(UserRole::Owner.allows(ManageRoles));
     assert!(UserRole::Owner.allows(ManageAuthFactors));
@@ -40,6 +43,11 @@ fn user_permission_matrix_is_least_privilege() {
     // #258：重置他人的 TOTP 把账号降级为「只有密码」，属于账号接管链条的一环，
     // 因此不随 ManageUsers 一起下放给 Admin。
     assert!(!UserRole::Admin.allows(ManageAuthFactors));
+    // Issue #697：系统设置、登录/MFA 限流、身份提供商和套餐定义属于 Owner-only。
+    assert!(!UserRole::Admin.allows(ManageSystemSettings));
+    assert!(!UserRole::Admin.allows(ManageAuthenticationPolicy));
+    assert!(!UserRole::Admin.allows(ManagePlans));
+    assert!(!UserRole::Admin.allows(ManageIdentityProviders));
     assert!(!UserRole::User.allows(ManageAuthFactors));
     assert!(!UserRole::User.allows(ManageClients));
     assert!(!UserRole::User.allows(ManageSettings));

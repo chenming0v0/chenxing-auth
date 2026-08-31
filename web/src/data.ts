@@ -1,4 +1,4 @@
-export type NavItem = { label: string; path: string; icon: string }
+export type NavItem = { label: string; path: string; icon: string; ownerOnly?: boolean }
 export type NavGroup = { label: string; items: NavItem[] }
 
 export const navGroups: NavGroup[] = [
@@ -27,15 +27,15 @@ export const navGroups: NavGroup[] = [
       { label: '用户管理', path: '/admin/users', icon: 'users' },
       { label: 'Client 管理', path: '/admin/clients', icon: 'key-round' },
       { label: '审计日志', path: '/admin/audit', icon: 'file-search' },
-      { label: '套餐管理', path: '/admin/plans', icon: 'crown' },
+      { label: '套餐管理', path: '/admin/plans', icon: 'crown', ownerOnly: true },
       { label: '邀请码', path: '/admin/invitations', icon: 'ticket' },
     ],
   },
   {
     label: '系统',
     items: [
-      { label: '身份提供商', path: '/admin/oauth-providers', icon: 'link' },
-      { label: '系统设置', path: '/admin/settings', icon: 'settings' },
+      { label: '身份提供商', path: '/admin/oauth-providers', icon: 'link', ownerOnly: true },
+      { label: '系统设置', path: '/admin/settings', icon: 'settings', ownerOnly: true },
     ],
   },
 ]

@@ -132,3 +132,37 @@ fn admin_pagination_rejects_values_outside_the_contract() {
 fn admin_pagination_keeps_defaults_when_values_are_omitted() {
     assert_eq!(bounds(&PageQuery::default()), Some((1, 20, 0)));
 }
+
+#[test]
+fn admin_me_permission_projection_keeps_owner_only_controls_private() {
+    let admin = permissions(UserRole::Admin);
+    assert!(admin.contains(&"manage_settings"));
+    assert!(admin.contains(&"manage_users"));
+    for owner_only in [
+        "manage_system_settings",
+        "manage_authentication_policy",
+        "manage_plans",
+        "manage_identity_providers",
+        "manage_issuer",
+        "manage_roles",
+        "rotate_keys",
+        "manage_auth_factors",
+    ] {
+        assert!(
+            !admin.contains(&owner_only),
+            "admin must not receive {owner_only}"
+        );
+    }
+    let owner = permissions(UserRole::Owner);
+    for permission in [
+        "manage_system_settings",
+        "manage_authentication_policy",
+        "manage_plans",
+        "manage_identity_providers",
+    ] {
+        assert!(
+            owner.contains(&permission),
+            "owner must receive {permission}"
+        );
+    }
+}
