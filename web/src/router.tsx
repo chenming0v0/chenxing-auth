@@ -1,14 +1,73 @@
-import { useEffect, useState, type AnchorHTMLAttributes, type MouseEvent, type ReactNode } from 'react'
-
-function currentPath() { return window.location.pathname }
+import { useEffect, useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent, type ReactNode } from 'react'
 
 export const HISTORY_INDEX = '__chenxing_history_index'
 export const NAVIGATION_EVENT = 'chenxing:navigation'
-let historyIndex = typeof window !== 'undefined' && typeof window.history.state?.[HISTORY_INDEX] === 'number'
-  ? window.history.state[HISTORY_INDEX] as number
-  : 0
+
+export type RouterLocation = { pathname: string; search: string }
+
+/**
+ * 位置状态的单一来源（#686）。
+ *
+ * 组件不再各自监听原生 popstate：路由器是 popstate 的唯一消费者，渲染只跟随
+ * 这里的「已提交快照」。被守卫拒绝的后退/前进不会推进快照，因此设置页组件实例
+ * 不会卸载，未保存草稿也就不会丢。
+ */
+let committed: RouterLocation = readWindowLocation()
+let historyIndex = typeof window === 'undefined' ? 0 : (readEntryIndex(window.history.state) ?? 0)
+/** history.go 回滚自身也会派发 popstate；这个标记让回滚事件不被当成新的 traversal。 */
 let restoringHistory = false
-if (typeof window !== 'undefined' && window.history.state?.[HISTORY_INDEX] !== historyIndex) {
+/**
+ * 拒绝离开后的回滚窗口。浏览器此刻已经停在目标条目上（popstate 无法取消），
+ * 但守卫说不许离开，所以快照必须冻结在原位置：任何在这段时间里发生的渲染
+ * 都不能读到目标 URL，否则设置页会先卸载一次，回滚后再挂载一个空白实例。
+ */
+let locationFrozen = false
+/**
+ * 回滚的重试预算。用户连按后退时，第二次 traversal 会排在我们的回滚 go() 之前到达，
+ * 此时位置还没回到已提交条目，必须继续往回推而不是当成回滚完成——否则受保护的页面
+ * 仍会被卸载。预算有限，保证异常历史栈不会把标签页卷进无限 go 循环。
+ */
+const MAX_RESTORE_ATTEMPTS = 8
+let restoreAttempts = 0
+const locationListeners = new Set<() => void>()
+let navigationBlocker: (() => boolean) | null = null
+
+/** 条目索引只存在于我们自己写入的 history.state；外部条目没有它。 */
+function readEntryIndex(state: unknown): number | null {
+  const value = (state as Record<string, unknown> | null | undefined)?.[HISTORY_INDEX]
+  return typeof value === 'number' ? value : null
+}
+
+function readWindowLocation(): RouterLocation {
+  if (typeof window === 'undefined') return { pathname: '/', search: '' }
+  return { pathname: window.location.pathname, search: window.location.search }
+}
+
+/**
+ * useSyncExternalStore 的 getSnapshot：未冻结时按值同步浏览器地址，
+ * 值没变就返回同一个对象，避免快照身份抖动导致无限重渲染。
+ *
+ * 冻结期间连 publish 也不推进快照：回滚完成后地址会回到已提交位置，
+ * 保持「渲染位置 == 浏览器位置」的一致收敛。
+ */
+function readCommittedLocation(): RouterLocation {
+  if (locationFrozen) return committed
+  const next = readWindowLocation()
+  if (next.pathname !== committed.pathname || next.search !== committed.search) committed = next
+  return committed
+}
+
+function publishLocation() {
+  readCommittedLocation()
+  for (const listener of [...locationListeners]) listener()
+}
+
+function subscribeLocation(listener: () => void) {
+  locationListeners.add(listener)
+  return () => { locationListeners.delete(listener) }
+}
+
+if (typeof window !== 'undefined' && readEntryIndex(window.history.state) !== historyIndex) {
   window.history.replaceState({ ...(window.history.state ?? {}), [HISTORY_INDEX]: historyIndex }, '', window.location.href)
 }
 
@@ -20,30 +79,75 @@ function commitHistory(to: string, options?: NavigationOptions) {
   else window.history.pushState(state, '', to)
 }
 
+/**
+ * 导航通知仍走 window 事件：api.ts 的 401 重定向与 auth 的 URL 清理都依赖它，
+ * 且测试逐字断言事件名。路由器自身作为该事件的订阅者推进快照。
+ */
 function notifyNavigation() {
   window.dispatchEvent(new Event(NAVIGATION_EVENT))
 }
 
-function installPopstateGuard() {
-  if (typeof window === 'undefined') return
-  window.addEventListener('popstate', (event) => {
-    if (restoringHistory) {
-      restoringHistory = false
+/**
+ * 询问守卫，并在询问期间就冻结快照。
+ *
+ * 冻结必须在事件处理函数返回之前生效：守卫或其它 popstate 监听器可能触发 setState，
+ * React 会在原生事件处理结束时冲刷这批更新，此时浏览器地址已是目标 URL 而回滚尚未发生。
+ * 守卫自身抛错时按放行处理，绝不能把路由器留在永久冻结状态。
+ */
+function allowsLeaving(): boolean {
+  locationFrozen = true
+  try {
+    return navigationBlocker ? navigationBlocker() : true
+  } catch {
+    return true
+  }
+}
+
+/**
+ * 浏览器 traversal 的唯一处理点。
+ *
+ * 顺序是：冻结快照 → 询问守卫 → 允许才解冻并提交。守卫拒绝时用 history.go(delta)
+ * 把浏览器历史送回原条目；回滚事件到达时只解除冻结，快照仍是原来那一个，
+ * 因此整个过程中没有任何组件被卸载，草稿状态原地存活。
+ */
+function handlePopstate(event: PopStateEvent) {
+  // 缺索引的条目（非本路由器写入）按后退一格推断，沿用 #622 起的行为。
+  const targetIndex = readEntryIndex(event.state) ?? historyIndex - 1
+  const delta = historyIndex - targetIndex
+  if (restoringHistory) {
+    if (delta !== 0 && restoreAttempts < MAX_RESTORE_ATTEMPTS) {
+      // 回滚还没落回已提交条目（用户连按后退时，后一次 traversal 会插在回滚之前到达）：
+      // 继续往回推，不重复询问守卫、也不解冻，受保护的页面依旧不卸载。
+      restoreAttempts += 1
+      window.history.go(delta)
       return
     }
-    const targetIndex = typeof event.state?.[HISTORY_INDEX] === 'number'
-      ? event.state[HISTORY_INDEX] as number
-      : historyIndex - 1
-    if (navigationBlocker && !navigationBlocker()) {
-      const delta = historyIndex - targetIndex
-      if (delta !== 0) {
-        restoringHistory = true
-        window.history.go(delta)
-      }
-      return
-    }
+    restoringHistory = false
+    restoreAttempts = 0
+    locationFrozen = false
+    // 正常情况下地址已回到已提交条目，快照按值比较不变，React 直接 bail out：
+    // 没有任何组件被卸载或重挂。publish 仍然要做，冻结期间的 replaceUrl 改写才不会被吞掉。
+    // 超出重试预算时以浏览器实际位置为准，绝不把路由器留在永久冻结状态。
     historyIndex = targetIndex
-  })
+    publishLocation()
+    return
+  }
+  // delta 为 0 时无处可回滚，也不能调 go(0)（真实浏览器里等同 reload），
+  // 冻结只会让渲染永久停在旧位置；这种 traversal 直接按接受处理。
+  if (delta !== 0 && !allowsLeaving()) {
+    restoringHistory = true
+    restoreAttempts = 0
+    window.history.go(delta)
+    return
+  }
+  locationFrozen = false
+  historyIndex = targetIndex
+  publishLocation()
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('popstate', handlePopstate)
+  window.addEventListener(NAVIGATION_EVENT, publishLocation)
 }
 
 /**
@@ -56,9 +160,6 @@ function installPopstateGuard() {
  * replaceState 覆盖当前条目，否则用户按后退会回到刚被守卫踢走的页面，
  * 再次触发重定向，永远回不到目标页之前的正常历史。
  */
-let navigationBlocker: (() => boolean) | null = null
-installPopstateGuard()
-
 export type NavigationOptions = { replace?: boolean }
 
 /**
@@ -77,11 +178,11 @@ export function setNavigationBlocker(blocker: (() => boolean) | null) {
 export function prepareNavigation(to: string, options?: NavigationOptions): NavigationIntent | null {
   if (navigationBlocker && !navigationBlocker()) return null
 
-  let committed = false
+  let committedIntent = false
   return {
     commit(nextTo = to, nextOptions = options) {
-      if (committed) return false
-      committed = true
+      if (committedIntent) return false
+      committedIntent = true
       commitHistory(nextTo, nextOptions)
       notifyNavigation()
       return true
@@ -109,28 +210,15 @@ export function replaceUrl(to: string) {
   notifyNavigation()
 }
 
-function subscribeToNavigation(listener: () => void) {
-  window.addEventListener('popstate', listener)
-  window.addEventListener(NAVIGATION_EVENT, listener)
-  return () => {
-    window.removeEventListener('popstate', listener)
-    window.removeEventListener(NAVIGATION_EVENT, listener)
-  }
+export function useLocation(): RouterLocation {
+  return useSyncExternalStore(subscribeLocation, readCommittedLocation, readCommittedLocation)
 }
 
 export function usePathname() {
-  const [path, setPath] = useState(currentPath)
-  useEffect(() => subscribeToNavigation(() => setPath(currentPath())), [])
-  return path
+  return useLocation().pathname
 }
 
 export function useNavigate() { return navigate }
-export function useLocation() {
-  const pathname = usePathname()
-  const [search, setSearch] = useState(window.location.search)
-  useEffect(() => subscribeToNavigation(() => setSearch(window.location.search)), [])
-  return { pathname, search }
-}
 
 type LinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & { to: string; children?: ReactNode }
 
