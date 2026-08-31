@@ -223,6 +223,6 @@ CHENXING_TEST_ROLE=orchestrator ./test_sh/test.sh --full
 - 后端 API 的可导入契约文件是仓库根目录的 `openapi.yaml`，前端接入和 Apifox 项目应以它为准。
 - API Wiki/LLM 文档入口为 `https://wiki.auth.clya.top/llms.txt`；对外 API 文档发布后应保持该入口与当前接口契约一致。
 - 新增、删除或修改任何后端 HTTP 路由、请求参数、响应结构、错误码或鉴权方式后，必须调用项目级 `sync-openapi` skill，同步更新 `openapi.yaml`。
-- 更新后必须验证 YAML/OpenAPI 基础结构，并确认接口分组、`operationId`、Security Scheme、请求体和响应模型没有遗漏；不能只更新 `API.md`。
+- 更新后必须验证 YAML/OpenAPI 基础结构，并确认接口分组、`operationId`、Security Scheme、请求体和响应模型没有遗漏。
 - Apifox 导入建议开启“自动生成调试用例”“导入 Security Scheme”和“将 Servers 导入为环境”；无 Security 的接口保持无需鉴权。
 - GitHub Actions 的 `apifox-sync` Job 在 `dev` 质量检查通过后，使用仓库 Environment Secret `API_FOX_KEY` 将 `openapi.yaml` 自动导入 Apifox 项目 `8642631`；不要在工作流、日志或提交中写入该密钥。
