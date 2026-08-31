@@ -21,7 +21,15 @@ const MAX_ATTEMPTS: i32 = 10;
 const EMAIL_SEND_TIMEOUT: Duration = Duration::from_secs(30);
 const VERIFICATION_CODE_KIND: &str = "verification_code";
 const SECURITY_ALERT_KIND: &str = "email_change_security_alert";
+const DELIVERY_SEMANTICS: &str = "at_least_once";
 
+/// Durable email delivery intentionally uses **at-least-once** semantics.
+///
+/// The SMTP provider call happens before the PostgreSQL terminal-state update.
+/// If that update or the transaction commit fails after SMTP accepted the
+/// message, the row stays retryable and a later worker pass may send the same
+/// message again. This favors eventual delivery of security-critical mail over
+/// risking a permanently lost message when the commit result is ambiguous.
 #[derive(Clone)]
 pub struct EmailOutbox {
     pool: PgPool,
@@ -212,12 +220,40 @@ impl EmailOutbox {
             .await
             .map_err(|_| EmailOutboxError::DeliveryTimeout)?
             .map_err(|_| EmailOutboxError::Delivery)?;
-        let processed = self.mark_processed(&mut transaction, entry).await?;
-        transaction
+        let processed = match self.mark_processed(&mut transaction, entry).await {
+            Ok(processed) => processed,
+            Err(error_value) => {
+                self.log_delivery_state_uncertain(entry, "mark_processed", &error_value);
+                return Err(error_value);
+            }
+        };
+        if let Err(error_value) = transaction
             .commit()
             .await
-            .map_err(EmailOutboxError::Database)?;
+            .map_err(EmailOutboxError::Database)
+        {
+            self.log_delivery_state_uncertain(entry, "commit", &error_value);
+            return Err(error_value);
+        }
         Ok(processed)
+    }
+
+    fn log_delivery_state_uncertain(
+        &self,
+        entry: &OutboxEntry,
+        stage: &'static str,
+        error_value: &EmailOutboxError,
+    ) {
+        tracing::error!(
+            event = "email_outbox.delivery_state_uncertain",
+            delivery_semantics = DELIVERY_SEMANTICS,
+            outbox_id = entry.id,
+            kind = %entry.kind,
+            attempt = entry.attempts,
+            stage,
+            error_kind = error_value.failure_code(),
+            "SMTP accepted an email but the durable terminal state could not be confirmed; retry may duplicate delivery"
+        );
     }
 
     async fn load_message(

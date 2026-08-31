@@ -27,6 +27,12 @@ pub enum EmailSendError {
     Delivery,
 }
 
+/// Application boundary for one SMTP delivery attempt.
+///
+/// `Ok(())` means the provider boundary accepted this attempt; it does not
+/// make the surrounding outbox transaction durable or provide idempotency.
+/// Callers that persist delivery state after `send` must therefore tolerate a
+/// later retry and possible duplicate external delivery.
 pub trait EmailSender: Send + Sync {
     fn send<'a>(
         &'a self,

@@ -22,6 +22,15 @@ impl EmailOutbox {
             .execute(&self.pool)
             .await
             .map_err(EmailOutboxError::Database)?;
+            tracing::error!(
+                event = "email_outbox.dead_lettered",
+                delivery_semantics = super::DELIVERY_SEMANTICS,
+                outbox_id = entry.id,
+                kind = %entry.kind,
+                attempt = entry.attempts,
+                error_kind = error_code,
+                "email outbox event exhausted retries and was moved to dead-letter"
+            );
         } else {
             let delay_seconds = retry_delay_seconds(entry.attempts);
             crate::sqlx::query(
@@ -39,6 +48,16 @@ impl EmailOutbox {
             .execute(&self.pool)
             .await
             .map_err(EmailOutboxError::Database)?;
+            tracing::warn!(
+                event = "email_outbox.retry_scheduled",
+                delivery_semantics = super::DELIVERY_SEMANTICS,
+                outbox_id = entry.id,
+                kind = %entry.kind,
+                attempt = entry.attempts,
+                retry_after_seconds = delay_seconds,
+                error_kind = error_code,
+                "email outbox event remains pending for retry"
+            );
         }
         Ok(())
     }

@@ -164,6 +164,10 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 - `GET /api/v1/auth/me`：返回当前用户资料和当前 Session 到期时间。
 - `PATCH /api/v1/auth/me`：更新 `display_name`，需要用户 CSRF。
 - `POST /api/v1/auth/password`：校验当前密码并修改密码，成功返回 `204`，同时撤销该用户所有 Session。当前密码为空或超过 128 字符时与密码错误返回同一 `401 invalid_credentials`，不暴露长度。
+- `POST /api/v1/auth/email-change/start`：校验当前密码后创建 10 分钟邮箱变更挑战，并以 `202` 返回 `challenge_id` 与 `expires_at`。`202` 表示挑战和邮件 outbox 已在 PostgreSQL 中持久化排队，不表示 SMTP 已完成投递。
+- `POST /api/v1/auth/email-change/confirm`：提交 `challenge_id` 和六位验证码；成功返回 `204`，更新邮箱、撤销全部 Session，并排队向旧邮箱发送安全告警。
+
+邮箱变更相关邮件由 durable outbox 以 **at-least-once（至少一次）** 语义投递：SMTP 调用成功后，只有 `processed_at` 终结写入和事务提交都成功，outbox 行才会标记为已处理。如果 SMTP 已接受邮件但终结写入或提交结果不确定，行会保持可重试，恢复后可能再次发送同一封邮件。该重复投递是有意接受的可靠性契约，目的是避免关键验证邮件或安全告警永久漏发；调用方和用户界面不得把 `202` 解读为“只会收到一封”。浏览器确认页会提示极少数故障恢复时可能重复收到邮件，应以最新验证码为准。
 - `GET /api/v1/auth/entitlements`：返回当前生效套餐摘要（`code`、`name`、`description`、`validity`）和各项权益用量；`limit` 为 `null` 表示无限，缺失表示数值无上限概念（如 QPS）。
 - `GET /api/v1/auth/security-events?page=1&page_size=20`：分页返回当前用户在热表和归档表中的安全事件，包含 `id`、`action`、`category`、`severity`、`resource_type`、OAuth Client 摘要和时间；`page_size` 最大为 100。`category`/`severity` 由服务端单点映射，未映射的 action 回落 `account`/`info`。
 - `GET /api/v1/auth/security-events/{event_id}`：返回单个安全事件详情（`ip`/`user_agent` 只从 metadata 白名单提取，`ip_location`/`ray_id` 恒为 null，`client` 仅 OAuth 事件填充、Client 已删除时为 null）；事件不存在或不属于当前用户时一律 404，不区分「查不到」与「不是你的」。

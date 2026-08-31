@@ -149,6 +149,43 @@ Session payload 使用 AES-256-GCM 并携带 key id。`AUTH_ENCRYPTION_KEY` 保�
 
 在管理设置中配置 SMTP Host、Port、Username、From 和加密模式：`ssl_enabled=true` 使用隐式 TLS，`ssl_enabled=false` 使用必需的 STARTTLS。SMTP 未配置、密钥无法解密、发件人无效或连接/投递失败时，发送返回稳定的内部错误，不会报告“已发送”。
 
+### 邮件 Outbox 交付契约
+
+邮件 outbox 对外部 SMTP 副作用采用 **at-least-once（至少一次）** 语义，这是项目 Owner 对 Issue #703 的明确决策。邮箱变更接口返回 `202` 只表示挑战和邮件 outbox 行已经在 PostgreSQL 中持久化排队，不表示收件箱已经收到邮件，也不承诺同一消息最多发送一次。
+
+Worker 在 SMTP 调用成功后才写入 `processed_at` 并提交事务。如果 SMTP 已接受邮件，但终结写入或提交结果失败/不确定，事务会回滚，outbox 行保持可重试；后续重试可能再次发送同一封邮件。该行为是有意的：偶发重复邮件优于关键验证或安全告警永久漏发。当前没有供应商幂等键或发送去重记录，运维不得为了消除重复而手工删除 pending 行或关闭重试。
+
+Worker 使用最多 10 次尝试、指数退避（上限 5 分钟），耗尽后进入 dead-letter。重试和 dead-letter 不记录收件地址、正文、验证码或 SMTP 凭据，只保留 outbox id、邮件种类、尝试次数和稳定错误码。
+
+### 监控与告警
+
+邮件 worker 会写入以下结构化事件，日志采集应保留 `event`、`outbox_id`、`kind`、`attempt`、`error_kind` 和 `delivery_semantics` 字段：
+
+- `email_outbox.delivery_state_uncertain`：SMTP 已成功但 `mark_processed` 或事务提交无法确认；这是 at-least-once 重复投递风险，应按故障窗口告警并检查 pending 行。
+- `email_outbox.retry_scheduled`：发送或终结写失败，行仍待重试；持续增长表示 SMTP、数据库或连接池故障。
+- `email_outbox.dead_lettered`：达到 10 次上限后停止重试；每一条都需要人工确认对应验证流程或安全告警是否需要补发。
+
+建议同时监控以下只读查询（按部署的数据库 schema 执行）：
+
+```sql
+SELECT kind, COUNT(*) AS pending,
+       MIN(created_at) AS oldest_created_at,
+       MAX(attempts) AS max_attempts
+FROM email_outbox
+WHERE processed_at IS NULL
+  AND cancelled_at IS NULL
+  AND dead_lettered_at IS NULL
+GROUP BY kind;
+
+SELECT kind, COUNT(*) AS dead_lettered,
+       MAX(dead_lettered_at) AS newest_dead_lettered_at
+FROM email_outbox
+WHERE dead_lettered_at IS NOT NULL
+GROUP BY kind;
+```
+
+浏览器邮箱变更确认页会提示用户：邮件投递采用至少一次语义，极少数故障恢复时可能收到重复邮件，应以最新验证码为准。该提示不是发送成功证明；用户未收到邮件时应等待重试或重新发起流程，不应索要或记录验证码到日志。
+
 ## 附录：实现状态明细
 
 以下为已实现能力的完整清单，随开发推进更新：
