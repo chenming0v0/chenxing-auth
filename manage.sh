@@ -47,6 +47,7 @@ on_error() {
     if [[ "$DEBUG_MODE" == true && -f "${COMPOSE_FILE:-}" ]] && command_exists docker; then
         report_application_diagnostics || true
     fi
+    cleanup_release_artifacts || true
     exit "$status"
 }
 trap on_error ERR
