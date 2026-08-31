@@ -7,8 +7,13 @@ impl EmailOutbox {
         error_value: &EmailOutboxError,
     ) -> Result<(), EmailOutboxError> {
         let error_code = error_value.failure_code();
-        let outcome = if entry.attempts >= MAX_ATTEMPTS {
-            crate::sqlx::query(
+        let retry_after_seconds = if entry.attempts >= MAX_ATTEMPTS {
+            None
+        } else {
+            Some(retry_delay_seconds(entry.attempts))
+        };
+        let outcome = match retry_after_seconds {
+            None => crate::sqlx::query(
                 "UPDATE email_outbox
                  SET dead_lettered_at = NOW(), claim_token = '', last_error = $4
                  WHERE id = $1 AND processed_at IS NULL AND cancelled_at IS NULL
@@ -21,10 +26,8 @@ impl EmailOutbox {
             .bind(error_code)
             .execute(&self.pool)
             .await
-            .map_err(EmailOutboxError::Database)?
-        } else {
-            let delay_seconds = retry_delay_seconds(entry.attempts);
-            crate::sqlx::query(
+            .map_err(EmailOutboxError::Database)?,
+            Some(delay_seconds) => crate::sqlx::query(
                 "UPDATE email_outbox
                  SET available_at = NOW() + $4, claim_token = '', last_error = $5
                  WHERE id = $1 AND processed_at IS NULL AND cancelled_at IS NULL
@@ -38,7 +41,7 @@ impl EmailOutbox {
             .bind(error_code)
             .execute(&self.pool)
             .await
-            .map_err(EmailOutboxError::Database)?
+            .map_err(EmailOutboxError::Database)?,
         };
         if outcome.rows_affected() == 0 {
             tracing::warn!(
@@ -47,6 +50,27 @@ impl EmailOutbox {
                 kind = %entry.kind,
                 event = "email_outbox.stale_claim",
                 "stale email outbox failure ignored"
+            );
+        } else if let Some(delay_seconds) = retry_after_seconds {
+            tracing::warn!(
+                event = "email_outbox.retry_scheduled",
+                delivery_semantics = super::DELIVERY_SEMANTICS,
+                outbox_id = entry.id,
+                kind = %entry.kind,
+                attempt = entry.attempts,
+                retry_after_seconds = delay_seconds,
+                error_kind = error_code,
+                "email outbox event remains pending for retry"
+            );
+        } else {
+            tracing::error!(
+                event = "email_outbox.dead_lettered",
+                delivery_semantics = super::DELIVERY_SEMANTICS,
+                outbox_id = entry.id,
+                kind = %entry.kind,
+                attempt = entry.attempts,
+                error_kind = error_code,
+                "email outbox event exhausted retries and was moved to dead-letter"
             );
         }
         Ok(())

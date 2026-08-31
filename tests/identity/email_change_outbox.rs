@@ -357,7 +357,7 @@ async fn delivery_failure_keeps_the_durable_challenge_for_retry() {
 }
 
 #[tokio::test]
-async fn successful_delivery_with_terminal_write_failure_remains_retryable() {
+async fn successful_delivery_with_terminal_write_failure_is_at_least_once_retryable() {
     let (state, database, key_directory, cookie, sender) =
         logged_in_state("email_change_outbox_terminal_write").await;
     let router = api::router(state.clone());
@@ -415,6 +415,30 @@ async fn successful_delivery_with_terminal_write_failure_remains_retryable() {
         .execute(&database)
         .await
         .expect("drop processed failure function");
+
+    // The provider call already succeeded before the terminal write failed.
+    // Owner-approved at-least-once semantics therefore permit a duplicate when
+    // the retry replays the still-pending outbox row.
+    chenxing_auth::sqlx::query(
+        "UPDATE email_outbox
+         SET available_at = NOW()
+         WHERE processed_at IS NULL AND cancelled_at IS NULL AND dead_lettered_at IS NULL",
+    )
+    .execute(&database)
+    .await
+    .expect("make retry immediately available");
+    state
+        .email_outbox
+        .process_pending_outbox()
+        .await
+        .expect("retry after terminal write recovery");
+    assert_eq!(sender.messages().len(), 2);
+    let processed: bool =
+        chenxing_auth::sqlx::query_scalar("SELECT processed_at IS NOT NULL FROM email_outbox")
+            .fetch_one(&database)
+            .await
+            .expect("processed retry state");
+    assert!(processed);
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

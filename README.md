@@ -59,6 +59,7 @@
 - PostgreSQL 持久化用户、Client、授权和审计数据
 - Redis 保存短期状态、会话和可失效缓存
 - JWK 密钥存储、发布、轮换和撤销策略
+- 邮件变更验证码与安全告警通过 PostgreSQL outbox 异步投递；SMTP 外部副作用采用 at-least-once（至少一次）语义，极少数故障恢复时可能重复发送
 
 主要代码边界如下：
 

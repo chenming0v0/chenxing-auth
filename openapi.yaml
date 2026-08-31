@@ -782,6 +782,12 @@ paths:
       tags: [User Auth/Account]
       summary: 发起邮箱变更
       operationId: startEmailChange
+      description: |
+        校验当前密码后创建 10 分钟邮箱变更挑战，并将验证码邮件写入 PostgreSQL
+        email_outbox。邮件 outbox 对 SMTP 外部副作用采用 at-least-once（至少一次）
+        语义：SMTP 调用成功但 `processed_at` 终结写入或事务提交结果不确定时，行会保留
+        待重试状态，恢复后可能再次发送同一封邮件。调用方不得把 202 解读为 SMTP 已
+        完成投递或最多只会收到一封邮件。
       security: [{ sessionCookie: [] }]
       parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
       requestBody:
@@ -790,17 +796,22 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/StartEmailChangeInput' }
       responses:
-        '202': { description: 验证码已可靠排队发送, content: { application/json: { schema: { $ref: '#/components/schemas/EmailChangeStartResponse' } } } }
+        '202': { description: 验证挑战和邮件 outbox 已持久化排队；SMTP 投递仍由后台 worker 异步执行，采用 at-least-once 语义, content: { application/json: { schema: { $ref: '#/components/schemas/EmailChangeStartResponse' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/email-change/confirm:
     post:
       tags: [User Auth/Account]
       summary: 确认邮箱变更
       operationId: confirmEmailChange
+      description: |
+        验证码正确后更新邮箱、撤销全部登录会话，并在同一事务中排队向旧邮箱发送安全告警。
+        安全告警与验证码邮件均采用 at-least-once（至少一次）投递；数据库终结写入结果不
+        确定时，后续重试可能造成重复邮件，目的是避免关键安全通知永久漏发。
       security: [{ sessionCookie: [] }]
       parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
       requestBody:
@@ -814,6 +825,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
   /api/v1/auth/me:
     get:
       tags: [User Auth/Account]
