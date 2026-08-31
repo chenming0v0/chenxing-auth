@@ -187,10 +187,38 @@ impl EmailOutbox {
     }
 
     async fn apply(&self, entry: &OutboxEntry) -> Result<bool, EmailOutboxError> {
-        // Keep the user advisory lock until the provider call and terminal
-        // write finish. A new challenge cannot commit between this state check
-        // and delivery, so a claimed old challenge is either cancelled before
-        // sending or is fully serialized ahead of the new request.
+        // Claim validation and payload reads use a short transaction. The
+        // provider call must stay outside it: SMTP may wait for network I/O and
+        // the claim fence makes the later terminal CAS safe if the lease is
+        // reclaimed while delivery is in flight.
+        let message = self.load_message(entry).await?;
+        let Some(message) = message else {
+            return Ok(false);
+        };
+        tokio::time::timeout(EMAIL_SEND_TIMEOUT, self.sender.send(message))
+            .await
+            .map_err(|_| EmailOutboxError::DeliveryTimeout)?
+            .map_err(|_| EmailOutboxError::Delivery)?;
+        // SMTP succeeds before this fenced write. If the write or its commit
+        // is lost, retrying the durable row may duplicate delivery by design:
+        // this boundary guarantees at-least-once delivery rather than loss.
+        let processed = self.mark_processed(entry).await?;
+        if !processed {
+            tracing::warn!(
+                outbox_id = entry.id,
+                claim_generation = entry.claim_generation,
+                kind = %entry.kind,
+                event = "email_outbox.stale_claim",
+                "stale email outbox completion ignored"
+            );
+        }
+        Ok(processed)
+    }
+
+    async fn load_message(
+        &self,
+        entry: &OutboxEntry,
+    ) -> Result<Option<EmailMessage>, EmailOutboxError> {
         let mut transaction = self
             .pool
             .begin()
@@ -199,28 +227,20 @@ impl EmailOutbox {
         crate::sessions::store::lock_user_session_scope(&mut transaction, entry.user_id)
             .await
             .map_err(EmailOutboxError::Database)?;
-        let message = self.load_message(&mut transaction, entry).await?;
-        let Some(message) = message else {
+        let message = self
+            .load_message_in_transaction(&mut transaction, entry)
+            .await?;
+        if message.is_none() {
             self.mark_cancelled(&mut transaction, entry).await?;
-            transaction
-                .commit()
-                .await
-                .map_err(EmailOutboxError::Database)?;
-            return Ok(false);
-        };
-        tokio::time::timeout(EMAIL_SEND_TIMEOUT, self.sender.send(message))
-            .await
-            .map_err(|_| EmailOutboxError::DeliveryTimeout)?
-            .map_err(|_| EmailOutboxError::Delivery)?;
-        let processed = self.mark_processed(&mut transaction, entry).await?;
+        }
         transaction
             .commit()
             .await
             .map_err(EmailOutboxError::Database)?;
-        Ok(processed)
+        Ok(message)
     }
 
-    async fn load_message(
+    async fn load_message_in_transaction(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         entry: &OutboxEntry,
@@ -339,11 +359,7 @@ impl EmailOutbox {
         }))
     }
 
-    async fn mark_processed(
-        &self,
-        transaction: &mut Transaction<'_, Postgres>,
-        entry: &OutboxEntry,
-    ) -> Result<bool, EmailOutboxError> {
+    async fn mark_processed(&self, entry: &OutboxEntry) -> Result<bool, EmailOutboxError> {
         let result = crate::sqlx::query(
             "UPDATE email_outbox
              SET processed_at = NOW(), claim_token = '', last_error = NULL
@@ -354,7 +370,7 @@ impl EmailOutbox {
         .bind(entry.id)
         .bind(entry.claim_generation)
         .bind(&entry.claim_token)
-        .execute(&mut **transaction)
+        .execute(&self.pool)
         .await
         .map_err(EmailOutboxError::Database)?;
         Ok(result.rows_affected() == 1)

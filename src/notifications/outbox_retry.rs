@@ -7,7 +7,7 @@ impl EmailOutbox {
         error_value: &EmailOutboxError,
     ) -> Result<(), EmailOutboxError> {
         let error_code = error_value.failure_code();
-        if entry.attempts >= MAX_ATTEMPTS {
+        let outcome = if entry.attempts >= MAX_ATTEMPTS {
             crate::sqlx::query(
                 "UPDATE email_outbox
                  SET dead_lettered_at = NOW(), claim_token = '', last_error = $4
@@ -21,12 +21,12 @@ impl EmailOutbox {
             .bind(error_code)
             .execute(&self.pool)
             .await
-            .map_err(EmailOutboxError::Database)?;
+            .map_err(EmailOutboxError::Database)?
         } else {
             let delay_seconds = retry_delay_seconds(entry.attempts);
             crate::sqlx::query(
                 "UPDATE email_outbox
-                 SET available_at = NOW() + $4, last_error = $5
+                 SET available_at = NOW() + $4, claim_token = '', last_error = $5
                  WHERE id = $1 AND processed_at IS NULL AND cancelled_at IS NULL
                    AND dead_lettered_at IS NULL
                    AND claim_generation = $2 AND claim_token = $3",
@@ -38,7 +38,16 @@ impl EmailOutbox {
             .bind(error_code)
             .execute(&self.pool)
             .await
-            .map_err(EmailOutboxError::Database)?;
+            .map_err(EmailOutboxError::Database)?
+        };
+        if outcome.rows_affected() == 0 {
+            tracing::warn!(
+                outbox_id = entry.id,
+                claim_generation = entry.claim_generation,
+                kind = %entry.kind,
+                event = "email_outbox.stale_claim",
+                "stale email outbox failure ignored"
+            );
         }
         Ok(())
     }
