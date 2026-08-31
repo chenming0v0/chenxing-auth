@@ -136,7 +136,7 @@ pub async fn purchase_plan(
 ) -> Response {
     let key = match required_idempotency_key(&headers) {
         Ok(key) => key,
-        Err(response) => return response,
+        Err(error_value) => return error_value.into_response(),
     };
     let Some(credential) = session.user_session_credential() else {
         return crate::users::ui_auth::invalid_session_response(&state, "invalid_session");
@@ -210,7 +210,7 @@ pub async fn purchase_quota_addon(
 ) -> Response {
     let key = match required_idempotency_key(&headers) {
         Ok(key) => key,
-        Err(response) => return response,
+        Err(error_value) => return error_value.into_response(),
     };
     let Some(credential) = session.user_session_credential() else {
         return crate::users::ui_auth::invalid_session_response(&state, "invalid_session");
@@ -292,18 +292,37 @@ fn invalid_pagination() -> Response {
     )
 }
 
-fn required_idempotency_key(headers: &HeaderMap) -> Result<IdempotencyKey, Response> {
-    let Some(value) = headers.get("idempotency-key") else {
-        return Err(error::bad_request(
-            "idempotency_key_required",
-            "Idempotency-Key header is required for wallet purchases",
-        ));
-    };
-    let value = value
+/// 购买请求缺少或无法解析 Idempotency-Key 的两种形态。
+///
+/// 这里刻意不直接返回 `Response`：`Response` 至少 128 字节，而 `IdempotencyKey`
+/// 只是一个 String，`Result` 会被错误变体撑大（clippy::result_large_err）。
+/// 错误形态本来只有两种，用小枚举表达，映射响应交给边界。
+enum IdempotencyKeyError {
+    Missing,
+    Invalid,
+}
+
+impl IdempotencyKeyError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Missing => error::bad_request(
+                "idempotency_key_required",
+                "Idempotency-Key header is required for wallet purchases",
+            ),
+            Self::Invalid => {
+                error::bad_request("invalid_idempotency_key", "Idempotency-Key is invalid")
+            }
+        }
+    }
+}
+
+fn required_idempotency_key(headers: &HeaderMap) -> Result<IdempotencyKey, IdempotencyKeyError> {
+    let value = headers
+        .get("idempotency-key")
+        .ok_or(IdempotencyKeyError::Missing)?
         .to_str()
-        .map_err(|_| error::bad_request("invalid_idempotency_key", "Idempotency-Key is invalid"))?;
-    IdempotencyKey::parse(value)
-        .map_err(|_| error::bad_request("invalid_idempotency_key", "Idempotency-Key is invalid"))
+        .map_err(|_| IdempotencyKeyError::Invalid)?;
+    IdempotencyKey::parse(value).map_err(|_| IdempotencyKeyError::Invalid)
 }
 
 pub(crate) fn wallet_error_response(error_value: WalletServiceError) -> Response {
