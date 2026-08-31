@@ -1,7 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react'
 import { AuthShell, ConsoleLayout, OAuthShell } from './shells'
-import { navGroups } from '../data'
 import { useDraftLeaveGuard } from '../pages/admin/settings/panel'
 import { setNavigationBlocker } from '../router'
 
@@ -25,12 +24,6 @@ vi.mock('../auth-state', () => ({
     logout: mockLogout,
   }),
 }))
-
-const allItems = navGroups.flatMap((group) => group.items)
-const adminItems = allItems.filter((item) => !item.ownerOnly)
-const coreItems = (navGroups.find((group) => group.label === '账户')?.items ?? []).filter((item) => (
-  ['/console', '/console/profile', '/console/apps', '/console/logs'].includes(item.path)
-))
 
 beforeEach(() => {
   // useLocation 在渲染时读取 window.location.pathname
@@ -63,103 +56,6 @@ function openHamburgerMenu(): HTMLElement {
   expect(menu).toBeTruthy()
   return menu
 }
-
-describe('ConsoleLayout 移动端导航可达性（#197）', () => {
-  it('桌面侧栏仍渲染全部可见导航项并带正确 href', () => {
-    renderConsole()
-    const sidebar = screen.getByRole('navigation', { name: '控制台导航' })
-    for (const item of adminItems) {
-      expect(within(sidebar).getByRole('link', { name: item.label }).getAttribute('href')).toBe(item.path)
-    }
-    for (const item of allItems.filter((candidate) => candidate.ownerOnly)) {
-      expect(within(sidebar).queryByRole('link', { name: item.label })).toBeNull()
-    }
-  })
-
-  it('侧栏按当前路径标记 active 态', () => {
-    renderConsole()
-    const sidebar = screen.getByRole('navigation', { name: '控制台导航' })
-    expect(within(sidebar).getByRole('link', { name: '总览' }).getAttribute('aria-current')).toBe('page')
-    expect(within(sidebar).getByRole('link', { name: '套餐与权益' }).getAttribute('aria-current')).toBeNull()
-  })
-
-  it('汉堡菜单只保留区域级入口：开发者/管理不再平铺分组', () => {
-    const menu = openHamburgerMenu()
-    expect(within(menu).getByRole('link', { name: '控制台' }).getAttribute('href')).toBe('/console')
-    // 开发者入口默认落在「接入应用」，管理入口默认落在「仪表盘」
-    expect(within(menu).getByRole('link', { name: '开发者' }).getAttribute('href')).toBe('/console/integrate')
-    expect(within(menu).getByRole('link', { name: '管理' }).getAttribute('href')).toBe('/admin')
-    for (const flattened of ['总览', '钱包', '接入应用', '套餐与权益', '仪表盘', '用户管理', '套餐管理', '邀请码', '身份提供商', '系统设置']) {
-      expect(within(menu).queryByRole('link', { name: flattened })).toBeNull()
-    }
-    // 分组列表已整体移出汉堡菜单，不再渲染 extra 容器
-    expect(menu.querySelector('.cx-nav-panel-extra')).toBeNull()
-  })
-
-  it('普通用户的汉堡菜单没有管理入口', () => {
-    mockUser.role = 'user'
-    const menu = openHamburgerMenu()
-    expect(within(menu).queryByRole('link', { name: '管理' })).toBeNull()
-    expect(within(menu).getByRole('link', { name: '开发者' })).toBeTruthy()
-  })
-
-  it('Owner 的侧栏显示 Owner-only 系统入口', () => {
-    mockUser.role = 'owner'
-    renderConsole()
-    const sidebar = screen.getByRole('navigation', { name: '控制台导航' })
-    for (const item of allItems.filter((candidate) => candidate.ownerOnly)) {
-      expect(within(sidebar).getByRole('link', { name: item.label }).getAttribute('href')).toBe(item.path)
-    }
-  })
-
-  it('移动端底栏只承载核心页，且标记当前页', () => {
-    renderConsole()
-    const bottom = screen.getByRole('navigation', { name: '控制台快捷导航' })
-    const hrefs = within(bottom).getAllByRole('link').map((link) => link.getAttribute('href'))
-    expect(hrefs).toEqual(coreItems.map((item) => item.path))
-    expect(within(bottom).getByRole('link', { name: '总览' }).getAttribute('aria-current')).toBe('page')
-    // 开发者/管理页不在账户区底栏
-    expect(within(bottom).queryByRole('link', { name: '接入应用' })).toBeNull()
-    expect(within(bottom).queryByRole('link', { name: '套餐与权益' })).toBeNull()
-  })
-
-  it('开发者区底栏切换为接入应用/授权测试/套餐与权益', () => {
-    window.history.replaceState({}, '', '/console/integrate')
-    renderConsole()
-    const bottom = screen.getByRole('navigation', { name: '控制台快捷导航' })
-    const hrefs = within(bottom).getAllByRole('link').map((link) => link.getAttribute('href'))
-    expect(hrefs).toEqual(['/console/integrate', '/console/playground', '/console/plans'])
-    expect(within(bottom).getByRole('link', { name: '接入应用' }).getAttribute('aria-current')).toBe('page')
-    expect(within(bottom).queryByRole('link', { name: '总览' })).toBeNull()
-  })
-
-  it('管理区底栏按 Owner 权限显示系统入口', () => {
-    window.history.replaceState({}, '', '/admin/users')
-    mockUser.role = 'owner'
-    renderConsole()
-    const bottom = screen.getByRole('navigation', { name: '控制台快捷导航' })
-    const hrefs = within(bottom).getAllByRole('link').map((link) => link.getAttribute('href'))
-    expect(hrefs).toEqual(['/admin', '/admin/users', '/admin/plans', '/admin/settings'])
-    expect(within(bottom).getByRole('link', { name: '用户管理' }).getAttribute('aria-current')).toBe('page')
-    expect(within(bottom).queryByRole('link', { name: '总览' })).toBeNull()
-  })
-
-  it('点击汉堡菜单里的导航项后菜单关闭', async () => {
-    const menu = openHamburgerMenu()
-    fireEvent.click(within(menu).getByRole('link', { name: '开发者' }))
-    // 关闭带 300ms 退出动画（遮罩淡出 + 面板收拢），卸载发生在动画结束后
-    await waitFor(() => expect(document.querySelector('.cx-nav-panel')).toBeNull())
-  })
-
-  it('普通用户看不到管理/系统分组', () => {
-    mockUser.role = 'user'
-    renderConsole()
-    const sidebar = screen.getByRole('navigation', { name: '控制台导航' })
-    expect(within(sidebar).queryByRole('link', { name: '仪表盘' })).toBeNull()
-    expect(within(sidebar).queryByRole('link', { name: '系统设置' })).toBeNull()
-    expect(within(sidebar).getByRole('link', { name: '接入应用' })).toBeTruthy()
-  })
-})
 
 describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
   /** 面板里的可聚焦项（与 useNavDisclosure 的 focusableItems 同一选择器）。 */

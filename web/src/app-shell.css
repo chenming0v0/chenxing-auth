@@ -117,11 +117,15 @@ main {
 
 
 /* ---------- console shell: mobile bottom tab bar ---------- */
+/* 底栏只承载「当前区域」的页面，条目多于一屏时横向滚动；跨区域切换走右端
+   常驻的「全部」按钮打开的区域面板（.cx-nav-sheet），所以底栏不需要把
+   12 个条目挤进一行。 */
 .chenxing-bottom-nav {
   position: fixed;
   left: 0; right: 0; bottom: 0;
   z-index: var(--chenxing-z-nav);
   display: flex;
+  align-items: stretch;
   gap: 0.15rem;
   padding: 0.4rem 0.5rem calc(0.4rem + env(safe-area-inset-bottom));
   background: linear-gradient(180deg, rgba(6, 10, 20, 0.82), rgba(4, 6, 13, 0.96));
@@ -134,6 +138,7 @@ main {
   display: inline-flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 0.2rem;
   padding: 0.45rem 0.2rem;
   font-family: var(--chenxing-font-body);
@@ -147,6 +152,100 @@ main {
 .chenxing-bottom-tab.is-active {
   color: var(--chenxing-cyan);
   background: var(--chenxing-cyan-soft);
+}
+
+/* 可横滚的区域条目区。条目不再等分宽度：min-width 保证单手可点的命中区，
+   scroll-snap 让滑动停在整条上而不是半条。 */
+.cx-bottom-nav-scroll {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 0.15rem;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+}
+.cx-bottom-nav-scroll .chenxing-bottom-tab {
+  flex: 0 0 auto;
+  min-width: 4.25rem;
+  min-height: 2.75rem;
+  scroll-snap-align: start;
+}
+/* 「全部」始终留在右端不参与滚动：它是跨区域切换的固定出口，
+   竖分隔线把它和当前区域的条目区分开。 */
+.cx-bottom-more {
+  flex: 0 0 auto;
+  min-width: 3.5rem;
+  min-height: 2.75rem;
+  padding-left: 0.55rem;
+  border-left: 1px solid var(--chenxing-border);
+  border-radius: 0 var(--chenxing-radius-md) var(--chenxing-radius-md) 0;
+}
+.cx-bottom-more[aria-expanded="true"] {
+  color: var(--chenxing-cyan);
+  background: var(--chenxing-cyan-soft);
+}
+
+/* ---------- console shell: mobile all-sections sheet ---------- */
+/* 贴底升起的区域面板：列出当前角色可见的每个页面，按 navGroups 的分组标题
+   分段，所以「账户 / 开发者 / 管理 / 系统」的语义不会被压平成一排 tab。
+   玻璃容器本体是 @chenxing/ui 的 HudPanel，这里只管定位、圆角裁切和滚动。 */
+.cx-nav-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--chenxing-z-overlay);
+  display: flex;
+  align-items: flex-end;
+  background: rgba(2, 4, 10, 0.72);
+  animation: cx-nav-sheet-fade 0.2s ease both;
+}
+.cx-nav-sheet {
+  width: 100%;
+  max-height: 78dvh;
+  display: flex;
+  flex-direction: column;
+  /* 面板默认 2rem 内边距是给桌面卡片的，窄屏上会吃掉一大截列表宽度 */
+  padding: 1.15rem 1rem calc(0.9rem + env(safe-area-inset-bottom));
+  /* 贴住底边升起：下方两角不需要圆角，也不必给底部留空隙 */
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  animation: cx-nav-sheet-up 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+/* 面板右下角标自带 radius-lg 弧度，贴底后那个角已是直角，弧度对不上就会露出
+   一段悬空的圆弧。只调它的圆角，玻璃与角标的配方仍在库的 .chenxing-hud-panel。 */
+.cx-nav-sheet::after { border-bottom-right-radius: 0; }
+.cx-nav-sheet-scroll {
+  margin-top: 0.5rem;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* 面板内的导航项沿用侧栏视觉语言，但加高命中区以适配触摸 */
+.cx-nav-sheet-scroll .chenxing-nav-item {
+  min-height: 2.75rem;
+  font-size: 0.9375rem;
+}
+/* 侧栏的左侧发光竖条会伸出面板外并撑出横向滚动，激活态改由软底承担 */
+.cx-nav-sheet-scroll .chenxing-nav-item[aria-current="page"]::before,
+.cx-nav-sheet-scroll .chenxing-nav-item.is-active::before {
+  display: none;
+}
+@keyframes cx-nav-sheet-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes cx-nav-sheet-up {
+  from { transform: translateY(1.5rem); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cx-nav-sheet-overlay,
+  .cx-nav-sheet { animation: none; }
+}
+/* 桌面端有侧栏，底栏与区域面板都不该出现 */
+@media (min-width: 1024px) {
+  .cx-nav-sheet-overlay { display: none; }
 }
 
 /* ---------- console shell: progress meter ---------- */
