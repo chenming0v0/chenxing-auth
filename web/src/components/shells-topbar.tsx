@@ -52,6 +52,19 @@ function NavMenuContent({ extra }: { extra?: ReactNode }) {
   )
 }
 
+/* #692 侧缓解：账户面板里的名称与 handle 是用户可控的长文本
+   （`display_name` 最长 128、`username` 最长 64）。库的 TopbarAccountPanel
+   把 name/meta.value 当作 ReactNode 插槽渲染，容器（.cx-account-header 与
+   两列 meta 网格）没有断行或 min-width:0 约束，连续无空格的长串会按
+   max-content 撑宽，被胶囊抽屉的 overflow:hidden 裁掉。
+   这里在本仓库能控制的插槽内侧包一层受控宽度 + 任意断行的块，让长串在面板
+   宽度内折行。这是缓解不是根治：根治要在组件库给
+   .cx-account-header 的名称行和 meta 单元格补上断行/收缩约束，
+   否则任何调用方传裸字符串仍会溢出。 */
+function WrapLong({ children }: { children: ReactNode }) {
+  return <span className="block max-w-full [overflow-wrap:anywhere]">{children}</span>
+}
+
 /* 账户面板：库 Topbar 只在面板打开（含退出动画窗口）期间挂载它，
    所以配额请求挂在 mount 上等价于「打开时加载」。
    竞态与 stale 防护（#386）：cancelled 守卫让卸载后 in-flight 回调作废；
@@ -83,10 +96,10 @@ function AccountPanel() {
   return (
     <TopbarAccountPanel
       avatar={<AvatarContent src={avatarUrl(user)} name={name} />}
-      name={name}
+      name={<WrapLong>{name}</WrapLong>}
       meta={[
         { label: '会员序列', value: memberId },
-        { label: '@ Handle', value: handle, accent: true },
+        { label: '@ Handle', value: <WrapLong>{handle}</WrapLong>, accent: true },
       ]}
       extra={entitlements && (entitlements.daily || entitlements.monthly) ? (
         <>
