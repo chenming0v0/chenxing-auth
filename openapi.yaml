@@ -843,6 +843,9 @@ paths:
       tags: [User Auth/Account]
       summary: 更新当前用户资料
       operationId: updateCurrentUserProfile
+      description: |
+        普通资料修改按低风险写操作处理：Session 与 CSRF 只在请求入口校验，不在资料落库前二次锁定 Session 行。
+        该策略不适用于钱包扣款、兑换或权益授予等资产/权益操作。
       security: [{ sessionCookie: [] }]
       parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
       requestBody:
@@ -1003,6 +1006,9 @@ paths:
       operationId: purchasePlan
       description: |
         同一事务内锁定钱包与套餐：active 且 price_points>0 才可购买。
+        扣款和授予套餐前会在用户代际锁下二次复核入口捕获的精确 Session ID、token 摘要、
+        credential generation、绝对/空闲有效期及账号 active 状态；复核失败则事务整体回滚。
+        Session 被撤销、过期或代际变化返回 401 invalid_session；账号被禁用返回 401 user_disabled。
         余额不足返回 400 insufficient_balance；归档或定价为 0 返回 400 plan_not_purchasable。
         购买替换用户当前套餐。one_time 永久有效；monthly 为 now+30 天；yearly 为 now+365 天。
       security:
@@ -1034,6 +1040,10 @@ paths:
       tags: [User Wallet]
       summary: 兑换辰星点兑换卡
       operationId: redeemWalletCode
+      description: |
+        兑换入账和消耗兑换码前会在同一事务二次复核入口捕获的精确 Session 与账号 active 状态。
+        Session 被撤销、过期或代际变化返回 401 invalid_session；账号被禁用返回 401 user_disabled，
+        两种情况都不会入账、增加使用次数或写入成功审计。
       security:
         - sessionCookie: []
           csrfCookie: []
@@ -1063,6 +1073,10 @@ paths:
       tags: [User Wallet]
       summary: 购买授权额度增量包
       operationId: purchaseQuotaAddon
+      description: |
+        扣款和授予增量权益前会在同一事务二次复核入口捕获的精确 Session 与账号 active 状态。
+        Session 被撤销、过期或代际变化返回 401 invalid_session；账号被禁用返回 401 user_disabled，
+        两种情况都整体回滚。
       security:
         - sessionCookie: []
           csrfCookie: []

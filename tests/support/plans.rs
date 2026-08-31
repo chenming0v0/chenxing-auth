@@ -165,14 +165,26 @@ pub async fn register_user(router: &Router, suffix: &str) -> i64 {
         .expect("numeric user id")
 }
 
-pub async fn user_session(state: &AppState, user_id: i64) -> (String, String) {
-    let mut session =
-        Session::new(user_id.to_string(), Duration::from_secs(3600)).expect("browser session");
+pub async fn persisted_user_session_with_ttl(
+    state: &AppState,
+    user_id: i64,
+    ttl: Duration,
+) -> Session {
+    let mut session = Session::new(user_id.to_string(), ttl).expect("browser session");
     state
         .sessions
-        .save(&mut session, Duration::from_secs(3600))
+        .save(&mut session, ttl)
         .await
         .expect("persist session");
+    session
+}
+
+pub async fn persisted_user_session(state: &AppState, user_id: i64) -> Session {
+    persisted_user_session_with_ttl(state, user_id, Duration::from_secs(3600)).await
+}
+
+pub async fn user_session(state: &AppState, user_id: i64) -> (String, String) {
+    let session = persisted_user_session(state, user_id).await;
     let cookie = format!(
         "chenxing_session={}; chenxing_csrf={}",
         session.token, session.csrf_token

@@ -222,18 +222,6 @@ pub async fn apply_delta(
     Ok(balance_after)
 }
 
-pub async fn lock_user(
-    transaction: &mut Transaction<'_, Postgres>,
-    user_id: UserId,
-) -> Result<bool, crate::sqlx::Error> {
-    let found: Option<i64> =
-        crate::sqlx::query_scalar("SELECT id FROM users WHERE id = $1 FOR UPDATE")
-            .bind(user_id)
-            .fetch_optional(&mut **transaction)
-            .await?;
-    Ok(found.is_some())
-}
-
 pub async fn assign_purchased_plan(
     transaction: &mut Transaction<'_, Postgres>,
     user_id: UserId,

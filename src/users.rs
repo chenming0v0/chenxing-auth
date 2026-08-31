@@ -21,5 +21,10 @@ pub mod service;
 pub mod ui_auth;
 pub mod ui_handlers;
 
-pub(crate) use management::{ActorCredentialError, revalidate_management_actor};
-pub use management::{ManagementActorCredential, ManagementActorValidationError};
+pub(crate) use management::{
+    ActorCredentialError, UserSessionValidation, revalidate_management_actor,
+    validate_user_session_in_transaction,
+};
+pub use management::{
+    ManagementActorCredential, ManagementActorValidationError, UserSessionCredential,
+};

@@ -13,12 +13,13 @@ use crate::plans::addons::{QuotaAddonError, QuotaAddonPurchaseInput, QuotaAddonP
 use crate::plans::domain::Plan;
 use crate::sqlx::PgPool;
 use crate::users::{
-    ManagementActorCredential,
+    ManagementActorCredential, UserSessionCredential, UserSessionValidation,
     domain::UserId,
     repository::management_actor::{
         ManagementActorRejection, lock_management_user_advisories, lock_management_user_rows,
         validate_management_actor,
     },
+    validate_user_session_in_transaction,
 };
 
 #[derive(Clone)]
@@ -46,6 +47,10 @@ pub enum WalletServiceError {
     IdempotencyConflict,
     #[error("stored wallet idempotency result is invalid")]
     IdempotencyCorruptResult,
+    #[error("the user session is no longer valid")]
+    SessionInvalid,
+    #[error("the user account is disabled")]
+    UserDisabled,
     #[error("wallet audit operation failed: {0}")]
     Audit(#[from] crate::audit::AuditError),
     #[error("database operation failed: {0}")]
@@ -72,13 +77,25 @@ impl WalletService {
 
     pub async fn purchase(
         &self,
-        user_id: UserId,
+        credential: UserSessionCredential,
         input: PurchaseInput,
         idempotency: WalletIdempotencyContext,
         audit_event: AuditEvent,
     ) -> Result<PurchaseResult, WalletServiceError> {
         let plan_id = validate_purchase_plan_id(input.plan_id)?;
+        let user_id = credential.user_id;
         let mut transaction = self.pool.begin().await?;
+        match validate_user_session_in_transaction(&mut transaction, credential).await? {
+            UserSessionValidation::Valid => {}
+            UserSessionValidation::SessionInvalid => {
+                transaction.rollback().await?;
+                return Err(WalletServiceError::SessionInvalid);
+            }
+            UserSessionValidation::UserDisabled => {
+                transaction.rollback().await?;
+                return Err(WalletServiceError::UserDisabled);
+            }
+        }
         match repository::claim_purchase(&mut transaction, &idempotency).await {
             Ok(repository::WalletIdempotencyClaim::Replay(result)) => {
                 let value = serde_json::from_value(result)
@@ -100,10 +117,6 @@ impl WalletService {
                 return Err(WalletServiceError::Database(error));
             }
         }
-        if !repository::lock_user(&mut transaction, user_id).await? {
-            transaction.rollback().await?;
-            return Err(WalletServiceError::UserNotFound);
-        };
         let Some(plan) =
             crate::plans::repository::find_for_update(&mut transaction, plan_id).await?
         else {
@@ -118,6 +131,17 @@ impl WalletService {
         if balance < plan.price_points {
             transaction.rollback().await?;
             return Err(WalletServiceError::InsufficientBalance);
+        }
+        match validate_user_session_in_transaction(&mut transaction, credential).await? {
+            UserSessionValidation::Valid => {}
+            UserSessionValidation::SessionInvalid => {
+                transaction.rollback().await?;
+                return Err(WalletServiceError::SessionInvalid);
+            }
+            UserSessionValidation::UserDisabled => {
+                transaction.rollback().await?;
+                return Err(WalletServiceError::UserDisabled);
+            }
         }
         let amount = -plan.price_points;
         let balance_after = repository::apply_delta(
@@ -152,7 +176,7 @@ impl WalletService {
 
     pub async fn purchase_quota_addon(
         &self,
-        user_id: UserId,
+        credential: UserSessionCredential,
         input: QuotaAddonPurchaseInput,
         idempotency: WalletIdempotencyContext,
         audit_event: AuditEvent,
@@ -160,7 +184,19 @@ impl WalletService {
         if input.addon_id < 1 {
             return Err(QuotaAddonError::NotFound);
         }
+        let user_id = credential.user_id;
         let mut transaction = self.pool.begin().await?;
+        match validate_user_session_in_transaction(&mut transaction, credential).await? {
+            UserSessionValidation::Valid => {}
+            UserSessionValidation::SessionInvalid => {
+                transaction.rollback().await?;
+                return Err(QuotaAddonError::SessionInvalid);
+            }
+            UserSessionValidation::UserDisabled => {
+                transaction.rollback().await?;
+                return Err(QuotaAddonError::UserDisabled);
+            }
+        }
         match repository::claim_purchase(&mut transaction, &idempotency).await {
             Ok(repository::WalletIdempotencyClaim::Replay(result)) => {
                 let value = serde_json::from_value(result)
@@ -220,6 +256,17 @@ impl WalletService {
         if balance < addon.price_points {
             transaction.rollback().await?;
             return Err(QuotaAddonError::InsufficientBalance);
+        }
+        match validate_user_session_in_transaction(&mut transaction, credential).await? {
+            UserSessionValidation::Valid => {}
+            UserSessionValidation::SessionInvalid => {
+                transaction.rollback().await?;
+                return Err(QuotaAddonError::SessionInvalid);
+            }
+            UserSessionValidation::UserDisabled => {
+                transaction.rollback().await?;
+                return Err(QuotaAddonError::UserDisabled);
+            }
         }
         let purchase_id = crate::plans::addons::grant(
             &mut transaction,

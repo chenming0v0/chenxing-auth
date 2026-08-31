@@ -8,11 +8,13 @@ use super::{
     },
     redemption_repository, repository,
 };
-use crate::users::domain::UserId;
 use crate::{
     audit::AuditEvent,
     sqlx::PgPool,
-    users::{ManagementActorCredential, ManagementActorValidationError, domain::UserPermission},
+    users::{
+        ManagementActorCredential, ManagementActorValidationError, UserSessionCredential,
+        UserSessionValidation, domain::UserPermission, validate_user_session_in_transaction,
+    },
 };
 
 #[derive(Debug, Error)]
@@ -23,6 +25,10 @@ pub enum RedemptionError {
     InvalidCode,
     #[error("redemption code was not found")]
     NotFound,
+    #[error("the user session is no longer valid")]
+    SessionInvalid,
+    #[error("the user account is disabled")]
+    UserDisabled,
     #[error(transparent)]
     Audit(#[from] crate::audit::AuditError),
     #[error(transparent)]
@@ -112,15 +118,23 @@ impl RedemptionService {
 
     pub async fn redeem(
         &self,
-        user_id: UserId,
+        credential: UserSessionCredential,
         code: &str,
         audit: AuditEvent,
     ) -> Result<RedeemResult, RedemptionError> {
         let digest = digest(code).ok_or(RedemptionError::InvalidCode)?;
+        let user_id = credential.user_id;
         let mut tx = self.pool.begin().await?;
-        if !repository::lock_user(&mut tx, user_id).await? {
-            tx.rollback().await?;
-            return Err(RedemptionError::InvalidCode);
+        match validate_user_session_in_transaction(&mut tx, credential).await? {
+            UserSessionValidation::Valid => {}
+            UserSessionValidation::SessionInvalid => {
+                tx.rollback().await?;
+                return Err(RedemptionError::SessionInvalid);
+            }
+            UserSessionValidation::UserDisabled => {
+                tx.rollback().await?;
+                return Err(RedemptionError::UserDisabled);
+            }
         }
         let Some((code_id, points)) =
             redemption_repository::lock_redeemable(&mut tx, &digest, user_id).await?
@@ -129,6 +143,17 @@ impl RedemptionService {
             return Err(RedemptionError::InvalidCode);
         };
         repository::ensure_for_update(&mut tx, user_id).await?;
+        match validate_user_session_in_transaction(&mut tx, credential).await? {
+            UserSessionValidation::Valid => {}
+            UserSessionValidation::SessionInvalid => {
+                tx.rollback().await?;
+                return Err(RedemptionError::SessionInvalid);
+            }
+            UserSessionValidation::UserDisabled => {
+                tx.rollback().await?;
+                return Err(RedemptionError::UserDisabled);
+            }
+        }
         let balance = repository::apply_delta(
             &mut tx,
             user_id,
