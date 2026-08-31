@@ -186,3 +186,61 @@ describe('邀请码独立页', () => {
     expect(document.querySelectorAll('table')).toHaveLength(1)
   })
 })
+
+describe('邀请与兑换页签键盘导航（#691）', () => {
+  it('方向键在页签间移动焦点并切换列表', async () => {
+    list = []
+    cardsList = []
+    stubFetch()
+    render(<InvitationsWorkspace />)
+    const codesTab = await screen.findByRole('tab', { name: '邀请码' })
+    const cardsTab = screen.getByRole('tab', { name: '兑换卡' })
+    expect(codesTab.getAttribute('aria-selected')).toBe('true')
+    expect(codesTab.tabIndex).toBe(0)
+    expect(cardsTab.tabIndex).toBe(-1)
+
+    codesTab.focus()
+    fireEvent.keyDown(codesTab, { key: 'ArrowRight' })
+
+    await screen.findByText('还没有兑换卡')
+    expect(screen.getByRole('tab', { name: '兑换卡' }).getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: '兑换卡' }))
+    expect(screen.getByRole('tab', { name: '兑换卡' }).tabIndex).toBe(0)
+    expect(screen.getByRole('tab', { name: '邀请码' }).tabIndex).toBe(-1)
+    expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe('invitations-cards-tab')
+  })
+
+  it('Home / End 与方向键回环让两个页签都能由键盘到达', async () => {
+    list = []
+    cardsList = []
+    stubFetch()
+    render(<InvitationsWorkspace />)
+    const codesTab = await screen.findByRole('tab', { name: '邀请码' })
+    codesTab.focus()
+    fireEvent.keyDown(codesTab, { key: 'End' })
+    await screen.findByText('还没有兑换卡')
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: '兑换卡' }))
+
+    fireEvent.keyDown(screen.getByRole('tab', { name: '兑换卡' }), { key: 'Home' })
+    await screen.findByText('还没有邀请码')
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: '邀请码' }))
+
+    fireEvent.keyDown(screen.getByRole('tab', { name: '邀请码' }), { key: 'ArrowLeft' })
+    await screen.findByText('还没有兑换卡')
+    expect(screen.getByRole('tab', { name: '兑换卡' }).getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('非 tabs 模式的按键不切换页签', async () => {
+    list = []
+    cardsList = []
+    stubFetch()
+    render(<InvitationsWorkspace />)
+    const codesTab = await screen.findByRole('tab', { name: '邀请码' })
+    codesTab.focus()
+    fireEvent.keyDown(codesTab, { key: 'ArrowDown' })
+    fireEvent.keyDown(codesTab, { key: 'Enter' })
+
+    expect(screen.getByRole('tab', { name: '邀请码' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tab', { name: '兑换卡' }).getAttribute('aria-selected')).toBe('false')
+  })
+})

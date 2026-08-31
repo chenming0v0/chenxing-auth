@@ -24,12 +24,16 @@ import {
   walletListCsvRows,
   walletPlaintextCsvRows,
 } from './invitations/helpers'
+import { handleTabListKeyDown } from '../tabs-keyboard'
 
 const CODES_PATH = '/api/v1/admin/registration-invitation-codes'
 const CARDS_PATH = '/api/v1/admin/wallet/redemption-codes'
 
 type ListTab = 'codes' | 'cards'
 type GenerateDrawer = 'invite' | 'wallet' | null
+
+/** 顺序必须与下面 tablist 中 ListTabButton 的渲染顺序一致（键盘导航按 DOM 位置取值）。 */
+const LIST_TABS: readonly ListTab[] = ['codes', 'cards']
 
 export function AdminInvitations() {
   const access = useAdminAccess()
@@ -203,6 +207,8 @@ export function InvitationsWorkspace() {
             className="mt-5 grid grid-cols-2 gap-1 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)] p-1"
             role="tablist"
             aria-label="邀请与兑换"
+            aria-orientation="horizontal"
+            onKeyDown={(event) => handleTabListKeyDown(event, LIST_TABS, selectTab)}
           >
             <ListTabButton tab="codes" activeTab={tab} icon="ticket" label="邀请码" onSelect={selectTab} />
             <ListTabButton tab="cards" activeTab={tab} icon="wallet" label="兑换卡" onSelect={selectTab} />
