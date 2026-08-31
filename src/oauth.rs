@@ -58,6 +58,7 @@ pub struct OpenIdConfiguration {
     pub response_types_supported: Vec<&'static str>,
     pub subject_types_supported: Vec<&'static str>,
     pub id_token_signing_alg_values_supported: Vec<&'static str>,
+    pub prompt_values_supported: Vec<&'static str>,
     pub scopes_supported: Vec<String>,
     pub claims_supported: Vec<&'static str>,
     pub code_challenge_methods_supported: Vec<&'static str>,
@@ -86,6 +87,7 @@ impl OpenIdConfiguration {
             response_types_supported: vec!["code"],
             subject_types_supported: vec!["public"],
             id_token_signing_alg_values_supported: vec!["RS256"],
+            prompt_values_supported: vec!["login", "none", "consent", "select_account"],
             scopes_supported: scopes_supported.to_owned(),
             // `nonce` 在实际签发的 ID Token 中出现（有会话时）；`auth_time` 同样
             // 已实现。`azp` 未实现（单 audience 场景可省略，OIDC Core §2 允许），

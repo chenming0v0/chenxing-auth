@@ -10,23 +10,28 @@ use std::net::SocketAddr;
 
 use super::{
     authorization::{
-        AuthorizationRequest, AuthorizationRequestError, MAX_STATE_LENGTH, redirect_uri_matches,
+        AuthorizationRequest, PromptOptions, authentication_is_fresh,
         validate_authorization_request_with_allowlist,
     },
     authorization_code_handlers::{
         authorization_quota_redirect, pending_from_validated, restore_pending_after_failure,
     },
     consent::PendingAuthorization,
-    session::{SessionLookupError, session_for_headers},
+    session::session_for_headers,
     token_security::enforce_source_qps_with_policy,
 };
+#[path = "authorization_errors.rs"]
+mod authorization_errors;
 use crate::{
     api::extract::RequestIssuer,
-    clients::domain::canonicalize_redirect_uri,
     error,
     sessions::{cookies, domain::session_token_hash},
     settings::{IssuerSnapshot, SecurityLimitsSetting},
     state::AppState,
+};
+use authorization_errors::{
+    accepts_html, authorization_dependency_error, authorization_error,
+    authorization_error_redirect, session_error_code, trusted_pending_error,
 };
 
 pub use super::authorization_code_handlers::{
@@ -124,6 +129,16 @@ async fn authorize_request(
         }
     };
     let Some(session) = session else {
+        let (prompt_options, _) =
+            PromptOptions::parse(validated.prompt.as_deref()).expect("validated prompt must parse");
+        if prompt_options.none {
+            return authorization_error_redirect(
+                &request,
+                &client,
+                "login_required",
+                "an authenticated session is required",
+            );
+        }
         if !accepts_html(&headers) {
             return error::oauth_unauthorized(
                 "login_required",
@@ -132,6 +147,7 @@ async fn authorize_request(
             );
         }
         // 还没有会话，pending 以未绑定状态落盘；登录后由绑定接口补上会话。
+        validated.reauth_required = prompt_options.requires_login() || validated.max_age.is_some();
         let pending = pending_from_validated(&validated, issuer.generation());
         return save_and_redirect_to_ui(&state, pending, UiDestination::Login, &client).await;
     };
@@ -146,9 +162,37 @@ async fn authorize_request(
             );
         }
     };
+    let current_session_hash = session_token_hash(&session.token);
+    let (prompt_options, _) =
+        PromptOptions::parse(validated.prompt.as_deref()).expect("validated prompt must parse");
+    let fresh = authentication_is_fresh(session.created_at, state.clock.now(), validated.max_age);
+    let reauth_required = prompt_options.requires_login() || !fresh;
+    if prompt_options.none && reauth_required {
+        return authorization_error_redirect(
+            &request,
+            &client,
+            "login_required",
+            "a recent authentication is required",
+        );
+    }
     // 会话绑定挂到 validated 上：pending 和后续签发的授权码都从这里取值，
     // 已授权直通路径（issue_preconsented_request）才不会丢掉绑定。
-    validated.session_token_hash = Some(session_token_hash(&session.token));
+    validated.session_token_hash = Some(current_session_hash.clone());
+    if reauth_required {
+        // Keep the pre-existing session hash as a comparison fence. A later
+        // bind from the same session must not satisfy prompt=login/max_age.
+        validated.reauth_required = true;
+        validated.reauth_session_token_hash = Some(current_session_hash);
+        if !accepts_html(&headers) {
+            return error::oauth_unauthorized(
+                "login_required",
+                "a recent authentication is required",
+                "Session realm=\"oauth\"",
+            );
+        }
+        let pending = pending_from_validated(&validated, issuer.generation());
+        return save_and_redirect_to_ui(&state, pending, UiDestination::Login, &client).await;
+    }
     let pending = pending_from_validated(&validated, issuer.generation());
 
     match state
@@ -158,7 +202,22 @@ async fn authorize_request(
     {
         // 已登录但尚未授权：同样下发 holder Cookie 后进入确认页。会话在确认前
         // 过期或用户切换账号时，绑定端点需要 holder 才能受控重绑（#270）。
+        Ok(false) if prompt_options.requires_account_selection() => {
+            save_and_redirect_to_ui(&state, pending, UiDestination::Account, &client).await
+        }
+        Ok(false) if prompt_options.none => authorization_error_redirect(
+            &request,
+            &client,
+            "consent_required",
+            "user consent is required",
+        ),
         Ok(false) => {
+            save_and_redirect_to_ui(&state, pending, UiDestination::Consent, &client).await
+        }
+        Ok(true) if prompt_options.requires_account_selection() => {
+            save_and_redirect_to_ui(&state, pending, UiDestination::Account, &client).await
+        }
+        Ok(true) if prompt_options.requires_consent() => {
             save_and_redirect_to_ui(&state, pending, UiDestination::Consent, &client).await
         }
         Ok(true) => {
@@ -185,12 +244,14 @@ async fn authorize_request(
     }
 }
 
-/// 交给 SPA 处理的两个落点。两者的落盘与 Cookie 处理完全一致，只有 URL 不同。
+/// 交给 SPA 处理的交互落点。三者的落盘与 Cookie 处理完全一致，只有 URL 不同。
 enum UiDestination {
     /// 未登录：先去登录页，登录后由绑定端点补上会话绑定。
     Login,
     /// 已登录但尚未授权该 scope 组合：直接进授权确认页。
     Consent,
+    /// OIDC `prompt=select_account`：让用户显式选择当前账号或切换账号。
+    Account,
 }
 
 impl UiDestination {
@@ -198,6 +259,7 @@ impl UiDestination {
         match self {
             Self::Login => format!("/login?request_id={request_id}"),
             Self::Consent => format!("/oauth/consent?request_id={request_id}"),
+            Self::Account => format!("/oauth/account?request_id={request_id}"),
         }
     }
 }
@@ -210,7 +272,7 @@ impl UiDestination {
 /// 会话并批准，把受害者登录进攻击者账号（OAuth login CSRF / 请求固定）。
 /// Cookie 原值只存在于浏览器，服务端只留摘要。
 ///
-/// 两条进入 SPA 的路径都必须下发它（#270）：holder 是绑定端点唯一的所有权凭据，
+/// 三条进入 SPA 的路径都必须下发它（#270）：holder 是绑定端点唯一的所有权凭据，
 /// 已登录路径若不下发，用户在确认前会话过期或切换账号后就再也无法重绑，
 /// 只能在登录页与确认页之间打转。
 async fn save_and_redirect_to_ui(
@@ -349,6 +411,15 @@ async fn issue_preconsented_request(
                 .await;
             authorization_quota_redirect(&consumed.request)
         }
+        Err(
+            AuthorizationCodeIssueError::LoginRequired
+            | AuthorizationCodeIssueError::InvalidSession,
+        ) => trusted_pending_error(
+            &consumed.request,
+            client,
+            "login_required",
+            "a recent authentication is required",
+        ),
         Err(response) => {
             restore_pending_after_failure(state, &consumed.request, consumed.remaining_ttl_ms)
                 .await;
@@ -364,107 +435,6 @@ async fn issue_preconsented_request(
 }
 
 pub use super::{authorization_code_handlers::issue_authorization_code, token_handlers::token};
-
-fn accepts_html(headers: &HeaderMap) -> bool {
-    headers
-        .get("accept")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(',')
-                .any(|item| item.trim().starts_with("text/html"))
-        })
-}
-
-fn authorization_error(
-    request: &AuthorizationRequest,
-    client: &super::authorization::RegisteredClient,
-    validation_error: AuthorizationRequestError,
-) -> Response {
-    let (code, description) = match validation_error {
-        AuthorizationRequestError::InvalidClient => ("invalid_client", "client is invalid"),
-        AuthorizationRequestError::RedirectUriNotAllowed => {
-            ("invalid_request", "redirect URI is invalid")
-        }
-        AuthorizationRequestError::UnsupportedResponseType => {
-            ("unsupported_response_type", "response type is unsupported")
-        }
-        AuthorizationRequestError::ScopeNotAllowed => ("invalid_scope", "scope is invalid"),
-        AuthorizationRequestError::MissingState => ("invalid_request", "state is required"),
-        AuthorizationRequestError::StateTooLong => ("invalid_request", "state is too long"),
-        AuthorizationRequestError::NonceTooLong => ("invalid_request", "nonce is too long"),
-        AuthorizationRequestError::PkceRequired => ("invalid_request", "PKCE S256 is required"),
-        AuthorizationRequestError::InvalidCodeChallenge => {
-            ("invalid_request", "code_challenge is invalid")
-        }
-    };
-    authorization_error_redirect(request, client, code, description)
-}
-
-fn authorization_error_redirect(
-    request: &AuthorizationRequest,
-    client: &super::authorization::RegisteredClient,
-    code: &'static str,
-    description: &str,
-) -> Response {
-    if let Some(canonical_redirect_uri) = canonicalize_redirect_uri(&request.redirect_uri)
-        && client
-            .redirect_uris
-            .iter()
-            .any(|registered| redirect_uri_matches(registered, &canonical_redirect_uri))
-        && let Ok(mut redirect) = url::Url::parse(&canonical_redirect_uri)
-    {
-        redirect
-            .query_pairs_mut()
-            .append_pair("error", code)
-            .append_pair("error_description", description);
-        if let Some(state) = request
-            .state
-            .as_deref()
-            .filter(|state| !state.is_empty() && state.chars().count() <= MAX_STATE_LENGTH)
-        {
-            redirect.query_pairs_mut().append_pair("state", state);
-        }
-        return Redirect::to(redirect.as_str()).into_response();
-    }
-    error::oauth_bad_request(code, description)
-}
-
-fn trusted_pending_error(
-    pending: &PendingAuthorization,
-    client: &super::authorization::RegisteredClient,
-    code: &'static str,
-    description: &str,
-) -> Response {
-    let request = AuthorizationRequest {
-        client_id: pending.client_id.clone(),
-        redirect_uri: pending.redirect_uri.clone(),
-        response_type: "code".to_owned(),
-        scope: pending.scope.clone(),
-        state: Some(pending.state.clone()),
-        nonce: pending.nonce.clone(),
-        code_challenge: Some(pending.code_challenge.clone()),
-        code_challenge_method: Some(pending.code_challenge_method.clone()),
-    };
-    authorization_error_redirect(&request, client, code, description)
-}
-
-fn authorization_dependency_error(
-    request: &AuthorizationRequest,
-    client: &super::authorization::RegisteredClient,
-    code: &'static str,
-    description: &str,
-) -> Response {
-    authorization_error_redirect(request, client, code, description)
-}
-
-fn session_error_code(error_value: SessionLookupError) -> (&'static str, &'static str) {
-    tracing::error!(error = %error_value, "OAuth session lookup failed");
-    (
-        "temporarily_unavailable",
-        "the authorization server is temporarily unable to handle the request",
-    )
-}
 
 #[cfg(test)]
 #[path = "handlers_tests.rs"]

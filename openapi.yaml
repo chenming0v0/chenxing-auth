@@ -1467,6 +1467,11 @@ paths:
         个字符的 state 会被回显。注册匹配允许默认端口消除、根斜杠补全和 RFC 8252 loopback 字面 IP
         的动态端口例外；授权码仍绑定请求提交的原始 redirect_uri 文本，Token 兑换必须原样回送。
         Client 或 redirect_uri 不可信时绝不重定向，改用 RFC 6749 JSON 错误信封。
+        OIDC `prompt` 支持 `login`、`none`、`consent`、`select_account`；`none` 不得与其他值组合，
+        重复或未知值返回 `invalid_request`。`prompt=login` 或不满足 `max_age` 时必须完成新的浏览器登录，
+        不会复用原 Session；`prompt=none` 禁止登录/同意 UI，无法静默完成时通过已校验的 redirect_uri
+        返回 `login_required` 或 `consent_required`。`max_age=0` 始终要求重新认证，且这些参数会保留在 pending
+        请求中，跨越登录与授权确认往返后继续生效。
         Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。无记录、空值/无效值、
         数据库读取失败、Runtime Pending/Invalid 或事实无法一致应用，以及请求超时时，统一返回 RFC 6749 JSON 信封的
         503 `temporarily_unavailable`。此时尚无可用的 redirect_uri 上下文做错误重定向，
@@ -1478,10 +1483,12 @@ paths:
         - { name: scope, in: query, required: true, description: "空格分隔的 scope；每个值必须同时属于服务端 OAUTH_CLIENT_ALLOWED_SCOPES allowlist（默认 openid、profile、email）和该 Client 已注册的 scope 集合", schema: { type: string, example: 'openid email profile' } }
         - { name: state, in: query, required: true, description: 最多 512 个字符, schema: { type: string, maxLength: 512 } }
         - { name: nonce, in: query, description: 最多 512 个字符, schema: { type: string, maxLength: 512 } }
+        - { name: prompt, in: query, description: "OIDC 交互策略；空格分隔 login、none、consent、select_account。none 不得与其他值组合；重复或未知值返回 invalid_request。", schema: { type: string, example: login } }
+        - { name: max_age, in: query, description: "要求认证事件距今不超过该秒数；0 始终要求重新认证。", schema: { type: integer, format: int64, minimum: 0, maximum: 9223372036854775807 } }
         - { name: code_challenge, in: query, required: true, schema: { type: string } }
         - { name: code_challenge_method, in: query, required: true, schema: { type: string, enum: [S256] } }
       responses:
-        '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页（跳转到 SPA 登录页或授权确认页时附带授权持有者 HttpOnly Cookie；HTTPS 名称为 __Host-chenxing_authz_holder，本地 HTTP 名称为 chenxing_authz_holder，供后续绑定端点校验；已授权直通到 redirect_uri 的分支不下发） }
+        '302': { description: 重定向到 Client 的 redirect_uri、OIDC login_required/consent_required 错误，或登录/授权确认页（跳转到 SPA 登录页或授权确认页时附带授权持有者 HttpOnly Cookie；HTTPS 名称为 __Host-chenxing_authz_holder，本地 HTTP 名称为 chenxing_authz_holder，供后续绑定端点校验；已授权直通到 redirect_uri 的分支不下发） }
         '400': { $ref: '#/components/responses/OAuthBadRequest' }
         '401': { $ref: '#/components/responses/OAuthUnauthorized' }
         '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
@@ -1495,7 +1502,8 @@ paths:
         与 GET `/oauth/authorize` 行为和安全边界相同。请求体必须使用
         `application/x-www-form-urlencoded`。Client 已加载且 canonical redirect_uri 严格匹配注册值时，
         后续参数校验或依赖错误通过 302 携带 RFC 6749 错误参数返回；不可信回调地址只返回 OAuth JSON 错误。
-        state 仅在非空且不超过 512 个字符时回显。
+        state 仅在非空且不超过 512 个字符时回显。`prompt`、`max_age` 语义与 GET 入口一致，
+        包括 `prompt=none` 的无交互约束和 `max_age=0` 的重新认证要求。
       requestBody:
         required: true
         content:
@@ -1510,6 +1518,8 @@ paths:
                 scope: { type: string, description: "空格分隔的 scope；受服务端 allowlist 和 Client 已注册 scopes 双重约束" }
                 state: { type: string, maxLength: 512 }
                 nonce: { type: string, maxLength: 512 }
+                prompt: { type: string, description: "OIDC 交互策略；空格分隔 login、none、consent、select_account。none 不得与其他值组合；重复或未知值返回 invalid_request。" }
+                max_age: { type: integer, format: int64, minimum: 0, maximum: 9223372036854775807, description: "要求认证事件距今不超过该秒数；0 始终要求重新认证。" }
                 code_challenge: { type: string }
                 code_challenge_method: { type: string, enum: [S256] }
       responses:
@@ -1548,6 +1558,8 @@ paths:
         决策只能在 pending 创建时捕获的 Issuer generation 内完成。
         Issuer 热切换后不会把旧授权意图升级为新 Issuer 的授权码；旧 generation 或缺失
         generation 的请求会被丢弃并返回 400 `authorization_request_expired`。
+        pending 携带 `prompt`/`max_age` 约束；批准时若仍未完成要求的重新认证，返回
+        401 `login_required` 并保留 pending 供登录后继续。
       parameters:
         - { name: request_id, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
@@ -3506,6 +3518,8 @@ components:
         scope: { type: string, description: 空格分隔的 OAuth scope }
         state: { type: string, maxLength: 512 }
         nonce: { type: string, maxLength: 512 }
+        prompt: { type: string, description: "OIDC 交互策略；空格分隔 login、none、consent、select_account。none 不得与其他值组合；重复或未知值返回 invalid_request。" }
+        max_age: { type: integer, format: int64, minimum: 0, maximum: 9223372036854775807, description: "要求认证事件距今不超过该秒数；0 始终要求重新认证。" }
         code_challenge: { type: string }
         code_challenge_method: { type: string, enum: [S256] }
     PendingLoginResponse:
@@ -3919,6 +3933,7 @@ components:
         - response_types_supported
         - subject_types_supported
         - id_token_signing_alg_values_supported
+        - prompt_values_supported
         - token_endpoint_auth_methods_supported
         - revocation_endpoint_auth_methods_supported
       properties:
@@ -3931,6 +3946,10 @@ components:
         response_types_supported: { type: array, items: { type: string } }
         subject_types_supported: { type: array, items: { type: string } }
         id_token_signing_alg_values_supported: { type: array, items: { type: string } }
+        prompt_values_supported:
+          type: array
+          items: { type: string, enum: [login, none, consent, select_account] }
+          description: "授权端点支持的 OIDC prompt 值"
         scopes_supported: { type: array, items: { type: string } }
         claims_supported:
           type: array

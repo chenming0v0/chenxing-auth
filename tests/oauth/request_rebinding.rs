@@ -179,6 +179,36 @@ async fn persisted_session(state: &AppState, user_id: i64) -> Session {
     session
 }
 
+async fn grant_consent(database: &chenxing_auth::sqlx::PgPool, user_id: i64, client_id: &str) {
+    chenxing_auth::sqlx::query(
+        "INSERT INTO user_consents (user_id, client_id, scopes, updated_at)
+         SELECT $1, id, $3, $4 FROM oauth_clients WHERE client_id = $2
+         ON CONFLICT (user_id, client_id) DO UPDATE
+         SET scopes = EXCLUDED.scopes, revoked_at = NULL, updated_at = EXCLUDED.updated_at",
+    )
+    .bind(user_id)
+    .bind(client_id)
+    .bind(serde_json::json!(["openid", "profile"]))
+    .bind(time::OffsetDateTime::now_utc())
+    .execute(database)
+    .await
+    .expect("grant OAuth consent");
+}
+
+fn authorize_query(client_id: &str, extra: &str) -> String {
+    format!(
+        "client_id={client_id}&redirect_uri={REDIRECT_URI_ENCODED}&response_type=code&scope=openid%20profile&state=prompt-state&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256{extra}"
+    )
+}
+
+fn callback_parameter(location: &str, name: &str) -> Option<String> {
+    Url::parse(location)
+        .ok()?
+        .query_pairs()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.into_owned())
+}
+
 /// 未登录浏览器发起授权：拿到 `request_id` 与 holder Cookie。
 async fn start_unauthenticated_authorization(router: &Router, client_id: &str) -> (String, String) {
     let authorize_uri = format!(
@@ -272,6 +302,213 @@ async fn cleanup(
             .expect("cleanup user");
     }
     let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn prompt_none_returns_protocol_errors_without_entering_ui_for_get_or_post() {
+    let (router, state, database, key_directory) = setup().await;
+    let user_id = create_user(&router, "prompt-none").await;
+    let client_id = create_client(&router).await;
+    let query = authorize_query(&client_id, "&prompt=none");
+
+    for method in ["GET", "POST"] {
+        let mut builder = Request::builder().method(method).uri(if method == "GET" {
+            format!("/oauth/authorize?{query}")
+        } else {
+            "/oauth/authorize".to_owned()
+        });
+        let body = if method == "POST" {
+            builder = builder.header("content-type", "application/x-www-form-urlencoded");
+            Body::from(query.clone())
+        } else {
+            Body::empty()
+        };
+        let response = router
+            .clone()
+            .oneshot(builder.body(body).expect("prompt=none authorize request"))
+            .await
+            .expect("prompt=none authorize response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let target = location(&response);
+        assert_eq!(
+            callback_parameter(&target, "error").as_deref(),
+            Some("login_required")
+        );
+        assert!(set_cookie_pair(&response, "chenxing_authz_holder").is_none());
+    }
+
+    let session = persisted_session(&state, user_id).await;
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/oauth/authorize?{query}"))
+                .header("cookie", session_cookie(&session))
+                .body(Body::empty())
+                .expect("prompt=none authorize request with session"),
+        )
+        .await
+        .expect("prompt=none authorize response with session");
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let target = location(&response);
+    assert_eq!(
+        callback_parameter(&target, "error").as_deref(),
+        Some("consent_required")
+    );
+    assert!(set_cookie_pair(&response, "chenxing_authz_holder").is_none());
+
+    cleanup(&database, &client_id, &[user_id], key_directory).await;
+}
+
+#[tokio::test]
+async fn prompt_and_max_age_select_the_required_interaction_with_existing_consent() {
+    let (router, state, database, key_directory) = setup().await;
+    let user_id = create_user(&router, "prompt-interaction").await;
+    let client_id = create_client(&router).await;
+    grant_consent(&database, user_id, &client_id).await;
+    let session = persisted_session(&state, user_id).await;
+    let cookie = session_cookie(&session);
+
+    for (extra, expected_path) in [
+        ("&prompt=consent", "/oauth/consent"),
+        ("&prompt=select_account", "/oauth/account"),
+        ("&prompt=select_account%20consent", "/oauth/account"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/oauth/authorize?{}",
+                        authorize_query(&client_id, extra)
+                    ))
+                    .header("accept", "text/html")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .expect("interactive authorize request"),
+            )
+            .await
+            .expect("interactive authorize response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            Url::parse(&format!("http://localhost{}", location(&response)))
+                .expect("SPA interaction URL")
+                .path(),
+            expected_path
+        );
+        assert!(set_cookie_pair(&response, "chenxing_authz_holder").is_some());
+    }
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/oauth/authorize?{}",
+                    authorize_query(&client_id, "&prompt=none")
+                ))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .expect("silent authorize request"),
+        )
+        .await
+        .expect("silent authorize response");
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(callback_parameter(&location(&response), "code").is_some());
+    assert!(set_cookie_pair(&response, "chenxing_authz_holder").is_none());
+
+    cleanup(&database, &client_id, &[user_id], key_directory).await;
+}
+
+#[tokio::test]
+async fn max_age_zero_rejects_the_old_session_and_accepts_a_new_login_session() {
+    let (router, state, database, key_directory) = setup().await;
+    let user_id = create_user(&router, "max-age-zero").await;
+    let client_id = create_client(&router).await;
+    grant_consent(&database, user_id, &client_id).await;
+    let old_session = persisted_session(&state, user_id).await;
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/oauth/authorize?{}",
+                    authorize_query(&client_id, "&prompt=login&max_age=0")
+                ))
+                .header("accept", "text/html")
+                .header("cookie", session_cookie(&old_session))
+                .body(Body::empty())
+                .expect("max_age=0 authorize request"),
+        )
+        .await
+        .expect("max_age=0 authorize response");
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let target = location(&response);
+    assert!(target.starts_with("/login?request_id="));
+    let request_id = request_id(&target);
+    let holder = set_cookie_pair(&response, "chenxing_authz_holder")
+        .expect("reauthentication redirect must issue holder cookie");
+
+    let old_cookie = format!("{}; {holder}", session_cookie(&old_session));
+    assert_eq!(
+        bind(&router, &request_id, &old_cookie, &old_session.csrf_token).await,
+        StatusCode::NO_CONTENT
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/oauth/authorize/requests/{request_id}"))
+                .header("cookie", &old_cookie)
+                .header("x-csrf-token", &old_session.csrf_token)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"decision":"approve"}"#))
+                .expect("old-session approval request"),
+        )
+        .await
+        .expect("old-session approval response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(json(response).await["code"], "login_required");
+
+    let new_session = persisted_session(&state, user_id).await;
+    let new_cookie = format!("{}; {holder}", session_cookie(&new_session));
+    assert_eq!(
+        bind(&router, &request_id, &new_cookie, &new_session.csrf_token).await,
+        StatusCode::NO_CONTENT
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/oauth/authorize/requests/{request_id}"))
+                .header("cookie", &new_cookie)
+                .header("x-csrf-token", &new_session.csrf_token)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"decision":"approve"}"#))
+                .expect("new-session approval request"),
+        )
+        .await
+        .expect("new-session approval response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let redirect = json(response).await["redirect_to"]
+        .as_str()
+        .expect("authorization redirect")
+        .to_owned();
+    let code_value = callback_parameter(&redirect, "code").expect("authorization code");
+    let code = state
+        .authorization_codes
+        .find(&code_value)
+        .await
+        .expect("load authorization code")
+        .expect("stored authorization code");
+    assert_eq!(
+        code.session_token_hash.as_deref(),
+        Some(session_token_hash(&new_session.token).as_str())
+    );
+
+    cleanup(&database, &client_id, &[user_id], key_directory).await;
 }
 
 /// 会话过期恢复：绑定 → 会话撤销 → 重新登录得到新会话 → 同一 holder 重绑成功。

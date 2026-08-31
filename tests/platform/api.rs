@@ -343,6 +343,10 @@ async fn openid_configuration_publishes_standard_endpoints() {
         configuration["token_endpoint_auth_methods_supported"],
         serde_json::json!(["client_secret_basic", "client_secret_post", "none"])
     );
+    assert_eq!(
+        configuration["prompt_values_supported"],
+        serde_json::json!(["login", "none", "consent", "select_account"])
+    );
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

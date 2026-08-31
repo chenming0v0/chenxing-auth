@@ -15,6 +15,9 @@ use crate::{
     audit::AuditEvent, clients::domain::canonicalize_redirect_uri, error, settings::IssuerSnapshot,
     state::AppState,
 };
+#[path = "authorization_code_authentication.rs"]
+mod authorization_code_authentication;
+use authorization_code_authentication::enforce_authentication_constraints;
 
 pub enum AuthorizationCodeIssue {
     Redirect(String),
@@ -25,6 +28,8 @@ pub enum AuthorizationCodeIssue {
 pub enum AuthorizationCodeIssueError {
     #[error("the authenticated session is no longer valid")]
     InvalidSession,
+    #[error("a recent authentication is required")]
+    LoginRequired,
     #[error("the OAuth client is invalid")]
     InvalidClient,
     #[error("the authorization request is invalid")]
@@ -38,7 +43,7 @@ pub enum AuthorizationCodeIssueError {
 impl AuthorizationCodeIssueError {
     pub const fn status(self) -> StatusCode {
         match self {
-            Self::InvalidSession => StatusCode::UNAUTHORIZED,
+            Self::InvalidSession | Self::LoginRequired => StatusCode::UNAUTHORIZED,
             Self::InvalidClient | Self::InvalidRequest => StatusCode::BAD_REQUEST,
             Self::TemporarilyUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
@@ -91,6 +96,7 @@ pub async fn issue_authorization_code_result(
             return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
         }
     }
+    enforce_authentication_constraints(state, &user_id, &validated).await?;
     let Some(client) = state
         .clients
         .find_registered(&validated.client_id)
@@ -351,6 +357,10 @@ pub fn validated_pending_request(pending: PendingAuthorization) -> ValidatedAuth
         state: pending.state,
         nonce: pending.nonce,
         code_challenge: pending.code_challenge,
+        prompt: pending.prompt,
+        max_age: pending.max_age,
+        reauth_required: pending.reauth_required,
+        reauth_session_token_hash: pending.reauth_session_token_hash,
         owner_user_id: None,
         // Pending 请求已经绑定了会话摘要，必须原样带下去，否则授权码丢失会话绑定。
         session_token_hash: pending.session_token_hash,
@@ -381,6 +391,11 @@ pub(crate) fn authorization_code_issue_error_response(
             "the authenticated session is no longer valid",
             "Session realm=\"oauth\"",
         ),
+        AuthorizationCodeIssueError::LoginRequired => error::oauth_unauthorized(
+            "login_required",
+            "a recent authentication is required",
+            "Session realm=\"oauth\"",
+        ),
         AuthorizationCodeIssueError::InvalidClient => {
             error::oauth_bad_request("invalid_client", "client is invalid")
         }
@@ -408,6 +423,10 @@ pub(crate) fn pending_from_validated(
         scope: request.scopes.join(" "),
         state: request.state.clone(),
         issuer_generation: Some(issuer_generation),
+        prompt: request.prompt.clone(),
+        max_age: request.max_age,
+        reauth_required: request.reauth_required,
+        reauth_session_token_hash: request.reauth_session_token_hash.clone(),
         nonce: request.nonce.clone(),
         code_challenge: request.code_challenge.clone(),
         code_challenge_method: "S256".to_owned(),

@@ -286,6 +286,9 @@ fn decision_http_error(error_value: DecisionError) -> Response {
             "invalid_session",
             "authorization session is no longer valid",
         ),
+        DecisionError::LoginRequired => {
+            error::unauthorized("login_required", "a recent authentication is required")
+        }
         DecisionError::Storage => error::service_unavailable(
             "authorization_unavailable",
             "authorization is temporarily unavailable",

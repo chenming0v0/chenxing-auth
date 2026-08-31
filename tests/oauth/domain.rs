@@ -1,6 +1,6 @@
 use chenxing_auth::oauth::authorization::{
-    AuthorizationRequest, AuthorizationRequestError, MAX_NONCE_LENGTH, MAX_STATE_LENGTH,
-    RegisteredClient, validate_authorization_request,
+    AuthorizationRequest, AuthorizationRequestError, MAX_MAX_AGE, MAX_NONCE_LENGTH,
+    MAX_STATE_LENGTH, RegisteredClient, validate_authorization_request,
     validate_authorization_request_with_allowlist,
 };
 
@@ -31,6 +31,8 @@ fn redirect_uri_is_allowed(registered: &str, requested: &str) -> bool {
             nonce: None,
             code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
             code_challenge_method: Some("S256".to_owned()),
+            prompt: None,
+            max_age: None,
         },
     )
     .is_ok()
@@ -118,6 +120,8 @@ fn authorization_request_accepts_exact_redirect_and_pkce() {
             nonce: Some("nonce-value".to_owned()),
             code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
             code_challenge_method: Some("S256".to_owned()),
+            prompt: None,
+            max_age: None,
         },
     )
     .expect("valid authorization request");
@@ -140,6 +144,8 @@ fn authorization_request_preserves_original_redirect_after_canonical_match() {
             nonce: None,
             code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
             code_challenge_method: Some("S256".to_owned()),
+            prompt: None,
+            max_age: None,
         },
     )
     .expect("canonical equivalent redirect URI should match");
@@ -160,6 +166,8 @@ fn authorization_request_rejects_missing_state() {
             nonce: None,
             code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
             code_challenge_method: Some("S256".to_owned()),
+            prompt: None,
+            max_age: None,
         },
     )
     .expect_err("state is required");
@@ -180,6 +188,8 @@ fn authorization_request_rejects_scope_outside_client_registration() {
             nonce: None,
             code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
             code_challenge_method: Some("S256".to_owned()),
+            prompt: None,
+            max_age: None,
         },
     )
     .expect_err("unregistered scope must be rejected");
@@ -202,6 +212,8 @@ fn authorization_request_rejects_client_scope_outside_server_allowlist() {
             nonce: None,
             code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
             code_challenge_method: Some("S256".to_owned()),
+            prompt: None,
+            max_age: None,
         },
         &["openid".to_owned(), "profile".to_owned()],
     )
@@ -232,6 +244,8 @@ fn authorization_request_rejects_blank_nonce() {
             nonce: Some("  ".to_owned()),
             code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
             code_challenge_method: Some("S256".to_owned()),
+            prompt: None,
+            max_age: None,
         },
     )
     .expect("nonce is optional when omitted, but blank nonce is normalized away");
@@ -252,6 +266,8 @@ fn authorization_request_rejects_state_over_limit() {
             nonce: None,
             code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
             code_challenge_method: Some("S256".to_owned()),
+            prompt: None,
+            max_age: None,
         },
     )
     .expect_err("overlong state must be rejected before pending creation");
@@ -272,6 +288,8 @@ fn authorization_request_rejects_nonce_over_limit() {
             nonce: Some("x".repeat(MAX_NONCE_LENGTH + 1)),
             code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
             code_challenge_method: Some("S256".to_owned()),
+            prompt: None,
+            max_age: None,
         },
     )
     .expect_err("overlong nonce must be rejected before pending creation");
@@ -300,10 +318,71 @@ fn authorization_request_rejects_invalid_s256_challenge_before_pending_creation(
                 nonce: None,
                 code_challenge: Some(challenge),
                 code_challenge_method: Some("S256".to_owned()),
+                prompt: None,
+                max_age: None,
             },
         )
         .expect_err("invalid S256 challenge must be rejected at authorize");
 
         assert_eq!(error, AuthorizationRequestError::InvalidCodeChallenge);
     }
+}
+
+#[test]
+fn authorization_request_parses_prompt_and_max_age() {
+    let validated = validate_authorization_request(
+        &client(),
+        AuthorizationRequest {
+            client_id: "cx_project".to_owned(),
+            redirect_uri: "https://project.example/callback".to_owned(),
+            response_type: "code".to_owned(),
+            scope: "openid".to_owned(),
+            state: Some("state-value".to_owned()),
+            nonce: None,
+            code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
+            code_challenge_method: Some("S256".to_owned()),
+            prompt: Some("login".to_owned()),
+            max_age: Some(60),
+        },
+    )
+    .expect("OIDC prompt and max_age should validate");
+
+    assert_eq!(validated.prompt.as_deref(), Some("login"));
+    assert_eq!(validated.max_age, Some(60));
+}
+
+#[test]
+fn authorization_request_rejects_invalid_prompt_combinations_and_unrepresentable_max_age() {
+    let base = || AuthorizationRequest {
+        client_id: "cx_project".to_owned(),
+        redirect_uri: "https://project.example/callback".to_owned(),
+        response_type: "code".to_owned(),
+        scope: "openid".to_owned(),
+        state: Some("state-value".to_owned()),
+        nonce: None,
+        code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
+        code_challenge_method: Some("S256".to_owned()),
+        prompt: Some("none login".to_owned()),
+        max_age: None,
+    };
+    assert_eq!(
+        validate_authorization_request(&client(), base()).expect_err("none + login is invalid"),
+        AuthorizationRequestError::PromptNoneCombined
+    );
+
+    let mut request = base();
+    request.prompt = Some("login login".to_owned());
+    assert_eq!(
+        validate_authorization_request(&client(), request)
+            .expect_err("duplicate prompt is invalid"),
+        AuthorizationRequestError::InvalidPrompt
+    );
+
+    let mut request = base();
+    request.prompt = None;
+    request.max_age = Some(MAX_MAX_AGE.saturating_add(1));
+    assert_eq!(
+        validate_authorization_request(&client(), request).expect_err("max_age is too large"),
+        AuthorizationRequestError::MaxAgeTooLarge
+    );
 }
