@@ -97,11 +97,39 @@ fn workflow_top_level_permissions(workflow: &str) -> String {
         .expect("workflow must declare top-level permissions before jobs")
 }
 
+/// 返回 workflow 里 `action@<40 位小写十六进制 commit SHA>` 的实际字面量。
+///
+/// #699 把所有 action 固定为 commit SHA，`@v4` 这类可变标签已不存在；但把新 SHA 写成
+/// 字面量会让每次 dependabot 升级都被迫改测试。所以这里只断言「该 action 仍被使用，且
+/// 形态是 SHA 固定」。全局 pin 校验由 `.github/scripts/verify_action_pins.py` 在 CI 里
+/// 负责，本函数不重复实现。
+fn pinned_action_reference(workflow: &str, action: &str) -> String {
+    let prefix = format!("{action}@");
+    for (offset, _) in workflow.match_indices(prefix.as_str()) {
+        let rest = &workflow[offset + prefix.len()..];
+        let sha: String = rest.chars().take(40).collect();
+        let is_sha = sha.chars().count() == 40
+            && sha
+                .chars()
+                .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase());
+        // 后面紧跟的必须不是字母数字，否则 40 个字符只是更长引用的前缀。
+        let ends_here = !rest
+            .chars()
+            .nth(40)
+            .is_some_and(|character| character.is_ascii_alphanumeric());
+        if is_sha && ends_here {
+            return format!("{prefix}{sha}");
+        }
+    }
+    panic!("workflow must use {action} pinned to a 40-character commit SHA");
+}
+
 #[test]
 fn release_workflow_publishes_versioned_archives_and_checksums() {
+    // 这两个 action 必须仍被使用，并且按 commit SHA 固定，而不是可变的 `@v2` / `@v4`。
+    pinned_action_reference(BUILD_WORKFLOW, "actions/download-artifact");
+    pinned_action_reference(BUILD_WORKFLOW, "softprops/action-gh-release");
     for marker in [
-        "actions/download-artifact@v4",
-        "softprops/action-gh-release@v2",
         "Package versioned installer and release manifest",
         "chenxing-auth-release.env",
         "chenxing-auth-manage.sh",
@@ -145,9 +173,13 @@ fn build_workflow_scopes_write_permissions_and_drops_checkout_credentials() {
         );
     }
 
+    let pinned_checkout = pinned_action_reference(BUILD_WORKFLOW, "actions/checkout");
     for name in ["web", "rust-binaries", "container"] {
         let job = workflow_job(BUILD_WORKFLOW, name);
-        assert!(job.contains("actions/checkout@v4"));
+        assert!(
+            job.contains(pinned_checkout.as_str()),
+            "{name} must check out the repository with a SHA-pinned actions/checkout"
+        );
         assert!(
             job.contains("persist-credentials: false"),
             "repository code checkout in {name} must not persist the job token"
@@ -309,8 +341,10 @@ fn native_release_archives_ship_and_verify_the_matching_web_bundle() {
     let windows_at = BUILD_WORKFLOW
         .find("- name: Package Windows binary")
         .expect("Windows packaging step");
+    let pinned_upload = pinned_action_reference(BUILD_WORKFLOW, "actions/upload-artifact");
+    let upload_step = format!("- uses: {pinned_upload}");
     let upload_at = BUILD_WORKFLOW[windows_at..]
-        .find("- uses: actions/upload-artifact@v4")
+        .find(upload_step.as_str())
         .map(|offset| windows_at + offset)
         .expect("native archive upload step");
     let unix_step = &BUILD_WORKFLOW[unix_at..windows_at];
