@@ -110,7 +110,7 @@ load_release_manifest() {
         [[ "$line" == *=* ]] || fail "发布清单格式无效。"
         key="${line%%=*}"
         value="${line#*=}"
-        [[ "$key" =~ ^[a-z_]+$ ]] || fail "发布清单字段名无效。"
+        [[ "$key" =~ ^[a-z0-9_]+$ ]] || fail "发布清单字段名无效。"
         [[ -z "${values[$key]+present}" ]] || fail "发布清单包含重复字段：$key。"
         values["$key"]="$value"
     done < "$RELEASE_MANIFEST_FILE"

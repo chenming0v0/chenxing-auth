@@ -963,6 +963,76 @@ fn remote_installer_rejects_mutable_scripts_and_records_release_lock() {
     assert!(verify_at < exec_at);
 }
 
+/// 钉住 `load_release_manifest` 内部的自相矛盾：该函数强制要求发布清单里存在的
+/// 每个字段名，都必须能通过同一函数里的字段名字符类校验。
+///
+/// 这里不是在测试正则语法，而是防止“必需字段名被自己的字段名校验拒掉”这类矛盾：
+/// #698 曾把字符类写成 `^[a-z_]+$`（漏掉数字），而必需字段里有 `script_sha256`，
+/// 结果任何合法发布清单都在解析阶段被拒，`--prepare-only`、安装与升级三条路径全坏。
+/// 解析不到字符类或必需字段列表同样视为失败——那说明校验结构被改动，需要重新审查。
+#[test]
+fn release_manifest_required_keys_satisfy_their_own_key_name_validation() {
+    // 判断单个字符是否落在 shell 正则字符类里，支持 `a-z` 这类区间和字面字符。
+    fn char_class_allows(class: &str, candidate: char) -> bool {
+        let chars: Vec<char> = class.chars().collect();
+        let mut index = 0;
+        while index < chars.len() {
+            let is_range = index + 2 < chars.len() && chars[index + 1] == '-';
+            let matched = if is_range {
+                candidate >= chars[index] && candidate <= chars[index + 2]
+            } else {
+                candidate == chars[index]
+            };
+            if matched {
+                return true;
+            }
+            index += if is_range { 3 } else { 1 };
+        }
+        false
+    }
+
+    let body = shell_function_body(REMOTE_INSTALL_SCRIPT, "load_release_manifest");
+
+    let key_class = body
+        .lines()
+        .find_map(|line| {
+            let (_, rest) = line.split_once("\"$key\" =~ ^[")?;
+            let (class, _) = rest.split_once("]+$")?;
+            Some(class)
+        })
+        .expect(
+            "load_release_manifest 必须用 `\"$key\" =~ ^[...]+$` 校验清单字段名；\
+             解析不到说明字段名校验结构被改动，请同步审查本测试",
+        );
+
+    let required_keys: Vec<&str> = body
+        .lines()
+        .find_map(|line| {
+            let (_, rest) = line.split_once("for key in ")?;
+            let (list, _) = rest.split_once("; do")?;
+            Some(list.split_whitespace().collect::<Vec<&str>>())
+        })
+        .expect(
+            "load_release_manifest 必须用 `for key in ...; do` 列出必需字段；\
+             解析不到说明必需字段结构被改动，请同步审查本测试",
+        );
+
+    assert!(
+        !required_keys.is_empty(),
+        "load_release_manifest 的必需字段列表不能为空"
+    );
+
+    for key in required_keys {
+        for character in key.chars() {
+            assert!(
+                char_class_allows(key_class, character),
+                "必需字段 {key} 的字符 {character:?} 不被字段名字符类 [{key_class}] 接受，\
+                 合法发布清单会被 load_release_manifest 自己拒掉"
+            );
+        }
+    }
+}
+
 #[test]
 fn remote_installer_generates_and_preserves_deployment_secrets() {
     for marker in [
