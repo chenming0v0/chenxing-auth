@@ -1,7 +1,7 @@
 //! 公开注册开关（`registration` 设置）与注册闸门的集成测试。
 //!
 //! 覆盖契约：
-//! - GET/PUT `/api/v1/admin/settings/registration`（AdminRead/AdminWrite + ManageSettings）
+//! - GET/PUT `/api/v1/admin/settings/registration`（AdminRead/AdminWrite + Owner-only ManageSystemSettings）
 //! - 匿名 `GET /api/v1/auth/registration-status` 的有效值语义
 //! - `POST /api/v1/users` 的新闸门顺序（开关 → 邮件验证要求 → 真实创建）
 

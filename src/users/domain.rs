@@ -89,7 +89,15 @@ pub enum UserPermission {
     ManageUsers,
     ManageClients,
     ReadAudit,
+    /// 管理邀请码、钱包兑换码等运营设置；系统认证设置不复用此权限。
     ManageSettings,
+    /// 修改系统级设置（邮件、Passkey、注册和会话策略），仅 Owner。
+    ManageSystemSettings,
+    /// 修改登录与 MFA 限流等全局认证安全策略，仅 Owner。
+    ManageAuthenticationPolicy,
+    /// 管理套餐定义与配额增量包，仅 Owner。
+    ManagePlans,
+    /// 管理外部 OAuth 身份提供商，仅 Owner。
     ManageIdentityProviders,
     /// 修改 OIDC 发行者信任锚，只授予 Owner。
     ManageIssuer,
@@ -144,20 +152,19 @@ impl UserRole {
     pub const fn allows(self, permission: UserPermission) -> bool {
         match self {
             Self::User => false,
-            // Admin 故意不含 ManageAuthFactors 与 RotateKeys：两者都能把账号或
-            // 密钥状态改到「更容易被接管」的方向，属于 Owner 保留权限。
+            // Admin 故意不含 Owner-only 的系统设置、认证策略、套餐、身份提供商、
+            // ManageAuthFactors 与 RotateKeys：这些能力会改变全局信任边界或把账号/密钥
+            // 状态改到「更容易被接管」的方向，属于 Owner 保留权限。
             Self::Admin => matches!(
                 permission,
                 UserPermission::ManageUsers
                     | UserPermission::ManageClients
                     | UserPermission::ReadAudit
                     | UserPermission::ManageSettings
-                    | UserPermission::ManageIdentityProviders
             ),
             Self::Owner => true,
         }
     }
-
     pub const fn is_at_least(self, required: Self) -> bool {
         matches!(
             (self, required),

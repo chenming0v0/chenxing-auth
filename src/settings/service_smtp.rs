@@ -49,7 +49,7 @@ impl SettingsService {
         crate::users::repository::management_actor::validate_management_actor_in_transaction(
             &mut transaction,
             credential,
-            UserPermission::ManageSettings,
+            UserPermission::ManageSystemSettings,
         )
         .await?;
         let result = self.persist_smtp(&mut transaction, update).await?;

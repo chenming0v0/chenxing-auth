@@ -34,9 +34,9 @@ export function roleChangeConfirmText(user: PublicUser, nextRole: string): strin
   if (nextRole === 'owner') {
     consequence = '提升为 Owner 后将拥有全部管理权限（用户、套餐、密钥轮换、审计与 OAuth 客户端），并可管理其他管理员与 Owner。'
   } else if (nextRole === 'admin' && user.role === 'user') {
-    consequence = '提升为管理员后将获得用户、套餐与审计等后台管理权限。'
+    consequence = '提升为管理员后将获得用户、Client、审计与邀请码/兑换码等运营管理权限，也可为用户分配现有套餐；系统设置、身份提供商、套餐定义和密钥仍由 Owner 管理。'
   } else if (nextRole === 'admin') {
-    consequence = '降级为管理员后将移除 Owner 独有的权限（管理其他管理员与 Owner），保留用户、套餐与审计等后台管理权限。'
+    consequence = '降级为管理员后将移除 Owner 独有的权限（系统设置、身份提供商、套餐定义、密钥轮换及管理其他管理员与 Owner），保留用户、Client、审计、运营管理和分配现有套餐权限。'
   } else if (user.role === 'owner') {
     consequence = '降级为普通用户将立即移除 Owner 的全部管理权限（用户、套餐、密钥轮换、审计与 OAuth 客户端），仅保留普通用户权限。'
   } else {

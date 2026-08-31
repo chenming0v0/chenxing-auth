@@ -68,7 +68,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-function renderTable(permissions: string[] = ['manage_users', 'manage_roles', 'manage_settings', 'read_audit']) {
+function renderTable(permissions: string[] = ['manage_users', 'manage_roles', 'manage_settings', 'read_audit', 'manage_system_settings', 'manage_authentication_policy', 'manage_plans']) {
   render(
     <UsersTable
       access={{

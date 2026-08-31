@@ -27,6 +27,7 @@ vi.mock('../auth-state', () => ({
 }))
 
 const allItems = navGroups.flatMap((group) => group.items)
+const adminItems = allItems.filter((item) => !item.ownerOnly)
 const coreItems = (navGroups.find((group) => group.label === '账户')?.items ?? []).filter((item) => (
   ['/console', '/console/profile', '/console/apps', '/console/logs'].includes(item.path)
 ))
@@ -67,8 +68,11 @@ describe('ConsoleLayout 移动端导航可达性（#197）', () => {
   it('桌面侧栏仍渲染全部可见导航项并带正确 href', () => {
     renderConsole()
     const sidebar = screen.getByRole('navigation', { name: '控制台导航' })
-    for (const item of allItems) {
+    for (const item of adminItems) {
       expect(within(sidebar).getByRole('link', { name: item.label }).getAttribute('href')).toBe(item.path)
+    }
+    for (const item of allItems.filter((candidate) => candidate.ownerOnly)) {
+      expect(within(sidebar).queryByRole('link', { name: item.label })).toBeNull()
     }
   })
 
@@ -99,6 +103,15 @@ describe('ConsoleLayout 移动端导航可达性（#197）', () => {
     expect(within(menu).getByRole('link', { name: '开发者' })).toBeTruthy()
   })
 
+  it('Owner 的侧栏显示 Owner-only 系统入口', () => {
+    mockUser.role = 'owner'
+    renderConsole()
+    const sidebar = screen.getByRole('navigation', { name: '控制台导航' })
+    for (const item of allItems.filter((candidate) => candidate.ownerOnly)) {
+      expect(within(sidebar).getByRole('link', { name: item.label }).getAttribute('href')).toBe(item.path)
+    }
+  })
+
   it('移动端底栏只承载核心页，且标记当前页', () => {
     renderConsole()
     const bottom = screen.getByRole('navigation', { name: '控制台快捷导航' })
@@ -120,8 +133,9 @@ describe('ConsoleLayout 移动端导航可达性（#197）', () => {
     expect(within(bottom).queryByRole('link', { name: '总览' })).toBeNull()
   })
 
-  it('管理区底栏切换为仪表盘/用户管理/套餐管理/系统设置', () => {
+  it('管理区底栏按 Owner 权限显示系统入口', () => {
     window.history.replaceState({}, '', '/admin/users')
+    mockUser.role = 'owner'
     renderConsole()
     const bottom = screen.getByRole('navigation', { name: '控制台快捷导航' })
     const hrefs = within(bottom).getAllByRole('link').map((link) => link.getAttribute('href'))

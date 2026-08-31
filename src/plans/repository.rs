@@ -249,7 +249,7 @@ pub async fn insert(
     crate::users::repository::management_actor::validate_management_actor_in_transaction(
         &mut transaction,
         credential,
-        UserPermission::ManageSettings,
+        UserPermission::ManagePlans,
     )
     .await?;
     lock_default_plan_set(&mut transaction).await?;
@@ -295,7 +295,7 @@ pub async fn update(
     crate::users::repository::management_actor::validate_management_actor_in_transaction(
         &mut transaction,
         credential,
-        UserPermission::ManageSettings,
+        UserPermission::ManagePlans,
     )
     .await?;
     lock_default_plan_set(&mut transaction).await?;
@@ -360,7 +360,7 @@ pub async fn set_status(
     crate::users::repository::management_actor::validate_management_actor_in_transaction(
         &mut transaction,
         credential,
-        UserPermission::ManageSettings,
+        UserPermission::ManagePlans,
     )
     .await?;
     lock_default_plan_set(&mut transaction).await?;

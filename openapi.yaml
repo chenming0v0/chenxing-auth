@@ -2049,7 +2049,7 @@ paths:
     post:
       tags: [Admin Users]
       summary: 为用户分配套餐
-      description: 基线权限为 manage_users；目标用户为 Owner 时额外要求 manage_roles，且权限检查先于套餐和目标资源查询。
+      description: 分配已有套餐属于用户管理，基线权限为 manage_users；目标用户为 Owner 时额外要求 manage_roles。套餐定义与增量包 CRUD 另需 Owner-only 的 manage_plans，且权限检查先于套餐和目标资源查询。
       operationId: assignPlanToUser
       security:
         - adminBearer: []
@@ -2110,6 +2110,7 @@ paths:
     get:
       tags: [Admin Plans]
       summary: 套餐列表
+      description: Owner 专属，需要 `manage_plans` 权限。
       operationId: listPlans
       security:
         - adminBearer: []
@@ -2126,6 +2127,7 @@ paths:
     post:
       tags: [Admin Plans]
       summary: 创建套餐
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: createPlan
       security:
         - adminBearer: []
@@ -2220,6 +2222,7 @@ paths:
     put:
       tags: [Admin Plans]
       summary: 更新套餐
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: updatePlan
       security:
         - adminBearer: []
@@ -2252,6 +2255,7 @@ paths:
     get:
       tags: [Admin Plans]
       summary: 查询套餐增量包
+      description: Owner 专属，需要 `manage_plans` 权限。
       operationId: listQuotaAddons
       security:
         - adminBearer: []
@@ -2265,6 +2269,7 @@ paths:
     post:
       tags: [Admin Plans]
       summary: 创建套餐增量包
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: createQuotaAddon
       security:
         - adminBearer: []
@@ -2288,6 +2293,7 @@ paths:
     put:
       tags: [Admin Plans]
       summary: 更新套餐增量包
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: updateQuotaAddon
       security:
         - adminBearer: []
@@ -2311,6 +2317,7 @@ paths:
     post:
       tags: [Admin Plans]
       summary: 归档套餐增量包
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: archiveQuotaAddon
       security:
         - adminBearer: []
@@ -2329,6 +2336,7 @@ paths:
     post:
       tags: [Admin Plans]
       summary: 归档套餐
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: archivePlan
       security:
         - adminBearer: []
@@ -2348,6 +2356,7 @@ paths:
     post:
       tags: [Admin Plans]
       summary: 恢复套餐
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: restorePlan
       security:
         - adminBearer: []
@@ -2648,6 +2657,7 @@ paths:
     get:
       tags: [Admin Operations]
       summary: 查询注册邮件发件地址
+      description: Owner 专属，需要 `manage_system_settings` 权限。
       operationId: getRegistrationEmailSetting
       security:
         - adminBearer: []
@@ -2664,6 +2674,7 @@ paths:
     put:
       tags: [Admin Operations]
       summary: 更新注册邮件发件地址
+      description: Owner 专属，需要 `manage_system_settings` 权限；浏览器会话还需要 CSRF。
       operationId: updateRegistrationEmailSetting
       security:
         - adminBearer: []
@@ -2692,7 +2703,7 @@ paths:
     get:
       tags: [Admin]
       summary: 获取公开注册设置
-      description: 返回 `registration` 设置键的存储值（双布尔，默认全关）。有效注册状态还取决于 Issuer 就绪，见 GET /api/v1/auth/registration-status。
+      description: Owner 专属，需要 `manage_system_settings` 权限。返回 `registration` 设置键的存储值（双布尔，默认全关）。有效注册状态还取决于 Issuer 就绪，见 GET /api/v1/auth/registration-status。
       operationId: getRegistrationSetting
       security:
         - adminBearer: []
@@ -2715,6 +2726,7 @@ paths:
       tags: [Admin]
       summary: 更新公开注册设置
       description: |
+        Owner 专属，需要 `manage_system_settings` 权限。
         写入与 registration_setting_update 审计在同一事务中提交。
         `enabled=true` 要求 Issuer 已就绪，否则返回 503 `issuer_not_configured`：
         注册出来的账号必须能走完整认证/授权流程，避免「开关打开但注册全部 503」的分裂状态。
@@ -2861,6 +2873,7 @@ paths:
     get:
       tags: [Admin]
       summary: 获取 Passkey / WebAuthn 设置
+      description: Owner 专属，需要 `manage_system_settings` 权限。
       operationId: getPasskeySetting
       security:
         - adminBearer: []
@@ -2882,6 +2895,7 @@ paths:
     put:
       tags: [Admin]
       summary: 更新 Passkey / WebAuthn 设置
+      description: Owner 专属，需要 `manage_system_settings` 权限；浏览器会话还需要 CSRF。
       operationId: updatePasskeySetting
       security:
         - adminBearer: []
@@ -2915,6 +2929,7 @@ paths:
     get:
       tags: [Admin]
       summary: 获取邮箱域名白名单设置
+      description: Owner 专属，需要 `manage_system_settings` 权限。
       operationId: getEmailPolicySetting
       security:
         - adminBearer: []
@@ -2933,6 +2948,7 @@ paths:
     put:
       tags: [Admin]
       summary: 更新邮箱域名白名单设置
+      description: Owner 专属，需要 `manage_system_settings` 权限；浏览器会话还需要 CSRF。
       operationId: updateEmailPolicySetting
       security:
         - adminBearer: []
@@ -2964,6 +2980,7 @@ paths:
     get:
       tags: [Admin]
       summary: 获取 SMTP 设置
+      description: Owner 专属，需要 `manage_system_settings` 权限；password 永不回显。
       operationId: getSmtpSetting
       security:
         - adminBearer: []
@@ -2982,6 +2999,7 @@ paths:
     put:
       tags: [Admin]
       summary: 更新 SMTP 设置
+      description: Owner 专属，需要 `manage_system_settings` 权限；浏览器会话还需要 CSRF。
       operationId: updateSmtpSetting
       security:
         - adminBearer: []
@@ -3013,6 +3031,7 @@ paths:
     get:
       tags: [Admin]
       summary: 获取登录保持时间
+      description: Owner 专属，需要 `manage_system_settings` 权限。
       operationId: getSessionLifetimeSetting
       security:
         - adminBearer: []
@@ -3032,6 +3051,7 @@ paths:
     put:
       tags: [Admin]
       summary: 更新登录保持时间
+      description: Owner 专属，需要 `manage_system_settings` 权限；浏览器会话还需要 CSRF。
       operationId: updateSessionLifetimeSetting
       security:
         - adminBearer: []
@@ -3060,6 +3080,7 @@ paths:
     get:
       tags: [Admin]
       summary: 获取安全限流阈值
+      description: Owner 专属，需要 `manage_authentication_policy` 权限；登录和 MFA 限流属于全局认证安全策略。
       operationId: getSecurityLimitsSetting
       security:
         - adminBearer: []
@@ -3081,6 +3102,7 @@ paths:
     put:
       tags: [Admin]
       summary: 更新安全限流阈值
+      description: Owner 专属，需要 `manage_authentication_policy` 权限；浏览器会话还需要 CSRF。
       operationId: updateSecurityLimitsSetting
       security:
         - adminBearer: []
@@ -3112,6 +3134,7 @@ paths:
     get:
       tags: [Admin OAuth Providers]
       summary: 自定义 OAuth 提供商列表
+      description: Owner 专属，需要 `manage_identity_providers` 权限。
       operationId: listOAuthProviders
       security:
         - adminBearer: []
@@ -3129,7 +3152,7 @@ paths:
       tags: [Admin OAuth Providers]
       summary: 创建自定义 OAuth 提供商
       description: >-
-        提供商一律按 OAuth 2.0 + UserInfo 信任模型接入（trust_model = oauth2_userinfo）：不接受 issuer、
+        Owner 专属，需要 `manage_identity_providers` 权限。提供商一律按 OAuth 2.0 + UserInfo 信任模型接入（trust_model = oauth2_userinfo）：不接受 issuer、
         jwks_uri、允许算法或 nonce 策略配置，服务端也不验证 ID Token。三个远程端点必须使用 HTTPS，IP 字面量和
         连接时 DNS 解析结果都必须是公网可路由地址；IPv6 只放行 2000::/3 全局单播中未被 IANA 特殊用途占用的部分，
         站点本地 fec0::/10、文档与保留前缀以及未分配空间一律拒绝。仅 localhost/回环地址保留本机开发例外。
@@ -3984,10 +4007,12 @@ components:
         permissions:
           type: array
           description: |
-            当前调用者的权限名。`manage_auth_factors` 与 `rotate_keys` 仅 Owner 拥有。
+            当前调用者的权限名。`manage_system_settings`、`manage_authentication_policy`、
+            `manage_identity_providers`、`manage_issuer`、`manage_plans`、`manage_auth_factors` 与 `rotate_keys`
+            仅 Owner 拥有；`manage_settings` 保留给邀请码和钱包兑换码等运营设置。
           items:
             type: string
-            enum: [manage_users, manage_clients, rotate_keys, read_audit, manage_settings, manage_identity_providers, manage_roles, manage_auth_factors]
+            enum: [manage_users, manage_clients, rotate_keys, read_audit, manage_settings, manage_system_settings, manage_authentication_policy, manage_plans, manage_identity_providers, manage_issuer, manage_roles, manage_auth_factors]
         status: { type: string }
     TotpFactorStatus:
       type: object

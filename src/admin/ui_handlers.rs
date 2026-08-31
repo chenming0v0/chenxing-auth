@@ -349,6 +349,15 @@ fn permissions(role: AdminRole) -> Vec<&'static str> {
         (AdminPermission::ReadAudit, "read_audit"),
         (AdminPermission::ManageSettings, "manage_settings"),
         (
+            AdminPermission::ManageSystemSettings,
+            "manage_system_settings",
+        ),
+        (
+            AdminPermission::ManageAuthenticationPolicy,
+            "manage_authentication_policy",
+        ),
+        (AdminPermission::ManagePlans, "manage_plans"),
+        (
             AdminPermission::ManageIdentityProviders,
             "manage_identity_providers",
         ),
