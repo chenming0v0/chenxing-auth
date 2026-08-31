@@ -225,11 +225,15 @@ pub async fn replace_pending_email_change(
     .bind(user_id)
     .execute(&mut *transaction)
     .await?;
+    // A claimed verification is already in the delivery phase. Leave it
+    // fenced until that worker finishes so a newer challenge cannot be
+    // committed ahead of an older SMTP attempt; an expired lease will observe
+    // the consumed challenge and cancel the stale row on its next claim.
     crate::sqlx::query(
         "UPDATE email_outbox SET cancelled_at = NOW(), claim_token = '', last_error = NULL
          WHERE user_id = $1 AND processed_at IS NULL
            AND cancelled_at IS NULL AND dead_lettered_at IS NULL
-           AND kind = 'verification_code'",
+           AND kind = 'verification_code' AND claim_token = ''",
     )
     .bind(user_id)
     .execute(&mut *transaction)
@@ -302,11 +306,14 @@ pub async fn apply_email_change(
     .bind(new_canonical_email)
     .execute(&mut **transaction)
     .await?;
+    // Do not cancel a verification row with an active claim. Its provider call
+    // may already be in flight, so the claim fence must decide the terminal
+    // outcome rather than allowing a newer challenge to reorder delivery.
     crate::sqlx::query(
         "UPDATE email_outbox SET cancelled_at = NOW(), claim_token = '', last_error = NULL
          WHERE user_id = $1 AND processed_at IS NULL
            AND cancelled_at IS NULL AND dead_lettered_at IS NULL
-           AND kind = 'verification_code'",
+           AND kind = 'verification_code' AND claim_token = ''",
     )
     .bind(user_id)
     .execute(&mut **transaction)

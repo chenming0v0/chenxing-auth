@@ -81,11 +81,17 @@ struct BlockingSender {
     started: Arc<Notify>,
     release: Arc<Notify>,
     first_send: Arc<Mutex<bool>>,
+    database: Option<PgPool>,
 }
 
 impl BlockingSender {
     fn messages(&self) -> Vec<EmailMessage> {
         self.messages.lock().expect("sender lock").clone()
+    }
+
+    fn with_database(mut self, database: PgPool) -> Self {
+        self.database = Some(database);
+        self
     }
 }
 
@@ -104,6 +110,7 @@ impl EmailSender for BlockingSender {
         let messages = self.messages.clone();
         let started = self.started.clone();
         let release = self.release.clone();
+        let database = self.database.clone();
         let should_block = {
             let mut first_send = self.first_send.lock().expect("sender lock");
             if *first_send {
@@ -114,6 +121,12 @@ impl EmailSender for BlockingSender {
             }
         };
         Box::pin(async move {
+            if let Some(database) = database {
+                chenxing_auth::sqlx::query_scalar::<_, i64>("SELECT 1")
+                    .fetch_one(&database)
+                    .await
+                    .map_err(|_| chenxing_auth::notifications::EmailSendError::Delivery)?;
+            }
             if should_block {
                 started.notify_one();
                 release.notified().await;
@@ -186,8 +199,21 @@ async fn logged_in_state(
     String,
     CapturingSender,
 ) {
+    logged_in_state_with_max_connections(binary_name, 4).await
+}
+
+async fn logged_in_state_with_max_connections(
+    binary_name: &str,
+    max_connections: u32,
+) -> (
+    AppState,
+    PgPool,
+    std::path::PathBuf,
+    String,
+    CapturingSender,
+) {
     let (state, database, key_directory) =
-        oauth_flow::test_state_with_max_connections(binary_name, 4).await;
+        oauth_flow::test_state_with_max_connections(binary_name, max_connections).await;
     let sender = CapturingSender::default();
     let state = state.with_email_sender(Arc::new(sender.clone()));
     let router = api::router(state.clone());
@@ -433,10 +459,10 @@ async fn concurrent_starts_leave_one_ordered_current_challenge() {
 }
 
 #[tokio::test]
-async fn new_challenge_waits_for_in_flight_delivery() {
+async fn single_connection_remains_available_during_smtp_delivery() {
     let (state, database, key_directory, cookie, _sender) =
-        logged_in_state("email_change_outbox_send_lock").await;
-    let sender = BlockingSender::default();
+        logged_in_state_with_max_connections("email_change_outbox_send_lock", 1).await;
+    let sender = BlockingSender::default().with_database(database.clone());
     let state = state.with_email_sender(Arc::new(sender.clone()));
     let router = api::router(state.clone());
 
@@ -450,29 +476,26 @@ async fn new_challenge_waits_for_in_flight_delivery() {
         let outbox = state.email_outbox.clone();
         async move { outbox.process_pending_outbox().await }
     });
-    sender.started.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), sender.started.notified())
+        .await
+        .expect("SMTP delivery must not wait on the outbox connection");
 
     let second_router = router.clone();
     let second_cookie = cookie.clone();
-    let mut second = tokio::spawn(async move {
+    let second = tokio::spawn(async move {
         start_request(&second_router, &second_cookie, "locked-second@example.com").await
     });
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_secs(1), &mut second)
-            .await
-            .is_err(),
-        "a new challenge must wait while the old delivery owns the user lock"
-    );
+    let second_response = tokio::time::timeout(std::time::Duration::from_secs(1), second)
+        .await
+        .expect("a new challenge must not wait for SMTP delivery")
+        .expect("second request join");
+    assert_eq!(second_response.status(), StatusCode::ACCEPTED);
 
     sender.release.notify_one();
     processing
         .await
         .expect("outbox task join")
         .expect("process email outbox");
-    assert_eq!(
-        second.await.expect("second request join").status(),
-        StatusCode::ACCEPTED
-    );
     assert_eq!(sender.messages().len(), 1);
     assert_eq!(
         sender.messages()[0].to.to_string(),
@@ -486,6 +509,60 @@ async fn new_challenge_waits_for_in_flight_delivery() {
     .await
     .expect("pending second outbox");
     assert_eq!(pending, 1);
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn expired_lease_reclaim_fences_stale_completion() {
+    let (state, database, key_directory, cookie, _sender) =
+        logged_in_state("email_change_outbox_lease_fence").await;
+    let blocking_sender = BlockingSender::default();
+    let state = state.with_email_sender(Arc::new(blocking_sender.clone()));
+    let router = api::router(state.clone());
+
+    assert_eq!(
+        start_request(&router, &cookie, "lease-fence@example.com")
+            .await
+            .status(),
+        StatusCode::ACCEPTED
+    );
+    let first_processing = tokio::spawn({
+        let outbox = state.email_outbox.clone();
+        async move { outbox.process_pending_outbox().await }
+    });
+    blocking_sender.started.notified().await;
+    chenxing_auth::sqlx::query(
+        "UPDATE email_outbox
+         SET available_at = NOW() - INTERVAL '1 second'",
+    )
+    .execute(&database)
+    .await
+    .expect("expire active lease");
+
+    let retry_sender = CapturingSender::default();
+    let retry_state = state
+        .clone()
+        .with_email_sender(Arc::new(retry_sender.clone()));
+    retry_state
+        .email_outbox
+        .process_pending_outbox()
+        .await
+        .expect("reclaimed lease delivery");
+    let row: (i32, i64, bool) = chenxing_auth::sqlx::query_as(
+        "SELECT attempts, claim_generation, processed_at IS NOT NULL FROM email_outbox",
+    )
+    .fetch_one(&database)
+    .await
+    .expect("reclaimed lease state");
+    assert_eq!(row, (2, 2, true));
+
+    blocking_sender.release.notify_one();
+    first_processing
+        .await
+        .expect("stale completion task join")
+        .expect("stale completion is ignored");
+    assert_eq!(blocking_sender.messages().len(), 1);
+    assert_eq!(retry_sender.messages().len(), 1);
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
