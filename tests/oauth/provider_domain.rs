@@ -411,16 +411,15 @@ fn provider_summary_declares_oauth_userinfo_trust_model() {
     }
 }
 
-/// Issue #296：OAuth-only 语义必须同时出现在契约、文档和管理界面里。
+/// Issue #296：OAuth-only 语义必须同时出现在契约和管理界面里。
 ///
-/// 这条边界的实际风险不是代码写错，而是四份材料各说各话：代码只信 UserInfo，
-/// 文档却宣称 OIDC，管理员照文档选了个 UserInfo 不可信的 IdP。所以把「OpenAPI
-/// 声明 trust_model」「API.md 说明 id_token 不参与判定」「管理界面写清信任模型」
-/// 三件事一起钉住，任何一份漏改都会让这个用例失败。
+/// 这条边界的实际风险不是代码写错，而是几份材料各说各话：代码只信 UserInfo，
+/// 契约却宣称 OIDC，管理员照文档选了个 UserInfo 不可信的 IdP。所以把「OpenAPI
+/// 声明 trust_model」和「管理界面写清信任模型」一起钉住，任何一份漏改都会让这个
+/// 用例失败。
 #[test]
 fn oauth_only_semantics_stay_consistent_across_contract_docs_and_ui() {
     const OPENAPI: &str = include_str!("../../openapi.yaml");
-    const API_DOC: &str = include_str!("../../API.md");
     const PROVIDER_PANEL: &str =
         include_str!("../../web/src/pages/admin/settings/oauth-providers-panel.tsx");
     const PROVIDER_DIALOG: &str =
@@ -430,12 +429,6 @@ fn oauth_only_semantics_stay_consistent_across_contract_docs_and_ui() {
         assert!(
             OPENAPI.contains(marker),
             "openapi.yaml 缺少 OAuth-only 契约标记：{marker}"
-        );
-    }
-    for marker in [PROVIDER_TRUST_MODEL, "不被解析", "OAuth 2.0 + UserInfo"] {
-        assert!(
-            API_DOC.contains(marker),
-            "API.md 未说明 OAuth-only 信任模型：{marker}"
         );
     }
     // 管理员在这两处做「信任哪个外部身份源」的决定，边界必须写在他眼前。

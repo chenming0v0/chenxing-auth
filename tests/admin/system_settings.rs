@@ -3,7 +3,12 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, state::AppState};
+use chenxing_auth::{
+    api,
+    config::Config,
+    sessions::{cookies, domain::Session, store::SessionStore},
+    state::AppState,
+};
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -48,6 +53,29 @@ async fn json(response: axum::response::Response) -> Value {
             .expect("body"),
     )
     .expect("JSON")
+}
+
+async fn browser_session(
+    database: &chenxing_auth::sqlx::PgPool,
+    redis_url: &str,
+    user_id: i64,
+) -> (String, String) {
+    let redis = redis::Client::open(redis_url).expect("session Redis");
+    let store = SessionStore::with_metadata_and_key(redis, database.clone(), [0; 32]);
+    let mut session = Session::new(user_id.to_string(), std::time::Duration::from_secs(3600))
+        .expect("browser session");
+    store
+        .save(&mut session, std::time::Duration::from_secs(3600))
+        .await
+        .expect("save browser session");
+    let cookie = format!(
+        "{}={}; {}={}",
+        cookies::session_cookie_name(false),
+        session.token,
+        cookies::csrf_cookie_name(false),
+        session.csrf_token
+    );
+    (cookie, session.csrf_token)
 }
 
 #[tokio::test]
@@ -468,6 +496,115 @@ async fn owner_can_manage_security_limits_with_validation() {
                 .expect("security limits reset"),
         )
         .await;
+
+    let _ = database;
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn admin_is_denied_owner_only_system_plan_identity_and_authentication_policy() {
+    let (router, database, key_directory) = setup().await;
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let suffix = Uuid::new_v4().simple().to_string();
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/bootstrap")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": format!("owner-{suffix}"),
+                        "email": format!("owner-{suffix}@example.com"),
+                        "password": "1234567890"
+                    })
+                    .to_string(),
+                ))
+                .expect("bootstrap owner request"),
+        )
+        .await
+        .expect("bootstrap owner response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/admins")
+                .header("authorization", "Bearer admin-system-settings-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": format!("admin-{suffix}"),
+                        "email": format!("admin-{suffix}@example.com"),
+                        "password": "1234567890",
+                        "role": "admin"
+                    })
+                    .to_string(),
+                ))
+                .expect("create admin request"),
+        )
+        .await
+        .expect("create admin response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let admin_id = json(response).await["id"].as_i64().expect("admin id");
+    let (cookie, csrf) = browser_session(&database, &redis_url, admin_id).await;
+
+    for path in [
+        "/api/v1/admin/settings/passkey",
+        "/api/v1/admin/settings/security-limits",
+        "/api/v1/admin/oauth/providers",
+        "/api/v1/admin/plans",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .expect("owner-only read request"),
+            )
+            .await
+            .expect("owner-only read response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/settings/security-limits")
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "unauthenticated_source_qps": 30,
+                        "authorization_code_ttl_seconds": 300,
+                        "pending_request_ttl_seconds": 600,
+                        "max_pending_requests_per_client": 20,
+                        "max_pending_requests_global": 1000,
+                        "auth_failure_window_seconds": 900,
+                        "account_failure_limit": 10,
+                        "ip_failure_limit": 30,
+                        "totp_ticket_failure_limit": 5,
+                        "external_login_state_ttl_seconds": 600,
+                        "external_login_state_rate_window_seconds": 60,
+                        "external_login_state_rate_limit": 30,
+                        "external_login_state_max_pending": 10000
+                    })
+                    .to_string(),
+                ))
+                .expect("owner-only write request"),
+        )
+        .await
+        .expect("owner-only write response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     let _ = database;
     let _ = std::fs::remove_dir_all(key_directory);

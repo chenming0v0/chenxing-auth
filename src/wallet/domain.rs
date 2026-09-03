@@ -53,7 +53,7 @@ pub struct LedgerEntry {
     pub created_at: OffsetDateTime,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PurchaseResult {
     pub balance: i64,
     pub plan_id: i64,

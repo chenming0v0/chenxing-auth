@@ -15,22 +15,53 @@ assert_private_mode() {
     fi
 }
 
+assert_no_release_staging() {
+    local root="$1" leftovers
+    # `find -type f` alone cannot see this: the upgrade path stages the verified
+    # manager copy (mode 700, security material) inside a `.release.XXXXXX`
+    # directory. If the staging directory survives, every upgrade leaves another
+    # executable copy of the installer behind in the deployment directory.
+    leftovers="$(find "$root" -maxdepth 1 -name '.release.*' -printf '%f\n' | sort | tr '\n' ' ')"
+    if [[ -n "$leftovers" ]]; then
+        printf '%s\n' "release staging directories survived in $root: $leftovers" >&2
+        return 1
+    fi
+}
+
 external_key='external-value-must-not-be-used'
 export AUTH_ENCRYPTION_KEY="$external_key"
 mkdir -p "$WORK_DIR/install"
 cp "$ROOT_DIR/manage.sh" "$WORK_DIR/install/manage.sh"
-CHENXING_PORT=8080 bash "$WORK_DIR/install/manage.sh" --prepare-only >/dev/null
+release_version=v0.0.0
+script_sha256="$(sha256sum "$ROOT_DIR/manage.sh" | awk '{print $1}')"
+release_manifest="$WORK_DIR/release.env"
+cat > "$release_manifest" <<EOF
+schema=1
+version=${release_version}
+image=ghcr.io/chenming0v0/chenxing-auth:${release_version}@sha256:0000000000000000000000000000000000000000000000000000000000000000
+image_digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
+script=chenxing-auth-manage.sh
+script_sha256=${script_sha256}
+EOF
+CHENXING_PORT=8080 CHENXING_RELEASE_VERSION="$release_version" \
+    CHENXING_RELEASE_MANIFEST_FILE="$release_manifest" \
+    bash "$WORK_DIR/install/manage.sh" --prepare-only >/dev/null
 
 env_file="$WORK_DIR/install/.env"
 compose_file="$WORK_DIR/install/compose.yml"
 manager_file="$WORK_DIR/install/manage.sh"
 [[ -f "$manager_file" ]]
 [[ "$(find "$WORK_DIR/install" -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')" == '.env compose.yml manage.sh ' ]]
+assert_no_release_staging "$WORK_DIR/install"
 [[ "$(stat -c '%a' "$manager_file")" == 700 ]]
 actual_key="$(awk -F= '$1 == "AUTH_ENCRYPTION_KEY" { print substr($0, index($0, "=") + 1); exit }' "$env_file")"
 ring="$(awk -F= '$1 == "AUTH_ENCRYPTION_KEYS" { print substr($0, index($0, "=") + 1); exit }' "$env_file")"
 [[ -n "$actual_key" && "$actual_key" != "$external_key" ]]
 [[ "$ring" == "kid=active:${actual_key}" ]]
+grep -q "^CHENXING_RELEASE_VERSION=${release_version}$" "$env_file"
+grep -q '^CHENXING_RELEASE_MANIFEST_SHA256=[0-9a-f]\{64\}$' "$env_file"
+grep -q '^CHENXING_SCRIPT_SHA256=[0-9a-f]\{64\}$' "$env_file"
+grep -q '^CHENXING_IMAGE=ghcr.io/chenming0v0/chenxing-auth:v0.0.0@sha256:' "$env_file"
 assert_private_mode "$env_file"
 for key in POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD MIGRATION_DATABASE_URL; do
     grep -q "^${key}=." "$env_file"
@@ -56,8 +87,9 @@ assert "chenxing" in str(data["services"]["migrate"]["environment"]["MIGRATION_D
 ' <<< "$config"
 fi
 
-# Existing deployments upgrade by running the same file again. Fake the raw
-# download and Docker boundary to prove the temporary copy is removed.
+# Existing deployments upgrade by running the same file again. Fake the
+# versioned release asset download and Docker boundary to prove the temporary
+# copy is removed.
 upgrade_root="$WORK_DIR/upgrade"
 mkdir -p "$upgrade_root"
 cp "$ROOT_DIR/manage.sh" "$upgrade_root/manage.sh"
@@ -97,9 +129,11 @@ fi
 if [[ "${1:-}" == info || "${1:-}" == version || "${1:-}" == pull ]]; then exit 0; fi
 FAKE_DOCKER_UPGRADE
 chmod 755 "$upgrade_bin/curl" "$upgrade_bin/docker"
-FAKE_MANAGER_SOURCE="$ROOT_DIR/manage.sh" PATH="$upgrade_bin:$PATH" \
+FAKE_MANAGER_SOURCE="$ROOT_DIR/manage.sh" CHENXING_RELEASE_VERSION="$release_version" \
+    CHENXING_RELEASE_MANIFEST_FILE="$release_manifest" PATH="$upgrade_bin:$PATH" \
     bash "$upgrade_root/manage.sh" >/dev/null
 [[ "$(find "$upgrade_root" -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')" == '.env compose.yml manage.sh ' ]]
+assert_no_release_staging "$upgrade_root"
 
 # Exercise the source installer upgrade path with a minimal temporary checkout.
 # The fake Docker implementation records whether `up` was reached and reports

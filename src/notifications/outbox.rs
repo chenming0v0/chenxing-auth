@@ -1,16 +1,17 @@
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use uuid::Uuid;
-use zeroize::Zeroizing;
 
 use crate::{
     config::AuthEncryptionKeyRing,
-    notifications::{EmailMessage, EmailSender, crypto::decrypt_code},
+    notifications::EmailSender,
     sqlx::{PgPool, Postgres, Transaction},
     users::domain::UserId,
     workers::WorkerContext,
 };
 
+#[path = "outbox_messages.rs"]
+mod messages;
 #[path = "outbox_retention.rs"]
 mod retention;
 #[path = "outbox_retry.rs"]
@@ -19,9 +20,21 @@ mod retry;
 const OUTBOX_LEASE: time::Duration = time::Duration::minutes(5);
 const MAX_ATTEMPTS: i32 = 10;
 const EMAIL_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+const WORKER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const WORKER_BATCH_TIME_BUDGET: Duration = Duration::from_secs(5);
+const WORKER_BATCH_ENTRY_LIMIT: usize = 100;
+const WORKER_CLEANUP_INTERVAL: Duration = Duration::from_secs(300);
 const VERIFICATION_CODE_KIND: &str = "verification_code";
 const SECURITY_ALERT_KIND: &str = "email_change_security_alert";
+const DELIVERY_SEMANTICS: &str = "at_least_once";
 
+/// Durable email delivery intentionally uses **at-least-once** semantics.
+///
+/// The SMTP provider call happens before the PostgreSQL terminal-state update.
+/// If that update or the transaction commit fails after SMTP accepted the
+/// message, the row stays retryable and a later worker pass may send the same
+/// message again. This favors eventual delivery of security-critical mail over
+/// risking a permanently lost message when the commit result is ambiguous.
 #[derive(Clone)]
 pub struct EmailOutbox {
     pool: PgPool,
@@ -92,10 +105,8 @@ impl EmailOutbox {
     pub async fn process_pending_outbox(&self) -> Result<usize, EmailOutboxError> {
         let mut processed = 0;
         while let Some(entry) = self.claim().await? {
-            match self.apply(&entry).await {
-                Ok(true) => processed += 1,
-                Ok(false) => {}
-                Err(error_value) => self.record_failure(&entry, &error_value).await?,
+            if self.process_claimed_entry(&entry).await? {
+                processed += 1;
             }
         }
         Ok(processed)
@@ -103,10 +114,17 @@ impl EmailOutbox {
 
     pub async fn run_worker(self, mut worker: WorkerContext) {
         let mut next_cleanup = tokio::time::Instant::now();
+        let reporter = worker.reporter().clone();
         loop {
-            worker.reporter().heartbeat();
+            reporter.heartbeat();
             let mut failed = false;
-            if let Err(error_value) = self.process_pending_outbox().await {
+            let batch_result = heartbeat_while(
+                self.process_worker_batch(),
+                WORKER_HEARTBEAT_INTERVAL,
+                || reporter.heartbeat(),
+            )
+            .await;
+            if let Err(error_value) = batch_result {
                 failed = true;
                 tracing::error!(
                     error_kind = error_value.failure_code(),
@@ -114,22 +132,57 @@ impl EmailOutbox {
                 );
             }
             if tokio::time::Instant::now() >= next_cleanup {
-                if let Err(error_value) = self.prune_settled_outbox().await {
+                let cleanup_result = heartbeat_while(
+                    self.prune_settled_outbox(),
+                    WORKER_HEARTBEAT_INTERVAL,
+                    || reporter.heartbeat(),
+                )
+                .await;
+                if let Err(error_value) = cleanup_result {
                     failed = true;
                     tracing::error!(
                         error_kind = error_value.failure_code(),
                         "email outbox retention failed"
                     );
                 }
-                next_cleanup = tokio::time::Instant::now() + Duration::from_secs(300);
+                next_cleanup = tokio::time::Instant::now() + WORKER_CLEANUP_INTERVAL;
             }
             if failed {
-                worker.reporter().retryable_failure();
+                reporter.retryable_failure();
             } else {
-                worker.reporter().success();
+                // Success means a bounded pass completed without an infrastructure error. It
+                // does not require the queue to be empty: sustained, healthy delivery remains
+                // ready while queue depth is monitored separately.
+                reporter.success();
             }
             if worker.sleep_or_shutdown(Duration::from_secs(1)).await {
                 break;
+            }
+        }
+    }
+
+    async fn process_worker_batch(&self) -> Result<usize, EmailOutboxError> {
+        let started = tokio::time::Instant::now();
+        let mut handled = 0;
+        let mut processed = 0;
+        while worker_batch_has_capacity(handled, started.elapsed()) {
+            let Some(entry) = self.claim().await? else {
+                break;
+            };
+            handled += 1;
+            if self.process_claimed_entry(&entry).await? {
+                processed += 1;
+            }
+        }
+        Ok(processed)
+    }
+
+    async fn process_claimed_entry(&self, entry: &OutboxEntry) -> Result<bool, EmailOutboxError> {
+        match self.apply(entry).await {
+            Ok(processed) => Ok(processed),
+            Err(error_value) => {
+                self.record_failure(entry, &error_value).await?;
+                Ok(false)
             }
         }
     }
@@ -187,163 +240,59 @@ impl EmailOutbox {
     }
 
     async fn apply(&self, entry: &OutboxEntry) -> Result<bool, EmailOutboxError> {
-        // Keep the user advisory lock until the provider call and terminal
-        // write finish. A new challenge cannot commit between this state check
-        // and delivery, so a claimed old challenge is either cancelled before
-        // sending or is fully serialized ahead of the new request.
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(EmailOutboxError::Database)?;
-        crate::sessions::store::lock_user_session_scope(&mut transaction, entry.user_id)
-            .await
-            .map_err(EmailOutboxError::Database)?;
-        let message = self.load_message(&mut transaction, entry).await?;
+        // Claim validation and payload reads use a short transaction. The
+        // provider call must stay outside it: SMTP may wait for network I/O and
+        // the claim fence makes the later terminal CAS safe if the lease is
+        // reclaimed while delivery is in flight.
+        let message = self.load_message(entry).await?;
         let Some(message) = message else {
-            self.mark_cancelled(&mut transaction, entry).await?;
-            transaction
-                .commit()
-                .await
-                .map_err(EmailOutboxError::Database)?;
             return Ok(false);
         };
         tokio::time::timeout(EMAIL_SEND_TIMEOUT, self.sender.send(message))
             .await
             .map_err(|_| EmailOutboxError::DeliveryTimeout)?
             .map_err(|_| EmailOutboxError::Delivery)?;
-        let processed = self.mark_processed(&mut transaction, entry).await?;
-        transaction
-            .commit()
-            .await
-            .map_err(EmailOutboxError::Database)?;
+        // SMTP succeeds before this fenced write. If the write or its commit
+        // is lost, retrying the durable row may duplicate delivery by design:
+        // this boundary guarantees at-least-once delivery rather than loss.
+        let processed = match self.mark_processed(entry).await {
+            Ok(processed) => processed,
+            Err(error_value) => {
+                self.log_delivery_state_uncertain(entry, "mark_processed", &error_value);
+                return Err(error_value);
+            }
+        };
+        if !processed {
+            tracing::warn!(
+                outbox_id = entry.id,
+                claim_generation = entry.claim_generation,
+                kind = %entry.kind,
+                event = "email_outbox.stale_claim",
+                "stale email outbox completion ignored"
+            );
+        }
         Ok(processed)
     }
 
-    async fn load_message(
+    fn log_delivery_state_uncertain(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
         entry: &OutboxEntry,
-    ) -> Result<Option<EmailMessage>, EmailOutboxError> {
-        match entry.kind.as_str() {
-            VERIFICATION_CODE_KIND => self.load_verification_message(transaction, entry).await,
-            SECURITY_ALERT_KIND => self.load_security_alert_message(transaction, entry).await,
-            _ => Err(EmailOutboxError::InvalidPayload),
-        }
-    }
-
-    async fn load_verification_message(
-        &self,
-        transaction: &mut Transaction<'_, Postgres>,
-        entry: &OutboxEntry,
-    ) -> Result<Option<EmailMessage>, EmailOutboxError> {
-        let row: Option<(String, Option<Vec<u8>>)> = crate::sqlx::query_as(
-            "SELECT challenge.new_email, outbox.encrypted_code
-             FROM email_outbox AS outbox
-             JOIN user_email_change_challenges AS challenge
-               ON challenge.id = outbox.challenge_id
-             JOIN users ON users.id = outbox.user_id
-             WHERE outbox.id = $1
-               AND outbox.user_id = $2
-               AND outbox.challenge_id = $3
-               AND outbox.kind = $6
-               AND outbox.processed_at IS NULL
-               AND outbox.cancelled_at IS NULL
-               AND outbox.dead_lettered_at IS NULL
-               AND outbox.claim_generation = $4
-               AND outbox.claim_token = $5
-               AND challenge.consumed_at IS NULL
-               AND challenge.expires_at > NOW()
-               AND challenge.security_epoch = users.session_epoch
-               AND users.status = 'active'
-              FOR UPDATE OF outbox",
-        )
-        .bind(entry.id)
-        .bind(entry.user_id)
-        .bind(entry.challenge_id)
-        .bind(entry.claim_generation)
-        .bind(&entry.claim_token)
-        .bind(VERIFICATION_CODE_KIND)
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(EmailOutboxError::Database)?;
-        let Some((recipient, encrypted_code)) = row else {
-            return Ok(None);
-        };
-        let encrypted_code = encrypted_code.ok_or(EmailOutboxError::InvalidPayload)?;
-        let code = decrypt_code(
-            &self.encryption_keys,
-            encrypted_code.as_slice(),
-            entry.user_id,
-            entry.challenge_id,
-        )
-        .map_err(|_| EmailOutboxError::Decryption)?;
-        if code.len() != 6 || !code.iter().all(u8::is_ascii_digit) {
-            return Err(EmailOutboxError::InvalidCode);
-        }
-        let code = Zeroizing::new(
-            String::from_utf8(code.to_vec()).map_err(|_| EmailOutboxError::InvalidCode)?,
+        stage: &'static str,
+        error_value: &EmailOutboxError,
+    ) {
+        tracing::error!(
+            event = "email_outbox.delivery_state_uncertain",
+            delivery_semantics = DELIVERY_SEMANTICS,
+            outbox_id = entry.id,
+            kind = %entry.kind,
+            attempt = entry.attempts,
+            stage,
+            error_kind = error_value.failure_code(),
+            "SMTP accepted an email but the durable terminal state could not be confirmed; retry may duplicate delivery"
         );
-        let recipient = crate::users::email::EmailAddress::parse(&recipient)
-            .map_err(|_| EmailOutboxError::InvalidRecipient)?;
-        Ok(Some(EmailMessage {
-            to: recipient,
-            subject: "辰星通行证邮箱变更验证码".to_owned(),
-            body: format!(
-                "你的邮箱变更验证码是：{}\n验证码将在 10 分钟后失效。",
-                code.as_str()
-            ),
-        }))
     }
 
-    async fn load_security_alert_message(
-        &self,
-        transaction: &mut Transaction<'_, Postgres>,
-        entry: &OutboxEntry,
-    ) -> Result<Option<EmailMessage>, EmailOutboxError> {
-        let recipient: Option<String> = crate::sqlx::query_scalar(
-            "SELECT outbox.recipient
-             FROM email_outbox AS outbox
-             JOIN user_email_change_challenges AS challenge
-               ON challenge.id = outbox.challenge_id
-             WHERE outbox.id = $1
-               AND outbox.user_id = $2
-               AND outbox.challenge_id = $3
-               AND outbox.kind = $4
-               AND outbox.processed_at IS NULL
-               AND outbox.cancelled_at IS NULL
-               AND outbox.dead_lettered_at IS NULL
-               AND outbox.claim_generation = $5
-               AND outbox.claim_token = $6
-               AND challenge.consumed_at IS NOT NULL
-              FOR UPDATE OF outbox",
-        )
-        .bind(entry.id)
-        .bind(entry.user_id)
-        .bind(entry.challenge_id)
-        .bind(SECURITY_ALERT_KIND)
-        .bind(entry.claim_generation)
-        .bind(&entry.claim_token)
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(EmailOutboxError::Database)?;
-        let Some(recipient) = recipient else {
-            return Ok(None);
-        };
-        let recipient = crate::users::email::EmailAddress::parse(&recipient)
-            .map_err(|_| EmailOutboxError::InvalidRecipient)?;
-        Ok(Some(EmailMessage {
-            to: recipient,
-            subject: "辰星通行证邮箱已变更".to_owned(),
-            body: "你的账户邮箱已变更。如果这不是你的操作，请立即联系管理员。".to_owned(),
-        }))
-    }
-
-    async fn mark_processed(
-        &self,
-        transaction: &mut Transaction<'_, Postgres>,
-        entry: &OutboxEntry,
-    ) -> Result<bool, EmailOutboxError> {
+    async fn mark_processed(&self, entry: &OutboxEntry) -> Result<bool, EmailOutboxError> {
         let result = crate::sqlx::query(
             "UPDATE email_outbox
              SET processed_at = NOW(), claim_token = '', last_error = NULL
@@ -354,7 +303,7 @@ impl EmailOutbox {
         .bind(entry.id)
         .bind(entry.claim_generation)
         .bind(&entry.claim_token)
-        .execute(&mut **transaction)
+        .execute(&self.pool)
         .await
         .map_err(EmailOutboxError::Database)?;
         Ok(result.rows_affected() == 1)
@@ -381,3 +330,29 @@ impl EmailOutbox {
         Ok(())
     }
 }
+
+fn worker_batch_has_capacity(handled: usize, elapsed: Duration) -> bool {
+    handled < WORKER_BATCH_ENTRY_LIMIT && elapsed < WORKER_BATCH_TIME_BUDGET
+}
+
+async fn heartbeat_while<F, T, H>(operation: F, interval: Duration, mut heartbeat: H) -> T
+where
+    F: Future<Output = T>,
+    H: FnMut(),
+{
+    tokio::pin!(operation);
+    let first_tick = tokio::time::Instant::now() + interval;
+    let mut ticker = tokio::time::interval_at(first_tick, interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut operation => return result,
+            _ = ticker.tick() => heartbeat(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "outbox_tests.rs"]
+mod tests;

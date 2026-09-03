@@ -284,7 +284,7 @@ impl AuthFactorService {
         crate::users::repository::management_actor::validate_management_actor_in_transaction(
             &mut transaction,
             credential,
-            crate::users::domain::UserPermission::ManageSettings,
+            crate::users::domain::UserPermission::ManageSystemSettings,
         )
         .await?;
         crate::settings::repository::lock_passkey_policy(&mut transaction).await?;

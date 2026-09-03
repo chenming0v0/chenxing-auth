@@ -111,6 +111,7 @@ describe('ConsoleProfile 账户设置布局', () => {
     fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'correct-password' } })
     fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
     await waitFor(() => expect(screen.getByLabelText('邮箱验证码')).toBeTruthy())
+    expect(screen.getByText(/至少一次语义/)).toBeTruthy()
     expect(requests.some(({ path }) => path === '/api/v1/auth/email-change/start')).toBe(true)
     fireEvent.change(screen.getByLabelText('邮箱验证码'), { target: { value: '123456' } })
     fireEvent.click(screen.getByRole('button', { name: '确认变更' }))

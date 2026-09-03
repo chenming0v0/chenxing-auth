@@ -1,18 +1,20 @@
 use axum::{
     Json,
     extract::{Query, State, rejection::QueryRejection},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 
 use super::{
     domain::{PurchaseInput, WalletBalance, WalletError},
+    idempotency::WalletIdempotencyContext,
     service::WalletServiceError,
 };
 use crate::{
     api::extract::{ApiJson, SessionRead, SessionWrite},
     audit::AuditEvent,
+    clients::idempotency::IdempotencyKey,
     error,
     plans::addons::{QuotaAddonError, QuotaAddonPurchaseInput},
     plans::domain::Plan,
@@ -129,8 +131,17 @@ pub async fn list_plan_catalog(State(state): State<AppState>, _session: SessionR
 pub async fn purchase_plan(
     State(state): State<AppState>,
     session: SessionWrite,
+    headers: HeaderMap,
     ApiJson(input): ApiJson<PurchaseInput>,
 ) -> Response {
+    let key = match required_idempotency_key(&headers) {
+        Ok(key) => key,
+        Err(error_value) => return error_value.into_response(),
+    };
+    let Some(credential) = session.user_session_credential() else {
+        return crate::users::ui_auth::invalid_session_response(&state, "invalid_session");
+    };
+    let idempotency = WalletIdempotencyContext::plan(session.user_id, &key, input.plan_id);
     let event = AuditEvent::new(
         "user".to_owned(),
         Some(session.user_id.to_string()),
@@ -139,8 +150,18 @@ pub async fn purchase_plan(
         Some(session.user_id.to_string()),
         serde_json::json!({"result": "success"}),
     );
-    match state.wallets.purchase(session.user_id, input, event).await {
+    match state
+        .wallets
+        .purchase(credential, input, idempotency, event)
+        .await
+    {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(WalletServiceError::SessionInvalid) => {
+            crate::users::ui_auth::invalid_session_response(&state, "invalid_session")
+        }
+        Err(WalletServiceError::UserDisabled) => {
+            crate::users::ui_auth::invalid_session_response(&state, "user_disabled")
+        }
         Err(error_value) => wallet_error_response(error_value),
     }
 }
@@ -184,8 +205,17 @@ pub async fn list_quota_addon_catalog(
 pub async fn purchase_quota_addon(
     State(state): State<AppState>,
     session: SessionWrite,
+    headers: HeaderMap,
     ApiJson(input): ApiJson<QuotaAddonPurchaseInput>,
 ) -> Response {
+    let key = match required_idempotency_key(&headers) {
+        Ok(key) => key,
+        Err(error_value) => return error_value.into_response(),
+    };
+    let Some(credential) = session.user_session_credential() else {
+        return crate::users::ui_auth::invalid_session_response(&state, "invalid_session");
+    };
+    let idempotency = WalletIdempotencyContext::addon(session.user_id, &key, input.addon_id);
     let event = AuditEvent::new(
         "user".into(),
         Some(session.user_id.to_string()),
@@ -196,7 +226,7 @@ pub async fn purchase_quota_addon(
     );
     match state
         .wallets
-        .purchase_quota_addon(session.user_id, input, event)
+        .purchase_quota_addon(credential, input, idempotency, event)
         .await
     {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
@@ -214,6 +244,20 @@ pub async fn purchase_quota_addon(
             "audit_unavailable",
             "the purchase was rolled back because audit is unavailable",
         ),
+        Err(QuotaAddonError::IdempotencyConflict) => error::conflict(
+            "idempotency_key_conflict",
+            "Idempotency-Key was already used for a different purchase request",
+        ),
+        Err(QuotaAddonError::IdempotencyCorruptResult) => {
+            tracing::error!("stored quota add-on idempotency result is invalid");
+            error::internal()
+        }
+        Err(QuotaAddonError::SessionInvalid) => {
+            crate::users::ui_auth::invalid_session_response(&state, "invalid_session")
+        }
+        Err(QuotaAddonError::UserDisabled) => {
+            crate::users::ui_auth::invalid_session_response(&state, "user_disabled")
+        }
         Err(e) => {
             tracing::error!(error=%e, "quota add-on purchase failed");
             error::internal()
@@ -248,6 +292,39 @@ fn invalid_pagination() -> Response {
     )
 }
 
+/// 购买请求缺少或无法解析 Idempotency-Key 的两种形态。
+///
+/// 这里刻意不直接返回 `Response`：`Response` 至少 128 字节，而 `IdempotencyKey`
+/// 只是一个 String，`Result` 会被错误变体撑大（clippy::result_large_err）。
+/// 错误形态本来只有两种，用小枚举表达，映射响应交给边界。
+enum IdempotencyKeyError {
+    Missing,
+    Invalid,
+}
+
+impl IdempotencyKeyError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Missing => error::bad_request(
+                "idempotency_key_required",
+                "Idempotency-Key header is required for wallet purchases",
+            ),
+            Self::Invalid => {
+                error::bad_request("invalid_idempotency_key", "Idempotency-Key is invalid")
+            }
+        }
+    }
+}
+
+fn required_idempotency_key(headers: &HeaderMap) -> Result<IdempotencyKey, IdempotencyKeyError> {
+    let value = headers
+        .get("idempotency-key")
+        .ok_or(IdempotencyKeyError::Missing)?
+        .to_str()
+        .map_err(|_| IdempotencyKeyError::Invalid)?;
+    IdempotencyKey::parse(value).map_err(|_| IdempotencyKeyError::Invalid)
+}
+
 pub(crate) fn wallet_error_response(error_value: WalletServiceError) -> Response {
     match error_value {
         WalletServiceError::Validation(WalletError::InvalidAmount) => {
@@ -276,12 +353,24 @@ pub(crate) fn wallet_error_response(error_value: WalletServiceError) -> Response
             tracing::error!("actor authorization outcome escaped the wallet handler");
             error::internal()
         }
+        WalletServiceError::SessionInvalid | WalletServiceError::UserDisabled => {
+            tracing::error!("user session outcome escaped the wallet purchase handler");
+            error::internal()
+        }
         WalletServiceError::Audit(error_value) => {
             tracing::error!(error = %error_value, "wallet mutation rolled back because audit failed");
             error::service_unavailable(
                 "audit_unavailable",
                 "the operation was rolled back because its audit record could not be written; retry later",
             )
+        }
+        WalletServiceError::IdempotencyConflict => error::conflict(
+            "idempotency_key_conflict",
+            "Idempotency-Key was already used for a different purchase request",
+        ),
+        WalletServiceError::IdempotencyCorruptResult => {
+            tracing::error!("stored plan idempotency result is invalid");
+            error::internal()
         }
         WalletServiceError::Database(database_error) => {
             tracing::error!(error = %database_error, "wallet database operation failed");

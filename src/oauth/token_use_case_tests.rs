@@ -50,6 +50,8 @@ fn authorization_code_from_request(
             nonce: None,
             code_challenge: Some(CHALLENGE.to_owned()),
             code_challenge_method: Some("S256".to_owned()),
+            prompt: None,
+            max_age: None,
         },
     )
     .expect("registered redirect URI variant must pass authorization validation");

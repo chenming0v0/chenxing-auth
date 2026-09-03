@@ -68,11 +68,22 @@ impl PlanTestEnv {
 /// 即使迁移提供了种子，这里仍显式清空后播种；需要「没有任何套餐」的测试在拿到
 /// 环境后自己调 [`clear_all_plans`]。
 pub async fn test_state() -> PlanTestEnv {
+    test_state_with_max_connections(2).await
+}
+
+/// Construct a plan test environment with an explicit pool size for tests that
+/// need a blocker, a blocked request, and an independent mutator at once.
+pub async fn test_state_with_max_connections(max_connections: u32) -> PlanTestEnv {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = super::db_isolation::isolated_pool("plans", &database_url).await;
+    let database = super::db_isolation::isolated_pool_with_max_connections(
+        "plans",
+        &database_url,
+        max_connections,
+    )
+    .await;
     clear_all_plans(&database).await;
     let default_plan_id = seed_default_plan(&database).await;
     let key_directory = key_directory::isolated_key_directory("plans");
@@ -165,14 +176,26 @@ pub async fn register_user(router: &Router, suffix: &str) -> i64 {
         .expect("numeric user id")
 }
 
-pub async fn user_session(state: &AppState, user_id: i64) -> (String, String) {
-    let mut session =
-        Session::new(user_id.to_string(), Duration::from_secs(3600)).expect("browser session");
+pub async fn persisted_user_session_with_ttl(
+    state: &AppState,
+    user_id: i64,
+    ttl: Duration,
+) -> Session {
+    let mut session = Session::new(user_id.to_string(), ttl).expect("browser session");
     state
         .sessions
-        .save(&mut session, Duration::from_secs(3600))
+        .save(&mut session, ttl)
         .await
         .expect("persist session");
+    session
+}
+
+pub async fn persisted_user_session(state: &AppState, user_id: i64) -> Session {
+    persisted_user_session_with_ttl(state, user_id, Duration::from_secs(3600)).await
+}
+
+pub async fn user_session(state: &AppState, user_id: i64) -> (String, String) {
+    let session = persisted_user_session(state, user_id).await;
     let cookie = format!(
         "chenxing_session={}; chenxing_csrf={}",
         session.token, session.csrf_token
@@ -463,6 +486,10 @@ pub fn validated_request_with_challenge(
         state: "plan-state".to_owned(),
         nonce: None,
         code_challenge: code_challenge.to_owned(),
+        prompt: None,
+        max_age: None,
+        reauth_required: false,
+        reauth_session_token_hash: None,
         owner_user_id: Some(user_id),
         session_token_hash: None,
     }

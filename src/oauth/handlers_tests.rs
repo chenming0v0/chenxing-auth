@@ -1,4 +1,4 @@
-use super::super::authorization::MAX_STATE_LENGTH;
+use super::super::authorization::{AuthorizationRequestError, MAX_STATE_LENGTH};
 use super::*;
 use axum::http::{StatusCode, header::LOCATION};
 
@@ -25,7 +25,23 @@ fn request(redirect_uri: &str) -> AuthorizationRequest {
         nonce: None,
         code_challenge: Some("challenge".to_owned()),
         code_challenge_method: Some("S256".to_owned()),
+        prompt: None,
+        max_age: None,
     }
+}
+
+#[test]
+fn get_and_post_authorize_inputs_preserve_oidc_prompt_and_max_age() {
+    let query = "client_id=client-1&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&response_type=code&scope=openid&state=state-1&code_challenge=challenge&code_challenge_method=S256&prompt=login%20consent&max_age=60";
+    let get_request: AuthorizationRequest =
+        serde_urlencoded::from_str(query).expect("GET query should parse");
+    let post_request: AuthorizationRequest =
+        serde_urlencoded::from_str(query).expect("POST form should parse");
+
+    assert_eq!(get_request.prompt.as_deref(), Some("login consent"));
+    assert_eq!(get_request.max_age, Some(60));
+    assert_eq!(post_request.prompt, get_request.prompt);
+    assert_eq!(post_request.max_age, get_request.max_age);
 }
 
 #[test]

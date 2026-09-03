@@ -44,7 +44,7 @@ pub struct RegistrationEmailSettingResponse {
 
 pub async fn get_registration_email(State(state): State<AppState>, admin: AdminRead) -> Response {
     if let Err(response) = admin
-        .authorize(&state, AdminPermission::ManageSettings)
+        .authorize(&state, AdminPermission::ManageSystemSettings)
         .await
     {
         return response;
@@ -72,7 +72,7 @@ pub async fn update_registration_email(
     let authorization = match crate::admin::authorization::authorize_admin_write(
         &state,
         &admin,
-        AdminPermission::ManageSettings,
+        AdminPermission::ManageSystemSettings,
     )
     .await
     {

@@ -69,7 +69,7 @@ pub struct QuotaAddonPurchaseInput {
     pub addon_id: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct QuotaAddonPurchaseResult {
     pub balance: i64,
     pub addon_id: i64,
@@ -97,6 +97,14 @@ pub enum QuotaAddonError {
     InsufficientBalance,
     #[error("user has no active purchased plan period")]
     NoActivePlan,
+    #[error("idempotency key was already used for a different request")]
+    IdempotencyConflict,
+    #[error("stored wallet idempotency result is invalid")]
+    IdempotencyCorruptResult,
+    #[error("the user session is no longer valid")]
+    SessionInvalid,
+    #[error("the user account is disabled")]
+    UserDisabled,
     #[error(transparent)]
     ManagementActor(#[from] crate::users::ManagementActorValidationError),
     #[error(transparent)]
@@ -172,7 +180,7 @@ pub async fn create(
     crate::users::repository::management_actor::validate_management_actor_in_transaction(
         &mut tx,
         credential,
-        UserPermission::ManageSettings,
+        UserPermission::ManagePlans,
     )
     .await?;
     let exists: bool =
@@ -207,7 +215,7 @@ pub async fn update(
     crate::users::repository::management_actor::validate_management_actor_in_transaction(
         &mut tx,
         credential,
-        UserPermission::ManageSettings,
+        UserPermission::ManagePlans,
     )
     .await?;
     let row: Option<AddonRow> = crate::sqlx::query_as(
@@ -235,7 +243,7 @@ pub async fn archive(
     crate::users::repository::management_actor::validate_management_actor_in_transaction(
         &mut tx,
         credential,
-        UserPermission::ManageSettings,
+        UserPermission::ManagePlans,
     )
     .await?;
     let affected = crate::sqlx::query(

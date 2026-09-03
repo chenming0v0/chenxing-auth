@@ -102,6 +102,9 @@ const safeMessages = new Map<string, string>([
   ['plan_not_found', '套餐不存在或已失效。'],
   ['insufficient_balance', '辰星点不足，无法购买该套餐。'],
   ['plan_not_purchasable', '该套餐不支持自助购买。'],
+  ['idempotency_key_required', '购买请求缺少幂等键，请刷新页面后重试。'],
+  ['invalid_idempotency_key', '购买请求幂等键无效，请刷新页面后重试。'],
+  ['idempotency_key_conflict', '该购买请求幂等键已用于其他内容，请重新发起购买。'],
   ['invalid_amount', '充值数量不合法。'],
   ['invalid_note', '备注过长。'],
   ['plan_code_conflict', '套餐代码已被占用，请更换。'],
@@ -293,20 +296,31 @@ export async function loadAuthorizationRequest(requestId: string): Promise<Pendi
 let entitlementCache: EntitlementsResponse | null = null
 let entitlementRequest: Promise<EntitlementsResponse> | null = null
 /**
- * 缓存版本计数器。clearApiCache()（注销时）和 getEntitlements(force=true) 递增它，
+ * 缓存版本计数器。invalidateEntitlements() 递增它（注销、强制刷新和权益写操作都经由它），
  * 使版本号变化前发出的 in-flight 请求在 resolve 后无法把过期数据写回缓存：
  * 注销场景避免跨用户泄露，强制刷新场景避免旧请求的响应覆盖新请求的响应。
  */
 let cacheGeneration = 0
 
+/**
+ * 只失效权益缓存，不动其他缓存资源（#687）。
+ *
+ * 购买套餐或增量包会改变服务端权益事实，但不影响任何别的缓存内容，因此这里
+ * 是精确失效而不是 clearApiCache()：后者语义是「当前身份的全部缓存都不可信」，
+ * 为一次购买调用它会连带打掉无关数据，造成不必要的重新拉取。
+ *
+ * 同时清掉在途引用并递增版本：调用方紧接着的读取一定发新请求，
+ * 而失效之前发出的旧请求 resolve 后不能把购买前的数据写回缓存。
+ */
+export function invalidateEntitlements(): void {
+  entitlementCache = null
+  entitlementRequest = null
+  cacheGeneration += 1
+}
+
 export function getEntitlements(force = false): Promise<EntitlementsResponse> {
-  if (force) {
-    // 强制刷新必须绕过 in-flight 去重：清掉缓存与在途引用，真正发起新请求；
-    // 同时递增版本，让旧请求 resolve 后不能把过期数据写回缓存
-    entitlementCache = null
-    entitlementRequest = null
-    cacheGeneration += 1
-  }
+  // 强制刷新必须绕过 in-flight 去重：失效缓存与在途引用，真正发起新请求
+  if (force) invalidateEntitlements()
   if (entitlementCache) return Promise.resolve(entitlementCache)
   if (!entitlementRequest) {
     // 在发起请求时锁定版本，回调里比对以识别期间是否发生过注销或强制刷新
@@ -326,8 +340,7 @@ export function getEntitlements(force = false): Promise<EntitlementsResponse> {
   return entitlementRequest
 }
 
+/** 注销与身份切换：当前所有按身份缓存的数据都不可信。目前只有权益一项。 */
 export function clearApiCache(): void {
-  cacheGeneration += 1
-  entitlementCache = null
-  entitlementRequest = null
+  invalidateEntitlements()
 }

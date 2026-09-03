@@ -41,10 +41,7 @@ pub async fn list_quota_addons(
     admin: AdminRead,
     Path(plan_id): Path<i64>,
 ) -> Response {
-    if let Err(response) = admin
-        .authorize(&state, AdminPermission::ManageSettings)
-        .await
-    {
+    if let Err(response) = admin.authorize(&state, AdminPermission::ManagePlans).await {
         return response;
     }
     match addons::list_for_plan(&state.database, plan_id, false).await {
@@ -63,7 +60,7 @@ pub async fn create_quota_addon(
     ApiJson(input): ApiJson<QuotaAddonInput>,
 ) -> Response {
     let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+        match authorize_admin_write(&state, &admin, AdminPermission::ManagePlans).await {
             Ok(v) => v,
             Err(r) => return r,
         };
@@ -98,7 +95,7 @@ pub async fn update_quota_addon(
     ApiJson(input): ApiJson<QuotaAddonInput>,
 ) -> Response {
     let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+        match authorize_admin_write(&state, &admin, AdminPermission::ManagePlans).await {
             Ok(v) => v,
             Err(r) => return r,
         };
@@ -132,7 +129,7 @@ pub async fn archive_quota_addon(
     Path(id): Path<i64>,
 ) -> Response {
     let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+        match authorize_admin_write(&state, &admin, AdminPermission::ManagePlans).await {
             Ok(v) => v,
             Err(r) => return r,
         };
@@ -184,10 +181,7 @@ fn plan_response(plan: crate::plans::domain::Plan, assigned_users: i64) -> PlanR
 }
 
 pub async fn list_plans(State(state): State<AppState>, admin: AdminRead) -> Response {
-    if let Err(response) = admin
-        .authorize(&state, AdminPermission::ManageSettings)
-        .await
-    {
+    if let Err(response) = admin.authorize(&state, AdminPermission::ManagePlans).await {
         return response;
     }
     match state.plans.list().await {
@@ -219,7 +213,7 @@ pub async fn create_plan(
     ApiJson(input): ApiJson<PlanInput>,
 ) -> Response {
     let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+        match authorize_admin_write(&state, &admin, AdminPermission::ManagePlans).await {
             Ok(authorization) => authorization,
             Err(response) => return response,
         };
@@ -256,7 +250,7 @@ pub async fn update_plan(
     ApiJson(input): ApiJson<PlanInput>,
 ) -> Response {
     let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+        match authorize_admin_write(&state, &admin, AdminPermission::ManagePlans).await {
             Ok(authorization) => authorization,
             Err(response) => return response,
         };
@@ -293,7 +287,7 @@ pub async fn archive_plan(
     Path(id): Path<i64>,
 ) -> Response {
     let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+        match authorize_admin_write(&state, &admin, AdminPermission::ManagePlans).await {
             Ok(authorization) => authorization,
             Err(response) => return response,
         };
@@ -327,7 +321,7 @@ pub async fn restore_plan(
     Path(id): Path<i64>,
 ) -> Response {
     let authorization =
-        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+        match authorize_admin_write(&state, &admin, AdminPermission::ManagePlans).await {
             Ok(authorization) => authorization,
             Err(response) => return response,
         };
@@ -383,7 +377,7 @@ pub struct AssignPlanInput {
 /// `POST /api/v1/admin/users/{user_id}/plan`。
 ///
 /// 分配套餐直接改写用户权益（entitlements），语义属于用户管理而非系统设置，
-/// 因此基线是 `ManageUsers` 而不是 `ManageSettings` —— 只有系统设置权限的角色
+/// 因此基线是 `ManageUsers` 而不是 `ManagePlans` —— 只有套餐管理权限的角色
 /// 不得改写任意用户的套餐。目标是 Owner 时门槛抬到 `ManageRoles`：改写 Owner
 /// 的权益能压缩最高权限持有者的 Client 配额与授权额度，与禁用 Owner 同档
 /// （Issue #280）。Owner 判定与套餐写入现在共用目标用户行锁（Issue #323），

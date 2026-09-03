@@ -27,6 +27,14 @@ pub const DEFAULT_PLAN_MONTHLY_AUTH_LIMIT: i64 = 50_000;
 /// `users.plan_id` 是 `ON DELETE SET NULL`，所以这会顺带解绑所有用户的套餐 ——
 /// 这正是「平台未开放自助接入」的目标状态：没有挂载套餐、也没有默认套餐。
 pub async fn clear_all_plans(database: &PgPool) {
+    chenxing_auth::sqlx::query("DELETE FROM user_quota_addon_purchases")
+        .execute(database)
+        .await
+        .expect("clear all quota addon purchases");
+    chenxing_auth::sqlx::query("DELETE FROM plan_quota_addons")
+        .execute(database)
+        .await
+        .expect("clear all plan quota addons");
     chenxing_auth::sqlx::query("DELETE FROM plans")
         .execute(database)
         .await

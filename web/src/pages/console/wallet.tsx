@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { apiFetch, type EntitlementPlan, type EntitlementsResponse, type Paged, type WalletBalance, type WalletLedgerEntry } from '../../api'
+import { apiFetch, getEntitlements, type EntitlementPlan, type Paged, type WalletBalance, type WalletLedgerEntry } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
 import { DataTable, TablePagination, TablePanel } from '@chenxing/ui'
@@ -61,11 +61,13 @@ export function ConsoleWallet() {
     if (purchaseRequested) setCatalogOpen(true)
   }, [purchaseRequested])
 
-  // 直接请求而不是走 getEntitlements 缓存：购买/兑换后 refreshKey 变化必须拿到最新套餐。
+  /* 强制刷新而不是直接 apiFetch：本页在购买/兑换后必须拿到最新套餐，同时这一次
+     请求的结果要落进 getEntitlements 的共享缓存，概览、接入页和账户菜单才能
+     跟着看到新套餐，而不是各自再发一次请求（#687）。 */
   useEffect(() => {
     let active = true
     setPlanState({ kind: 'loading' })
-    void apiFetch<EntitlementsResponse>('/api/v1/auth/entitlements')
+    void getEntitlements(true)
       .then((value) => { if (active) setPlanState({ kind: 'ready', plan: value.plan }) })
       .catch(() => { if (active) setPlanState({ kind: 'error' }) })
     return () => { active = false }

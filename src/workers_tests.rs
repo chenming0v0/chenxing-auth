@@ -74,6 +74,48 @@ fn stale_heartbeat_and_last_success_make_the_worker_unready() {
 }
 
 #[test]
+fn valid_email_delivery_can_cross_the_legacy_ten_second_budget() {
+    let health = WorkerHealth::new();
+    let _guard = health.start(WorkerName::EmailOutbox);
+    let completed_pass = Instant::now();
+    health.record_success(WorkerName::EmailOutbox, completed_pass);
+
+    let during_valid_smtp_attempt = completed_pass + Duration::from_secs(31);
+    let status = health.status_at(WorkerName::EmailOutbox, during_valid_smtp_attempt);
+
+    assert!(status.ready);
+    assert!(
+        WorkerName::EmailOutbox.policy().heartbeat_timeout > Duration::from_secs(30),
+        "the heartbeat lease must exceed the SMTP operation timeout"
+    );
+    assert!(
+        WorkerName::EmailOutbox.policy().success_timeout
+            > WorkerName::EmailOutbox.policy().heartbeat_timeout,
+        "success needs enough time for a bounded pass and its database cleanup"
+    );
+}
+
+#[test]
+fn email_heartbeats_do_not_mask_a_missing_success_forever() {
+    let health = WorkerHealth::new();
+    let _guard = health.start(WorkerName::EmailOutbox);
+    let completed_pass = Instant::now();
+    health.record_success(WorkerName::EmailOutbox, completed_pass);
+
+    let stale_at =
+        completed_pass + WorkerName::EmailOutbox.policy().success_timeout + Duration::from_secs(1);
+    health.record_heartbeat(WorkerName::EmailOutbox, stale_at);
+
+    let status = health.status_at(WorkerName::EmailOutbox, stale_at);
+    assert!(!status.ready);
+    assert_eq!(status.last_heartbeat_age, Some(Duration::ZERO));
+    assert!(
+        status.last_success_age.expect("last success")
+            > WorkerName::EmailOutbox.policy().success_timeout
+    );
+}
+
+#[test]
 fn explicit_unready_report_is_immediate_and_recoverable() {
     let health = WorkerHealth::new();
     let mut guards = Vec::new();

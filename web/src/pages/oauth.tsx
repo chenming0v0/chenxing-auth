@@ -68,6 +68,32 @@ function appMark(name?: string) {
   return (name || 'A').trim().slice(0, 1).toUpperCase()
 }
 
+/**
+ * #692：按字符数给标题里的应用名选一个字号档。
+ *
+ * `client_name` 最长 128 字符，用标题的 clamp(1.7rem, …, 2.35rem) 渲染时，
+ * 320px 视口上单个名称就能撑出上千像素的内容宽度。应用名是用户判断「把账号
+ * 授权给谁」的依据，属安全相关信息，所以不能用省略号把尾部藏掉——只能降字号
+ * 让它在可用宽度内换行显示完整。分档在 JS 侧算：CSS 选择器无法按文本长度匹配。
+ */
+export function appNameTier(name: string): 'long' | 'xlong' | undefined {
+  // Array.from 按码点计数，避免 emoji / 代理对被算成两个字符
+  const length = Array.from(name.trim()).length
+  if (length > 48) return 'xlong'
+  if (length > 24) return 'long'
+  return undefined
+}
+
+/**
+ * 标题里的应用名：完整展示、任意断行、按长度降档字号，不做任何截断。
+ *
+ * 只用于 .oauth-title 这一个大字号场景。正文里的应用名（引导语、条款说明）
+ * 已经是 0.9rem 以下，再降档只会难以辨认，那里靠 CSS 的断行规则收口就够。
+ */
+function TitleAppName({ name }: { name: string }) {
+  return <span className="oauth-title-app" data-length={appNameTier(name)}>「{name}」</span>
+}
+
 function ClientMark({ name, logoUri }: { name?: string; logoUri?: string | null }) {
   const [failed, setFailed] = useState(false)
   const src = logoUri?.trim()
@@ -121,6 +147,8 @@ function OAuthAccountContent({ requestId }: { requestId: string | null }) {
           <div>
             <ClientMark name={pending?.client_name} logoUri={pending?.logo_uri} />
             <h1 className="oauth-title">选择账号</h1>
+            {/* #692：正文里的应用名不降字号，靠 .oauth-copy 继承的 overflow-wrap 断行。
+                连续英文/URL 型的长名称也不截断——尾部被省略号藏掉会给钓鱼留空间。 */}
             <p className="oauth-copy is-lead">
               以继续使用
               <span className="oauth-client-name">「{pending?.client_name || '接入应用'}」</span>
@@ -232,7 +260,8 @@ function OAuthConsentContent({ requestId }: { requestId: string | null }) {
           <div>
             <ClientMark name={pending?.client_name} logoUri={pending?.logo_uri} />
             <h1 className="oauth-title">
-              「{pending?.client_name || '接入应用'}」想要访问<br />你的辰星通行证
+              <TitleAppName name={pending?.client_name || '接入应用'} />
+              想要访问<br />你的辰星通行证
             </h1>
             {pending?.description?.trim() ? (
               <p className="oauth-copy is-app-desc">{pending.description.trim()}</p>

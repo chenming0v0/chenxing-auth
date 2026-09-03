@@ -68,14 +68,49 @@
         line-height: 1.25;
         letter-spacing: -0.01em;
         color: var(--chenxing-foreground);
+        /* #692：标题里嵌着动态应用名，最长 128 字符。没有断行规则时整行会按
+           min-content 撑宽内容列，把卡片和主操作推出窄屏视口。 */
+        overflow-wrap: anywhere;
       }
       /* 回调页标题：文案更短，用固定小字号替代 clamp() 以保持视觉重心 */
       .oauth-title.is-compact { font-size: 1.55rem; }
+      /* #692：标题里的接入应用名。
+         `client_name` 最长 128 字符，按标题字号渲染时在 320px 视口能撑出上千像素，
+         会把卡片和主操作推出屏幕。这里不做省略号截断：应用名是用户判断「把账号
+         授权给谁」的唯一直观依据，尾部被藏掉正好方便钓鱼者用长前缀伪装成可信应用。
+         所以策略是完整展示 + 允许任意断行 + 按长度降字号（档位由 appNameTier 在
+         JS 侧算出并写进 data-length，CSS 无法按文本长度选择）。
+         字号用 em 而不是自己写一套 clamp()：直接跟随 .oauth-title 的
+         clamp(1.7rem, 2.4vw, 2.35rem) 等比缩小，两处不会各自漂移；再用 max() 兜一个
+         绝对下限，窄视口上不会缩到看不清。
+         inline-block + max-width: 100% 让长名称整体占满一行后换行，与后面的
+         「想要访问」分开，不会出现半个名称和正文挤在同一行。 */
+      .oauth-title-app {
+        display: inline-block;
+        max-width: 100%;
+        /* anywhere 同时压低 min-content 宽度，连续无空格串（URL 型名称、长英文单词）
+           也能断开，卡片所在的网格列因此不被撑宽 */
+        overflow-wrap: anywhere;
+      }
+      .oauth-title-app[data-length="long"] {
+        font-size: max(1.15rem, 0.72em);
+        line-height: 1.35;
+        /* 标题的 -0.01em 负字距在小字号上会让长串更难读，这里归零 */
+        letter-spacing: 0;
+      }
+      .oauth-title-app[data-length="xlong"] {
+        font-size: max(0.98rem, 0.52em);
+        line-height: 1.45;
+        letter-spacing: 0;
+      }
       .oauth-copy {
         margin: 0;
         font-size: 0.9rem;
         line-height: 1.65;
         color: var(--chenxing-muted-foreground);
+        /* #692：正文里也会嵌入应用名、接入域名等最长 128 字符的动态文本，
+           统一允许任意断行，避免窄屏出现横向溢出 */
+        overflow-wrap: anywhere;
       }
       .oauth-copy + .oauth-copy { margin-top: 10px; }
       /* 段落节奏变体：oauth.css 未包裹 @layer，优先级高于 Tailwind 的 @layer utilities，
@@ -83,11 +118,11 @@
       /* 标题下方的引导语（选择账号页） */
       .oauth-copy.is-lead { margin-top: 16px; }
       /* 应用自己填写的描述：标题下、身份锚点上。开发者可控文案，不是安全信号，
-         不要做成带边框或盾牌的块，避免看起来像服务端校验结果。 */
+         不要做成带边框或盾牌的块，避免看起来像服务端校验结果。
+         断行由 .oauth-copy 基础规则统一承担，这里不再重复声明。 */
       .oauth-copy.is-app-desc {
         margin-top: 12px;
         font-size: 0.85rem;
-        overflow-wrap: anywhere;
       }
       /* 账号列表下方的隐私政策/服务条款说明 */
       .oauth-copy.is-legal {

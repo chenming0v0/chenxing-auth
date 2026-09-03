@@ -7,11 +7,12 @@ use crate::{
 async fn validate_settings_actor(
     transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
     credential: ManagementActorCredential,
+    permission: UserPermission,
 ) -> Result<(), SettingsServiceError> {
     crate::users::repository::management_actor::validate_management_actor_in_transaction(
         transaction,
         credential,
-        UserPermission::ManageSettings,
+        permission,
     )
     .await
     .map_err(SettingsServiceError::from)
@@ -92,7 +93,12 @@ impl SettingsService {
     {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
-        validate_settings_actor(&mut transaction, credential).await?;
+        validate_settings_actor(
+            &mut transaction,
+            credential,
+            UserPermission::ManageSystemSettings,
+        )
+        .await?;
         repository::lock_passkey_policy(&mut transaction).await?;
         repository::set_passkey(&mut *transaction, &value).await?;
         audit
@@ -169,7 +175,12 @@ impl SettingsService {
     {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
-        validate_settings_actor(&mut transaction, credential).await?;
+        validate_settings_actor(
+            &mut transaction,
+            credential,
+            UserPermission::ManageSystemSettings,
+        )
+        .await?;
         let raw =
             repository::lock_text(&mut *transaction, crate::settings::EMAIL_POLICY_KEY).await?;
         if raw.as_deref().is_some_and(|raw| {
@@ -238,7 +249,12 @@ impl SettingsService {
     {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
-        validate_settings_actor(&mut transaction, credential).await?;
+        validate_settings_actor(
+            &mut transaction,
+            credential,
+            UserPermission::ManageSystemSettings,
+        )
+        .await?;
         repository::set_registration(&mut *transaction, &value).await?;
         audit
             .record_in_transaction(&mut transaction, audit_event(&value))
@@ -339,7 +355,12 @@ impl SettingsService {
     {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
-        validate_settings_actor(&mut transaction, credential).await?;
+        validate_settings_actor(
+            &mut transaction,
+            credential,
+            UserPermission::ManageSystemSettings,
+        )
+        .await?;
         repository::set_session_lifetime(&mut *transaction, &value).await?;
         audit
             .record_in_transaction(&mut transaction, audit_event(&value))

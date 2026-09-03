@@ -27,28 +27,56 @@ async function rejectOversizedHeader(file: File): Promise<boolean> {
   return dimensions !== undefined && Boolean(rejectDecodedSize(dimensions))
 }
 
+/** 在途解码的所有权记录：谁持有 URL，谁负责释放。 */
+type PendingDecode = { id: number; url: string; cancel: () => void }
+
 /**
- * 在浏览器里解码待上传图片。
+ * 释放仍在解码中的 Object URL：先停掉解码，再 revoke，最后交还所有权（置空）。
+ *
+ * 幂等：ref 已被别人清空时什么都不做。传 `id` 表示「只释放属于这次 request 的 URL」，
+ * 避免一个已被取代的旧 request 的收尾代码误杀新 request 刚建立的 URL。
+ */
+function releasePending(pendingRef: { current: PendingDecode | null }, id?: number) {
+  const pending = pendingRef.current
+  if (!pending) return
+  if (id !== undefined && pending.id !== id) return
+  pendingRef.current = null
+  pending.cancel()
+  URL.revokeObjectURL(pending.url)
+}
+
+/**
+ * 在浏览器里解码一个已经创建好的 Object URL。
  *
  * 取景需要真实像素尺寸，而尺寸只有解码后才知道，因此「最短边下限」这条规则必须在
  * 解码之后才能判定，不能只看文件大小。
+ *
+ * 这里刻意不 revoke 任何 URL：解码是异步的，而 `image.onload` / `image.onerror` 有可能
+ * 永远不到达（组件先卸载、或浏览器丢掉这次解码）。把释放放在 promise 的任一分支里，
+ * 都存在「promise 尚未 settle 就卸载」的泄漏窗口。因此 URL 的唯一 owner 是调用方通过
+ * `register` 拿到的取消句柄：成功后所有权转交给 loaded state，其余所有退出路径
+ * （失败、尺寸拒绝、换图、卸载）都由调用方主动取消并释放。
  */
-function decodeFile(file: File): Promise<LoadedSource> {
+function decodeObjectUrl(url: string, register: (cancel: () => void) => void): Promise<LoadedSource> {
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file)
     const image = new Image()
+    const fail = () => reject(new Error('avatar_undecodable'))
     image.onload = () => {
       if (!image.naturalWidth || !image.naturalHeight) {
-        URL.revokeObjectURL(url)
-        reject(new Error('avatar_undecodable'))
+        fail()
         return
       }
       resolve({ image, source: { width: image.naturalWidth, height: image.naturalHeight }, url })
     }
-    image.onerror = () => {
-      URL.revokeObjectURL(url)
-      reject(new Error('avatar_undecodable'))
-    }
+    image.onerror = fail
+    register(() => {
+      // 摘掉 handler 并清空 src：停止继续解码，并让已经 settle 的 promise 不受影响。
+      image.onload = null
+      image.onerror = null
+      image.src = ''
+      // 已 settle 的 promise 忽略这次 reject；仍在途的则立刻结束，不留悬挂 continuation。
+      fail()
+    })
     image.src = url
   })
 }
@@ -73,15 +101,33 @@ export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarP
   const [busy, setBusy] = useState(false)
   const decodeRequestRef = useRef(0)
   const uploadRequestRef = useRef(0)
+  // 尚未转交给 loaded state 的 Object URL 的唯一持有者。
+  const pendingRef = useRef<PendingDecode | null>(null)
 
   useEffect(() => {
     setAvatarUser(user)
   }, [user])
 
+  // 卸载时在途的解码没有任何后续 owner：loaded effect 不会再挂载，promise 也可能永远
+  // 不 settle。因此这里既要让所有在途 continuation 变成 stale，也要主动停止解码并
+  // 释放它持有的 Object URL（#690）。
+  useEffect(() => {
+    return () => {
+      decodeRequestRef.current += 1
+      releasePending(pendingRef)
+    }
+  }, [])
+
   // Object URL 是显式分配的资源：状态更替和组件卸载都必须释放，否则每选一张图
   // 就泄漏一份图片内存，直到整页刷新。
+  //
+  // 所有权在这里从 pendingRef 正式移交：只有 effect 真的挂载了，才说明 cleanup 一定会
+  // 执行。若在 onPick 里提前放手，而这次渲染被随后的卸载丢弃（effect 从未挂载），
+  // 就又回到没人释放的状态。
   useEffect(() => {
     if (!loaded) return
+    // createObjectURL 保证 URL 唯一，因此 url 相等即同一次 pending。
+    if (pendingRef.current?.url === loaded.url) pendingRef.current = null
     return () => URL.revokeObjectURL(loaded.url)
   }, [loaded])
 
@@ -96,30 +142,43 @@ export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarP
       onMessage(localRejectionMessage(rejection), 'warning')
       return
     }
+    // 先让旧 request 失效再释放，保证旧 continuation 一定走 stale 分支。
     const requestId = ++decodeRequestRef.current
+    releasePending(pendingRef)
     try {
       if (!file.type && !(await hasSupportedBytes(file))) {
-        onMessage(localRejectionMessage('unsupported_format'), 'warning')
+        if (requestId === decodeRequestRef.current) onMessage(localRejectionMessage('unsupported_format'), 'warning')
         return
       }
       if (await rejectOversizedHeader(file)) {
-        onMessage(localRejectionMessage('too_large_dimensions'), 'warning')
+        if (requestId === decodeRequestRef.current) onMessage(localRejectionMessage('too_large_dimensions'), 'warning')
         return
       }
-      const decoded = await decodeFile(file)
+      // 预检 await 期间可能已卸载或已换图。在这里拦住，避免为一个没人接手的
+      // request 新建 Object URL。
+      if (requestId !== decodeRequestRef.current) return
+      const url = URL.createObjectURL(file)
+      const decoded = await decodeObjectUrl(url, (cancel) => {
+        pendingRef.current = { id: requestId, url, cancel }
+      })
       if (requestId !== decodeRequestRef.current) {
-        URL.revokeObjectURL(decoded.url)
+        releasePending(pendingRef, requestId)
         return
       }
       const sizeRejection = rejectDecodedSize(decoded.source)
       if (sizeRejection) {
-        URL.revokeObjectURL(decoded.url)
+        releasePending(pendingRef, requestId)
         onMessage(localRejectionMessage(sizeRejection), 'warning')
         return
       }
+      // 交给 loaded state。所有权在 loaded effect 真正挂载时才从 pendingRef 移交：
+      // 若这次渲染被随后的卸载丢弃，pendingRef 仍持有 URL，卸载 cleanup 会释放它。
       setLoaded(decoded)
     } catch {
-      onMessage(localRejectionMessage('undecodable'), 'warning')
+      // 解码失败、或本次 request 被取消（换图/卸载）。releasePending 幂等，且只认自己的
+      // requestId，不会误杀取消路径已经清空的记录或新 request 新建的 URL。
+      releasePending(pendingRef, requestId)
+      if (requestId === decodeRequestRef.current) onMessage(localRejectionMessage('undecodable'), 'warning')
     }
   }
 

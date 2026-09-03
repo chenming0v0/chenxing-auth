@@ -129,6 +129,10 @@ fn validated_request(harness: &Harness, session_token: &str) -> ValidatedAuthori
         state: "issuer-516-state".to_owned(),
         nonce: None,
         code_challenge: CHALLENGE.to_owned(),
+        prompt: None,
+        max_age: None,
+        reauth_required: false,
+        reauth_session_token_hash: None,
         owner_user_id: None,
         session_token_hash: Some(session_token_hash(session_token)),
     }

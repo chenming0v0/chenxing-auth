@@ -2,14 +2,19 @@ use super::pkce::validate_s256_challenge;
 use crate::clients::domain::{DEFAULT_ALLOWED_SCOPES, canonicalize_redirect_uri};
 use crate::users::domain::UserId;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fmt;
 use thiserror::Error;
+use time::OffsetDateTime;
 use url::{Host, Url};
 
 /// Maximum number of Unicode scalar values accepted for the OAuth `state` value.
 pub const MAX_STATE_LENGTH: usize = 512;
 /// Maximum number of Unicode scalar values accepted for the OIDC `nonce` value.
 pub const MAX_NONCE_LENGTH: usize = 512;
+/// `max_age` is compared against Unix seconds, so values outside the signed
+/// timestamp range cannot be represented safely by the shared clock.
+pub const MAX_MAX_AGE: u64 = i64::MAX as u64;
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct AuthorizationRequest {
@@ -21,6 +26,10 @@ pub struct AuthorizationRequest {
     pub nonce: Option<String>,
     pub code_challenge: Option<String>,
     pub code_challenge_method: Option<String>,
+    /// OpenID Connect Core `prompt` values, separated by spaces.
+    pub prompt: Option<String>,
+    /// Maximum permitted age of the authentication event, in seconds.
+    pub max_age: Option<u64>,
 }
 
 impl fmt::Debug for AuthorizationRequest {
@@ -37,6 +46,8 @@ impl fmt::Debug for AuthorizationRequest {
                 &self.code_challenge.as_ref().map(|_| "<redacted>"),
             )
             .field("code_challenge_method", &self.code_challenge_method)
+            .field("prompt", &self.prompt)
+            .field("max_age", &self.max_age)
             .finish()
     }
 }
@@ -65,6 +76,14 @@ pub struct ValidatedAuthorizationRequest {
     pub state: String,
     pub nonce: Option<String>,
     pub code_challenge: String,
+    /// Normalized OIDC `prompt` value. `None` means the default prompt policy.
+    pub prompt: Option<String>,
+    pub max_age: Option<u64>,
+    /// Set by the authorization handler when the request requires a fresh
+    /// login. The optional hash identifies the pre-existing session that must
+    /// not satisfy the request by itself.
+    pub reauth_required: bool,
+    pub reauth_session_token_hash: Option<String>,
     pub owner_user_id: Option<UserId>,
     /// 发起该授权请求的浏览器会话令牌 SHA-256 摘要，用于把签发出的授权码绑定到会话。
     ///
@@ -84,6 +103,16 @@ impl fmt::Debug for ValidatedAuthorizationRequest {
             .field("state", &"<redacted>")
             .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
             .field("code_challenge", &"<redacted>")
+            .field("prompt", &self.prompt)
+            .field("max_age", &self.max_age)
+            .field("reauth_required", &self.reauth_required)
+            .field(
+                "reauth_session_token_hash",
+                &self
+                    .reauth_session_token_hash
+                    .as_ref()
+                    .map(|_| "<redacted>"),
+            )
             .field("owner_user_id", &self.owner_user_id)
             .field(
                 "session_token_hash",
@@ -109,10 +138,118 @@ pub enum AuthorizationRequestError {
     StateTooLong,
     #[error("nonce is too long")]
     NonceTooLong,
+    #[error("prompt is invalid")]
+    InvalidPrompt,
+    #[error("prompt=none cannot be combined with another prompt value")]
+    PromptNoneCombined,
+    #[error("max_age is too large")]
+    MaxAgeTooLarge,
     #[error("PKCE S256 is required")]
     PkceRequired,
     #[error("PKCE S256 challenge is invalid")]
     InvalidCodeChallenge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PromptOptions {
+    pub login: bool,
+    pub none: bool,
+    pub consent: bool,
+    pub select_account: bool,
+}
+
+impl PromptOptions {
+    pub fn parse(value: Option<&str>) -> Result<(Self, Option<String>), AuthorizationRequestError> {
+        let Some(value) = value else {
+            return Ok((Self::default(), None));
+        };
+        let mut seen = HashSet::new();
+        let mut options = Self::default();
+        let mut normalized = Vec::new();
+        for token in value.split_whitespace() {
+            if !seen.insert(token) {
+                return Err(AuthorizationRequestError::InvalidPrompt);
+            }
+            match token {
+                "login" => options.login = true,
+                "none" => options.none = true,
+                "consent" => options.consent = true,
+                "select_account" => options.select_account = true,
+                _ => return Err(AuthorizationRequestError::InvalidPrompt),
+            }
+            normalized.push(token);
+        }
+        if normalized.is_empty() {
+            return Err(AuthorizationRequestError::InvalidPrompt);
+        }
+        if options.none && normalized.len() > 1 {
+            return Err(AuthorizationRequestError::PromptNoneCombined);
+        }
+        Ok((options, Some(normalized.join(" "))))
+    }
+
+    pub fn requires_login(self) -> bool {
+        self.login
+    }
+
+    pub fn requires_consent(self) -> bool {
+        self.consent
+    }
+
+    pub fn requires_account_selection(self) -> bool {
+        self.select_account
+    }
+}
+
+/// Returns whether a session's authentication event satisfies `max_age`.
+/// `max_age=0` intentionally never accepts an existing session: it is the
+/// OIDC step-up/re-authentication boundary, even within the same Unix second.
+pub fn authentication_is_fresh(
+    created_at: OffsetDateTime,
+    now: OffsetDateTime,
+    max_age: Option<u64>,
+) -> bool {
+    let Some(max_age) = max_age else {
+        return true;
+    };
+    if max_age == 0 {
+        return false;
+    }
+    let elapsed = now
+        .unix_timestamp()
+        .saturating_sub(created_at.unix_timestamp());
+    elapsed >= 0 && (elapsed as u64) <= max_age
+}
+
+/// Returns whether the current session satisfies a pending re-authentication
+/// requirement and its optional `max_age` bound.
+///
+/// `prompt=login` and `max_age` requests retain the pre-existing session hash
+/// as a fence. A changed hash proves that the login flow issued a different
+/// session; that new session satisfies `max_age=0` even when both sessions were
+/// created in the same Unix second. Positive `max_age` values still require
+/// the new session's authentication event to be within the requested window.
+pub fn reauthentication_is_satisfied(
+    current_session_token_hash: &str,
+    previous_session_token_hash: Option<&str>,
+    created_at: OffsetDateTime,
+    now: OffsetDateTime,
+    max_age: Option<u64>,
+    reauth_required: bool,
+) -> bool {
+    if !reauth_required {
+        return authentication_is_fresh(created_at, now, max_age);
+    }
+    if previous_session_token_hash.is_some_and(|previous| previous == current_session_token_hash) {
+        return false;
+    }
+    if created_at.unix_timestamp() > now.unix_timestamp() {
+        return false;
+    }
+    if max_age == Some(0) {
+        return true;
+    }
+    authentication_is_fresh(created_at, now, max_age)
 }
 
 pub fn validate_authorization_request(
@@ -168,6 +305,10 @@ pub fn validate_authorization_request_with_allowlist(
     {
         return Err(AuthorizationRequestError::NonceTooLong);
     }
+    let (_prompt_options, prompt) = PromptOptions::parse(request.prompt.as_deref())?;
+    if request.max_age.is_some_and(|max_age| max_age > MAX_MAX_AGE) {
+        return Err(AuthorizationRequestError::MaxAgeTooLarge);
+    }
     if request.code_challenge_method.as_deref() != Some("S256") {
         return Err(AuthorizationRequestError::PkceRequired);
     }
@@ -185,6 +326,10 @@ pub fn validate_authorization_request_with_allowlist(
         state,
         nonce,
         code_challenge: code_challenge.to_owned(),
+        prompt,
+        max_age: request.max_age,
+        reauth_required: false,
+        reauth_session_token_hash: None,
         owner_user_id: Some(client.owner_user_id).flatten(),
         // 会话绑定由持有会话的调用方回填，见字段文档。
         session_token_hash: None,
@@ -241,4 +386,86 @@ pub(crate) fn scopes_are_allowed(
             allowed_scopes.iter().any(|allowed| allowed == scope)
                 && client.scopes.iter().any(|registered| registered == scope)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AuthorizationRequestError, PromptOptions, authentication_is_fresh,
+        reauthentication_is_satisfied,
+    };
+    use time::{Duration, OffsetDateTime};
+
+    #[test]
+    fn prompt_parser_accepts_supported_values_and_rejects_duplicates() {
+        let (options, normalized) =
+            PromptOptions::parse(Some("login consent")).expect("supported prompt values");
+        assert!(options.login && options.consent);
+        assert_eq!(normalized.as_deref(), Some("login consent"));
+        assert_eq!(
+            PromptOptions::parse(Some("login login")).expect_err("duplicate prompt"),
+            AuthorizationRequestError::InvalidPrompt
+        );
+    }
+
+    #[test]
+    fn prompt_none_cannot_be_combined_with_interaction() {
+        assert_eq!(
+            PromptOptions::parse(Some("none login")).expect_err("illegal prompt combination"),
+            AuthorizationRequestError::PromptNoneCombined
+        );
+    }
+
+    #[test]
+    fn max_age_zero_always_requires_reauthentication() {
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(100);
+        assert!(!authentication_is_fresh(now, now, Some(0)));
+        assert!(authentication_is_fresh(
+            now - Duration::seconds(30),
+            now,
+            Some(30)
+        ));
+        assert!(!authentication_is_fresh(
+            now - Duration::seconds(31),
+            now,
+            Some(30)
+        ));
+    }
+
+    #[test]
+    fn reauthentication_fence_accepts_a_new_session_for_zero_max_age() {
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(100);
+        assert!(reauthentication_is_satisfied(
+            "new-session",
+            Some("old-session"),
+            now,
+            now,
+            Some(0),
+            true,
+        ));
+        assert!(!reauthentication_is_satisfied(
+            "old-session",
+            Some("old-session"),
+            now,
+            now,
+            Some(0),
+            true,
+        ));
+        assert!(reauthentication_is_satisfied(
+            "new-session",
+            None,
+            now,
+            now,
+            Some(0),
+            true,
+        ));
+        assert!(!reauthentication_is_satisfied(
+            "new-session",
+            Some("old-session"),
+            now + Duration::seconds(1),
+            now,
+            Some(0),
+            true,
+        ));
+    }
 }

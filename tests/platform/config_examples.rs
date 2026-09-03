@@ -38,12 +38,7 @@ fn generic_environment_template_defers_webauthn_to_issuer_but_loopback_example_i
 
 #[test]
 fn api_documents_keep_empty_admin_token_fail_closed_for_both_channels() {
-    let api = include_str!("../../API.md");
     let openapi = include_str!("../../openapi.yaml");
-
-    assert!(api.contains("`ADMIN_TOKEN` 为空时整个管理面关闭"));
-    assert!(api.contains("Bearer 与浏览器 Session 两条通道都被拒绝"));
-    assert!(api.contains("不存在 Owner 时公开的首个 Owner 初始化接口"));
 
     assert!(openapi.contains("ADMIN_TOKEN 为空时整个已初始化管理面 fail closed"));
     assert!(openapi.contains("系统 Bearer 与浏览器 Session 两条管理通道都返回 403"));

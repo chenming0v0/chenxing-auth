@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { PendingAuthorization } from '../api'
 import { installCsrfCookie } from '../test/csrf-cookie'
-import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './oauth'
+import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage, appNameTier } from './oauth'
 import { HISTORY_INDEX } from '../router'
 
 // 确认页的绑定与决策都是走 apiFetch 的状态变更请求，需要 CSRF cookie 才能发出。
@@ -321,5 +321,102 @@ describe('OAuthConsentPage 会话恢复与登录跳转（#270）', () => {
 
     expect(await screen.findByText(/不是在当前浏览器发起的/)).toBeTruthy()
     expect(window.location.pathname).toBe('/oauth/consent')
+  })
+})
+
+/**
+ * #692：长应用名不得撑破窄屏布局，也不得被截断。
+ *
+ * 应用名是用户判断「把账号授权给谁」的直观依据，属安全相关信息：
+ * 用省略号藏掉尾部会让长前缀伪装成可信应用。因此策略是完整渲染 + 允许任意断行
+ * + 按长度降字号档（.oauth-title-app 的 data-length）。
+ */
+describe('appNameTier 按码点长度分字号档（#692）', () => {
+  it('24 码点及以内不降档', () => {
+    expect(appNameTier('示例应用')).toBeUndefined()
+    expect(appNameTier('A'.repeat(24))).toBeUndefined()
+  })
+
+  it('超过 24 码点降到 long 档', () => {
+    expect(appNameTier('A'.repeat(25))).toBe('long')
+    expect(appNameTier('A'.repeat(48))).toBe('long')
+  })
+
+  it('超过 48 码点降到 xlong 档', () => {
+    expect(appNameTier('A'.repeat(49))).toBe('xlong')
+    expect(appNameTier('A'.repeat(128))).toBe('xlong')
+  })
+
+  it('按码点计数：emoji 不被算成两个字符', () => {
+    // 24 个星际 emoji（各 2 个 UTF-16 码元）：按 length 会得到 48 而误判成 long
+    expect(appNameTier('🛰'.repeat(24))).toBeUndefined()
+    expect(appNameTier('🛰'.repeat(25))).toBe('long')
+  })
+
+  it('忽略首尾空白，不让空格把名称顶进更小的档', () => {
+    expect(appNameTier(`   ${'A'.repeat(20)}   `)).toBeUndefined()
+  })
+})
+
+describe('OAuth 确认页长应用名完整渲染且可断行（#692）', () => {
+  const longName = 'super-long-oauth-client-application-name-without-any-space-at-all'
+
+  it('标题里的应用名走 .oauth-title-app，并按长度标出字号档', async () => {
+    window.history.replaceState({}, '', '/oauth/consent?request_id=req-123')
+    vi.stubGlobal('fetch', () => Promise.resolve(jsonResponse({ ...PENDING, client_name: longName })))
+
+    render(<OAuthConsentPage />)
+
+    await screen.findByRole('group', { name: /接入应用身份/ })
+    const titleApp = document.querySelector('.oauth-title-app')
+    expect(titleApp).not.toBeNull()
+    // 完整名称必须在页面上，一个字符都不能少（不截断、不加省略号）
+    expect(titleApp?.textContent).toBe(`「${longName}」`)
+    expect(titleApp?.getAttribute('data-length')).toBe('xlong')
+  })
+
+  it('短应用名不降档，data-length 不出现', async () => {
+    window.history.replaceState({}, '', '/oauth/consent?request_id=req-123')
+    vi.stubGlobal('fetch', () => Promise.resolve(jsonResponse(PENDING)))
+
+    render(<OAuthConsentPage />)
+
+    await screen.findByRole('group', { name: /接入应用身份/ })
+    const titleApp = document.querySelector('.oauth-title-app')
+    expect(titleApp?.textContent).toBe('「示例应用」')
+    expect(titleApp?.hasAttribute('data-length')).toBe(false)
+  })
+
+  it('标题可访问名仍是完整一句，降档只影响字号不改语义', async () => {
+    window.history.replaceState({}, '', '/oauth/consent?request_id=req-123')
+    vi.stubGlobal('fetch', () => Promise.resolve(jsonResponse({ ...PENDING, client_name: longName })))
+
+    render(<OAuthConsentPage />)
+
+    // 按可访问名定位：降档只是 data-length + 字号，不引入额外可读文本或隐藏尾部
+    const heading = await screen.findByRole('heading', { name: new RegExp(longName) })
+    expect(heading.textContent).toBe(`「${longName}」想要访问你的辰星通行证`)
+  })
+})
+
+describe('OAuth 选择账号页的应用名不做截断（#692）', () => {
+  const longName = 'another-extremely-long-client-name-that-never-wraps-on-its-own'
+
+  it('引导语与条款说明都渲染完整应用名，且不套 truncate 类', async () => {
+    window.history.replaceState({}, '', '/oauth/account?request_id=req-123')
+    vi.stubGlobal('fetch', () => Promise.resolve(jsonResponse({ ...PENDING, client_name: longName })))
+
+    render(<OAuthAccountPage />)
+
+    await screen.findByRole('list', { name: '可选账号' })
+    const lead = document.querySelector('.oauth-copy.is-lead')
+    expect(lead?.textContent).toContain(`「${longName}」`)
+    // 正文里的应用名不降字号也不截断：断行由 .oauth-copy 的 overflow-wrap 承担
+    expect(document.querySelector('.oauth-copy.is-lead .oauth-title-app')).toBeNull()
+    expect(lead?.querySelector('.truncate')).toBeNull()
+
+    const legal = document.querySelector('.oauth-copy.is-legal')
+    expect(legal?.textContent).toContain(`「${longName}」`)
+    expect(legal?.querySelector('.truncate')).toBeNull()
   })
 })

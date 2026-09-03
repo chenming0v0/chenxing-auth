@@ -782,6 +782,12 @@ paths:
       tags: [User Auth/Account]
       summary: 发起邮箱变更
       operationId: startEmailChange
+      description: |
+        校验当前密码后创建 10 分钟邮箱变更挑战，并将验证码邮件写入 PostgreSQL
+        email_outbox。邮件 outbox 对 SMTP 外部副作用采用 at-least-once（至少一次）
+        语义：SMTP 调用成功但 `processed_at` 终结写入或事务提交结果不确定时，行会保留
+        待重试状态，恢复后可能再次发送同一封邮件。调用方不得把 202 解读为 SMTP 已
+        完成投递或最多只会收到一封邮件。
       security: [{ sessionCookie: [] }]
       parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
       requestBody:
@@ -790,17 +796,22 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/StartEmailChangeInput' }
       responses:
-        '202': { description: 验证码已可靠排队发送, content: { application/json: { schema: { $ref: '#/components/schemas/EmailChangeStartResponse' } } } }
+        '202': { description: 验证挑战和邮件 outbox 已持久化排队；SMTP 投递仍由后台 worker 异步执行，采用 at-least-once 语义, content: { application/json: { schema: { $ref: '#/components/schemas/EmailChangeStartResponse' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/email-change/confirm:
     post:
       tags: [User Auth/Account]
       summary: 确认邮箱变更
       operationId: confirmEmailChange
+      description: |
+        验证码正确后更新邮箱、撤销全部登录会话，并在同一事务中排队向旧邮箱发送安全告警。
+        安全告警与验证码邮件均采用 at-least-once（至少一次）投递；数据库终结写入结果不
+        确定时，后续重试可能造成重复邮件，目的是避免关键安全通知永久漏发。
       security: [{ sessionCookie: [] }]
       parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
       requestBody:
@@ -814,6 +825,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
   /api/v1/auth/me:
     get:
       tags: [User Auth/Account]
@@ -831,6 +843,9 @@ paths:
       tags: [User Auth/Account]
       summary: 更新当前用户资料
       operationId: updateCurrentUserProfile
+      description: |
+        普通资料修改按低风险写操作处理：Session 与 CSRF 只在请求入口校验，不在资料落库前二次锁定 Session 行。
+        该策略不适用于钱包扣款、兑换或权益授予等资产/权益操作。
       security: [{ sessionCookie: [] }]
       parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
       requestBody:
@@ -991,12 +1006,17 @@ paths:
       operationId: purchasePlan
       description: |
         同一事务内锁定钱包与套餐：active 且 price_points>0 才可购买。
+        扣款和授予套餐前会在用户代际锁下二次复核入口捕获的精确 Session ID、token 摘要、
+        credential generation、绝对/空闲有效期及账号 active 状态；复核失败则事务整体回滚。
+        Session 被撤销、过期或代际变化返回 401 invalid_session；账号被禁用返回 401 user_disabled。
         余额不足返回 400 insufficient_balance；归档或定价为 0 返回 400 plan_not_purchasable。
         购买替换用户当前套餐。one_time 永久有效；monthly 为 now+30 天；yearly 为 now+365 天。
       security:
         - sessionCookie: []
           csrfCookie: []
           csrfHeader: []
+      parameters:
+        - { $ref: '#/components/parameters/WalletPurchaseIdempotencyKey' }
       requestBody:
         required: true
         content:
@@ -1011,6 +1031,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
@@ -1019,6 +1040,10 @@ paths:
       tags: [User Wallet]
       summary: 兑换辰星点兑换卡
       operationId: redeemWalletCode
+      description: |
+        兑换入账和消耗兑换码前会在同一事务二次复核入口捕获的精确 Session 与账号 active 状态。
+        Session 被撤销、过期或代际变化返回 401 invalid_session；账号被禁用返回 401 user_disabled，
+        两种情况都不会入账、增加使用次数或写入成功审计。
       security:
         - sessionCookie: []
           csrfCookie: []
@@ -1048,10 +1073,16 @@ paths:
       tags: [User Wallet]
       summary: 购买授权额度增量包
       operationId: purchaseQuotaAddon
+      description: |
+        扣款和授予增量权益前会在同一事务二次复核入口捕获的精确 Session 与账号 active 状态。
+        Session 被撤销、过期或代际变化返回 401 invalid_session；账号被禁用返回 401 user_disabled，
+        两种情况都整体回滚。
       security:
         - sessionCookie: []
           csrfCookie: []
           csrfHeader: []
+      parameters:
+        - { $ref: '#/components/parameters/WalletPurchaseIdempotencyKey' }
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/PurchaseQuotaAddonInput' } } }
@@ -1060,6 +1091,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
@@ -1467,6 +1499,11 @@ paths:
         个字符的 state 会被回显。注册匹配允许默认端口消除、根斜杠补全和 RFC 8252 loopback 字面 IP
         的动态端口例外；授权码仍绑定请求提交的原始 redirect_uri 文本，Token 兑换必须原样回送。
         Client 或 redirect_uri 不可信时绝不重定向，改用 RFC 6749 JSON 错误信封。
+        OIDC `prompt` 支持 `login`、`none`、`consent`、`select_account`；`none` 不得与其他值组合，
+        重复或未知值返回 `invalid_request`。`prompt=login` 或不满足 `max_age` 时必须完成新的浏览器登录，
+        不会复用原 Session；`prompt=none` 禁止登录/同意 UI，无法静默完成时通过已校验的 redirect_uri
+        返回 `login_required` 或 `consent_required`。`max_age=0` 始终要求重新认证，且这些参数会保留在 pending
+        请求中，跨越登录与授权确认往返后继续生效。
         Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。无记录、空值/无效值、
         数据库读取失败、Runtime Pending/Invalid 或事实无法一致应用，以及请求超时时，统一返回 RFC 6749 JSON 信封的
         503 `temporarily_unavailable`。此时尚无可用的 redirect_uri 上下文做错误重定向，
@@ -1478,10 +1515,12 @@ paths:
         - { name: scope, in: query, required: true, description: "空格分隔的 scope；每个值必须同时属于服务端 OAUTH_CLIENT_ALLOWED_SCOPES allowlist（默认 openid、profile、email）和该 Client 已注册的 scope 集合", schema: { type: string, example: 'openid email profile' } }
         - { name: state, in: query, required: true, description: 最多 512 个字符, schema: { type: string, maxLength: 512 } }
         - { name: nonce, in: query, description: 最多 512 个字符, schema: { type: string, maxLength: 512 } }
+        - { name: prompt, in: query, description: "OIDC 交互策略；空格分隔 login、none、consent、select_account。none 不得与其他值组合；重复或未知值返回 invalid_request。", schema: { type: string, example: login } }
+        - { name: max_age, in: query, description: "要求认证事件距今不超过该秒数；0 始终要求重新认证。", schema: { type: integer, format: int64, minimum: 0, maximum: 9223372036854775807 } }
         - { name: code_challenge, in: query, required: true, schema: { type: string } }
         - { name: code_challenge_method, in: query, required: true, schema: { type: string, enum: [S256] } }
       responses:
-        '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页（跳转到 SPA 登录页或授权确认页时附带授权持有者 HttpOnly Cookie；HTTPS 名称为 __Host-chenxing_authz_holder，本地 HTTP 名称为 chenxing_authz_holder，供后续绑定端点校验；已授权直通到 redirect_uri 的分支不下发） }
+        '302': { description: 重定向到 Client 的 redirect_uri、OIDC login_required/consent_required 错误，或登录/授权确认页（跳转到 SPA 登录页或授权确认页时附带授权持有者 HttpOnly Cookie；HTTPS 名称为 __Host-chenxing_authz_holder，本地 HTTP 名称为 chenxing_authz_holder，供后续绑定端点校验；已授权直通到 redirect_uri 的分支不下发） }
         '400': { $ref: '#/components/responses/OAuthBadRequest' }
         '401': { $ref: '#/components/responses/OAuthUnauthorized' }
         '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
@@ -1495,7 +1534,8 @@ paths:
         与 GET `/oauth/authorize` 行为和安全边界相同。请求体必须使用
         `application/x-www-form-urlencoded`。Client 已加载且 canonical redirect_uri 严格匹配注册值时，
         后续参数校验或依赖错误通过 302 携带 RFC 6749 错误参数返回；不可信回调地址只返回 OAuth JSON 错误。
-        state 仅在非空且不超过 512 个字符时回显。
+        state 仅在非空且不超过 512 个字符时回显。`prompt`、`max_age` 语义与 GET 入口一致，
+        包括 `prompt=none` 的无交互约束和 `max_age=0` 的重新认证要求。
       requestBody:
         required: true
         content:
@@ -1510,6 +1550,8 @@ paths:
                 scope: { type: string, description: "空格分隔的 scope；受服务端 allowlist 和 Client 已注册 scopes 双重约束" }
                 state: { type: string, maxLength: 512 }
                 nonce: { type: string, maxLength: 512 }
+                prompt: { type: string, description: "OIDC 交互策略；空格分隔 login、none、consent、select_account。none 不得与其他值组合；重复或未知值返回 invalid_request。" }
+                max_age: { type: integer, format: int64, minimum: 0, maximum: 9223372036854775807, description: "要求认证事件距今不超过该秒数；0 始终要求重新认证。" }
                 code_challenge: { type: string }
                 code_challenge_method: { type: string, enum: [S256] }
       responses:
@@ -1548,6 +1590,8 @@ paths:
         决策只能在 pending 创建时捕获的 Issuer generation 内完成。
         Issuer 热切换后不会把旧授权意图升级为新 Issuer 的授权码；旧 generation 或缺失
         generation 的请求会被丢弃并返回 400 `authorization_request_expired`。
+        pending 携带 `prompt`/`max_age` 约束；批准时若仍未完成要求的重新认证，返回
+        401 `login_required` 并保留 pending 供登录后继续。
       parameters:
         - { name: request_id, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
@@ -2049,7 +2093,7 @@ paths:
     post:
       tags: [Admin Users]
       summary: 为用户分配套餐
-      description: 基线权限为 manage_users；目标用户为 Owner 时额外要求 manage_roles，且权限检查先于套餐和目标资源查询。
+      description: 分配已有套餐属于用户管理，基线权限为 manage_users；目标用户为 Owner 时额外要求 manage_roles。套餐定义与增量包 CRUD 另需 Owner-only 的 manage_plans，且权限检查先于套餐和目标资源查询。
       operationId: assignPlanToUser
       security:
         - adminBearer: []
@@ -2110,6 +2154,7 @@ paths:
     get:
       tags: [Admin Plans]
       summary: 套餐列表
+      description: Owner 专属，需要 `manage_plans` 权限。
       operationId: listPlans
       security:
         - adminBearer: []
@@ -2126,6 +2171,7 @@ paths:
     post:
       tags: [Admin Plans]
       summary: 创建套餐
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: createPlan
       security:
         - adminBearer: []
@@ -2220,6 +2266,7 @@ paths:
     put:
       tags: [Admin Plans]
       summary: 更新套餐
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: updatePlan
       security:
         - adminBearer: []
@@ -2252,6 +2299,7 @@ paths:
     get:
       tags: [Admin Plans]
       summary: 查询套餐增量包
+      description: Owner 专属，需要 `manage_plans` 权限。
       operationId: listQuotaAddons
       security:
         - adminBearer: []
@@ -2265,6 +2313,7 @@ paths:
     post:
       tags: [Admin Plans]
       summary: 创建套餐增量包
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: createQuotaAddon
       security:
         - adminBearer: []
@@ -2288,6 +2337,7 @@ paths:
     put:
       tags: [Admin Plans]
       summary: 更新套餐增量包
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: updateQuotaAddon
       security:
         - adminBearer: []
@@ -2311,6 +2361,7 @@ paths:
     post:
       tags: [Admin Plans]
       summary: 归档套餐增量包
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: archiveQuotaAddon
       security:
         - adminBearer: []
@@ -2329,6 +2380,7 @@ paths:
     post:
       tags: [Admin Plans]
       summary: 归档套餐
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: archivePlan
       security:
         - adminBearer: []
@@ -2348,6 +2400,7 @@ paths:
     post:
       tags: [Admin Plans]
       summary: 恢复套餐
+      description: Owner 专属，需要 `manage_plans` 权限；浏览器会话还需要 CSRF。
       operationId: restorePlan
       security:
         - adminBearer: []
@@ -2648,6 +2701,7 @@ paths:
     get:
       tags: [Admin Operations]
       summary: 查询注册邮件发件地址
+      description: Owner 专属，需要 `manage_system_settings` 权限。
       operationId: getRegistrationEmailSetting
       security:
         - adminBearer: []
@@ -2664,6 +2718,7 @@ paths:
     put:
       tags: [Admin Operations]
       summary: 更新注册邮件发件地址
+      description: Owner 专属，需要 `manage_system_settings` 权限；浏览器会话还需要 CSRF。
       operationId: updateRegistrationEmailSetting
       security:
         - adminBearer: []
@@ -2692,7 +2747,7 @@ paths:
     get:
       tags: [Admin]
       summary: 获取公开注册设置
-      description: 返回 `registration` 设置键的存储值（双布尔，默认全关）。有效注册状态还取决于 Issuer 就绪，见 GET /api/v1/auth/registration-status。
+      description: Owner 专属，需要 `manage_system_settings` 权限。返回 `registration` 设置键的存储值（双布尔，默认全关）。有效注册状态还取决于 Issuer 就绪，见 GET /api/v1/auth/registration-status。
       operationId: getRegistrationSetting
       security:
         - adminBearer: []
@@ -2715,6 +2770,7 @@ paths:
       tags: [Admin]
       summary: 更新公开注册设置
       description: |
+        Owner 专属，需要 `manage_system_settings` 权限。
         写入与 registration_setting_update 审计在同一事务中提交。
         `enabled=true` 要求 Issuer 已就绪，否则返回 503 `issuer_not_configured`：
         注册出来的账号必须能走完整认证/授权流程，避免「开关打开但注册全部 503」的分裂状态。
@@ -2861,6 +2917,7 @@ paths:
     get:
       tags: [Admin]
       summary: 获取 Passkey / WebAuthn 设置
+      description: Owner 专属，需要 `manage_system_settings` 权限。
       operationId: getPasskeySetting
       security:
         - adminBearer: []
@@ -2882,6 +2939,7 @@ paths:
     put:
       tags: [Admin]
       summary: 更新 Passkey / WebAuthn 设置
+      description: Owner 专属，需要 `manage_system_settings` 权限；浏览器会话还需要 CSRF。
       operationId: updatePasskeySetting
       security:
         - adminBearer: []
@@ -2915,6 +2973,7 @@ paths:
     get:
       tags: [Admin]
       summary: 获取邮箱域名白名单设置
+      description: Owner 专属，需要 `manage_system_settings` 权限。
       operationId: getEmailPolicySetting
       security:
         - adminBearer: []
@@ -2933,6 +2992,7 @@ paths:
     put:
       tags: [Admin]
       summary: 更新邮箱域名白名单设置
+      description: Owner 专属，需要 `manage_system_settings` 权限；浏览器会话还需要 CSRF。
       operationId: updateEmailPolicySetting
       security:
         - adminBearer: []
@@ -2964,6 +3024,7 @@ paths:
     get:
       tags: [Admin]
       summary: 获取 SMTP 设置
+      description: Owner 专属，需要 `manage_system_settings` 权限；password 永不回显。
       operationId: getSmtpSetting
       security:
         - adminBearer: []
@@ -2982,6 +3043,7 @@ paths:
     put:
       tags: [Admin]
       summary: 更新 SMTP 设置
+      description: Owner 专属，需要 `manage_system_settings` 权限；浏览器会话还需要 CSRF。
       operationId: updateSmtpSetting
       security:
         - adminBearer: []
@@ -3013,6 +3075,7 @@ paths:
     get:
       tags: [Admin]
       summary: 获取登录保持时间
+      description: Owner 专属，需要 `manage_system_settings` 权限。
       operationId: getSessionLifetimeSetting
       security:
         - adminBearer: []
@@ -3032,6 +3095,7 @@ paths:
     put:
       tags: [Admin]
       summary: 更新登录保持时间
+      description: Owner 专属，需要 `manage_system_settings` 权限；浏览器会话还需要 CSRF。
       operationId: updateSessionLifetimeSetting
       security:
         - adminBearer: []
@@ -3060,6 +3124,7 @@ paths:
     get:
       tags: [Admin]
       summary: 获取安全限流阈值
+      description: Owner 专属，需要 `manage_authentication_policy` 权限；登录和 MFA 限流属于全局认证安全策略。
       operationId: getSecurityLimitsSetting
       security:
         - adminBearer: []
@@ -3081,6 +3146,7 @@ paths:
     put:
       tags: [Admin]
       summary: 更新安全限流阈值
+      description: Owner 专属，需要 `manage_authentication_policy` 权限；浏览器会话还需要 CSRF。
       operationId: updateSecurityLimitsSetting
       security:
         - adminBearer: []
@@ -3112,6 +3178,7 @@ paths:
     get:
       tags: [Admin OAuth Providers]
       summary: 自定义 OAuth 提供商列表
+      description: Owner 专属，需要 `manage_identity_providers` 权限。
       operationId: listOAuthProviders
       security:
         - adminBearer: []
@@ -3129,7 +3196,7 @@ paths:
       tags: [Admin OAuth Providers]
       summary: 创建自定义 OAuth 提供商
       description: >-
-        提供商一律按 OAuth 2.0 + UserInfo 信任模型接入（trust_model = oauth2_userinfo）：不接受 issuer、
+        Owner 专属，需要 `manage_identity_providers` 权限。提供商一律按 OAuth 2.0 + UserInfo 信任模型接入（trust_model = oauth2_userinfo）：不接受 issuer、
         jwks_uri、允许算法或 nonce 策略配置，服务端也不验证 ID Token。三个远程端点必须使用 HTTPS，IP 字面量和
         连接时 DNS 解析结果都必须是公网可路由地址；IPv6 只放行 2000::/3 全局单播中未被 IANA 特殊用途占用的部分，
         站点本地 fec0::/10、文档与保留前缀以及未分配空间一律拒绝。仅 localhost/回环地址保留本机开发例外。
@@ -3339,7 +3406,7 @@ components:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
     adminBearer: { type: http, scheme: bearer, description: 系统 ADMIN_TOKEN 自动化通道，权限等价于 Owner 且无用户 ID，不需要浏览器 CSRF。ADMIN_TOKEN 为空时整个管理面关闭：Bearer 与 sessionCookie 两条通道都被拒绝，已初始化的管理接口统一返回 403 admin_disabled；唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口 }
     basicClientAuth: { type: http, scheme: basic }
-    sessionCookie: { type: apiKey, in: cookie, name: __Host-chenxing_session, description: HTTPS 浏览器部署使用的 host-only Session Cookie；仅 loopback HTTP 本地开发使用不带前缀的兼容名称。管理接口只有在 ADMIN_TOKEN 非空时才接受此通道；ADMIN_TOKEN 为空时统一返回 403 admin_disabled }
+    sessionCookie: { type: apiKey, in: cookie, name: __Host-chenxing_session, description: HTTPS 浏览器部署使用的 host-only Session Cookie；仅 loopback HTTP 本地开发使用不带前缀的兼容名称。数据库事务型管理写在精确 Session 行锁取得后，以数据库语句时间复核撤销、代际、绝对过期和该 Session 固化的 idle 窗口；锁等待期间失效返回 401 invalid_session，业务副作用及成功审计回滚。管理接口只有在 ADMIN_TOKEN 非空时才接受此通道；ADMIN_TOKEN 为空时统一返回 403 admin_disabled }
     csrfCookie: { type: apiKey, in: cookie, name: __Host-chenxing_csrf, description: 浏览器 Session 写操作必需的 CSRF Cookie（客户端读取后复制到 X-CSRF-Token）；必须与 sessionCookie 和 csrfHeader 同时提交并绑定。HTTP 本地开发使用不带前缀的兼容名称 }
     csrfHeader: { type: apiKey, in: header, name: X-CSRF-Token, description: 管理写操作的浏览器 Session 分支必须同时提交；ADMIN_TOKEN Bearer 分支不需要 }
     chenxingSession: { type: apiKey, in: header, name: X-Chenxing-Session, description: 仅开发兼容配置 OAUTH_SESSION_HEADER_ENABLED=true 时可用；不能替代 pending、Session 绑定、CSRF 或 consent }
@@ -3357,6 +3424,16 @@ components:
         非法键返回 400 invalid_idempotency_key；同键更换操作或请求内容返回 409 idempotency_conflict；
         历史结果引用的 kid 已不可用时返回 503 idempotency_key_unavailable；审计依赖不可用时回滚整个操作并返回 503 audit_unavailable。
         服务端只保存 SHA-256 摘要，不保存原始键或明文 Secret。
+      schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]{1,128}$' }
+    WalletPurchaseIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        一次逻辑钱包购买必须生成并保留同一个 1..128 字节可见 ASCII 键，直到收到成功响应。
+        24 小时内同一用户、同一键和同一请求只会扣款/授予一次，重试返回已提交的原结果。
+        同键更换购买类型或请求内容返回 409 idempotency_key_conflict；缺失或非法键返回 400。
+        服务端只保存 SHA-256 摘要，不保存原始键。
       schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]{1,128}$' }
     Page: { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
     PageSize: { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
@@ -3506,6 +3583,8 @@ components:
         scope: { type: string, description: 空格分隔的 OAuth scope }
         state: { type: string, maxLength: 512 }
         nonce: { type: string, maxLength: 512 }
+        prompt: { type: string, description: "OIDC 交互策略；空格分隔 login、none、consent、select_account。none 不得与其他值组合；重复或未知值返回 invalid_request。" }
+        max_age: { type: integer, format: int64, minimum: 0, maximum: 9223372036854775807, description: "要求认证事件距今不超过该秒数；0 始终要求重新认证。" }
         code_challenge: { type: string }
         code_challenge_method: { type: string, enum: [S256] }
     PendingLoginResponse:
@@ -3919,6 +3998,7 @@ components:
         - response_types_supported
         - subject_types_supported
         - id_token_signing_alg_values_supported
+        - prompt_values_supported
         - token_endpoint_auth_methods_supported
         - revocation_endpoint_auth_methods_supported
       properties:
@@ -3931,6 +4011,10 @@ components:
         response_types_supported: { type: array, items: { type: string } }
         subject_types_supported: { type: array, items: { type: string } }
         id_token_signing_alg_values_supported: { type: array, items: { type: string } }
+        prompt_values_supported:
+          type: array
+          items: { type: string, enum: [login, none, consent, select_account] }
+          description: "授权端点支持的 OIDC prompt 值"
         scopes_supported: { type: array, items: { type: string } }
         claims_supported:
           type: array
@@ -3984,10 +4068,12 @@ components:
         permissions:
           type: array
           description: |
-            当前调用者的权限名。`manage_auth_factors` 与 `rotate_keys` 仅 Owner 拥有。
+            当前调用者的权限名。`manage_system_settings`、`manage_authentication_policy`、
+            `manage_identity_providers`、`manage_issuer`、`manage_plans`、`manage_auth_factors` 与 `rotate_keys`
+            仅 Owner 拥有；`manage_settings` 保留给邀请码和钱包兑换码等运营设置。
           items:
             type: string
-            enum: [manage_users, manage_clients, rotate_keys, read_audit, manage_settings, manage_identity_providers, manage_roles, manage_auth_factors]
+            enum: [manage_users, manage_clients, rotate_keys, read_audit, manage_settings, manage_system_settings, manage_authentication_policy, manage_plans, manage_identity_providers, manage_issuer, manage_roles, manage_auth_factors]
         status: { type: string }
     TotpFactorStatus:
       type: object

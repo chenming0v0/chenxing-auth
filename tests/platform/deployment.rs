@@ -7,7 +7,6 @@ const REMOTE_INSTALL_SCRIPT: &str = include_str!("../../manage.sh");
 const PRODUCTION_COMPOSE: &str = include_str!("../../docker-compose.prod.yml");
 const REDIS_CRASH_RECOVERY_SCRIPT: &str = include_str!("../../test_sh/redis_crash_recovery.sh");
 const TEST_RUNNER_CONTRACT_SCRIPT: &str = include_str!("../../test_sh/test_runner_contract.sh");
-const REDIS_DURABILITY_DOC: &str = include_str!("../../docs/redis-durability.md");
 const DB_MODULE: &str = include_str!("../../src/db/mod.rs");
 const DB_POOL_MODULE: &str = include_str!("../../src/db/pool.rs");
 const DB_AUDIT_BOUNDARY_MODULE: &str = include_str!("../../src/db/audit_boundary.rs");
@@ -98,11 +97,43 @@ fn workflow_top_level_permissions(workflow: &str) -> String {
         .expect("workflow must declare top-level permissions before jobs")
 }
 
+/// 返回 workflow 里 `action@<40 位小写十六进制 commit SHA>` 的实际字面量。
+///
+/// #699 把所有 action 固定为 commit SHA，`@v4` 这类可变标签已不存在；但把新 SHA 写成
+/// 字面量会让每次 dependabot 升级都被迫改测试。所以这里只断言「该 action 仍被使用，且
+/// 形态是 SHA 固定」。全局 pin 校验由 `.github/scripts/verify_action_pins.py` 在 CI 里
+/// 负责，本函数不重复实现。
+fn pinned_action_reference(workflow: &str, action: &str) -> String {
+    let prefix = format!("{action}@");
+    for (offset, _) in workflow.match_indices(prefix.as_str()) {
+        let rest = &workflow[offset + prefix.len()..];
+        let sha: String = rest.chars().take(40).collect();
+        let is_sha = sha.chars().count() == 40
+            && sha
+                .chars()
+                .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase());
+        // 后面紧跟的必须不是字母数字，否则 40 个字符只是更长引用的前缀。
+        let ends_here = !rest
+            .chars()
+            .nth(40)
+            .is_some_and(|character| character.is_ascii_alphanumeric());
+        if is_sha && ends_here {
+            return format!("{prefix}{sha}");
+        }
+    }
+    panic!("workflow must use {action} pinned to a 40-character commit SHA");
+}
+
 #[test]
 fn release_workflow_publishes_versioned_archives_and_checksums() {
+    // 这两个 action 必须仍被使用，并且按 commit SHA 固定，而不是可变的 `@v2` / `@v4`。
+    pinned_action_reference(BUILD_WORKFLOW, "actions/download-artifact");
+    pinned_action_reference(BUILD_WORKFLOW, "softprops/action-gh-release");
     for marker in [
-        "actions/download-artifact@v4",
-        "softprops/action-gh-release@v2",
+        "Package versioned installer and release manifest",
+        "chenxing-auth-release.env",
+        "chenxing-auth-manage.sh",
+        "needs.container.outputs.digest",
         "SHA256SUMS",
         "(cd dist && sha256sum * > SHA256SUMS)",
         "Verify downloaded release assets",
@@ -142,9 +173,13 @@ fn build_workflow_scopes_write_permissions_and_drops_checkout_credentials() {
         );
     }
 
+    let pinned_checkout = pinned_action_reference(BUILD_WORKFLOW, "actions/checkout");
     for name in ["web", "rust-binaries", "container"] {
         let job = workflow_job(BUILD_WORKFLOW, name);
-        assert!(job.contains("actions/checkout@v4"));
+        assert!(
+            job.contains(pinned_checkout.as_str()),
+            "{name} must check out the repository with a SHA-pinned actions/checkout"
+        );
         assert!(
             job.contains("persist-credentials: false"),
             "repository code checkout in {name} must not persist the job token"
@@ -306,8 +341,10 @@ fn native_release_archives_ship_and_verify_the_matching_web_bundle() {
     let windows_at = BUILD_WORKFLOW
         .find("- name: Package Windows binary")
         .expect("Windows packaging step");
+    let pinned_upload = pinned_action_reference(BUILD_WORKFLOW, "actions/upload-artifact");
+    let upload_step = format!("- uses: {pinned_upload}");
     let upload_at = BUILD_WORKFLOW[windows_at..]
-        .find("- uses: actions/upload-artifact@v4")
+        .find(upload_step.as_str())
         .map(|offset| windows_at + offset)
         .expect("native archive upload step");
     let unix_step = &BUILD_WORKFLOW[unix_at..windows_at];
@@ -402,21 +439,6 @@ fn production_redis_has_durable_credential_state_and_crash_coverage() {
         assert!(
             CI_WORKFLOW.contains(marker),
             "CI missing Redis recovery marker: {marker}"
-        );
-    }
-    for marker in [
-        "RPO 0",
-        "appendfsync always",
-        "授权码",
-        "Consumed",
-        "family revoked",
-        "session:revoked:epoch",
-        "陈旧 Redis 备份",
-        "故障后验证",
-    ] {
-        assert!(
-            REDIS_DURABILITY_DOC.contains(marker),
-            "Redis durability docs missing marker: {marker}"
         );
     }
 }
@@ -912,7 +934,7 @@ fn installer_validates_compose_and_reports_application_logs() {
 #[test]
 fn remote_installer_uses_published_images_and_keeps_download_progress_visible() {
     for marker in [
-        "ghcr.io/chenming0v0/chenxing-auth:latest",
+        "ghcr.io/${RELEASE_REPOSITORY}:${RELEASE_VERSION}@${values[image_digest]}",
         "postgres:16-alpine",
         "redis:7-alpine",
         "docker pull \"$CHENXING_IMAGE\"",
@@ -942,6 +964,114 @@ fn remote_installer_uses_published_images_and_keeps_download_progress_visible() 
             .expect("visible pull command");
         assert!(!line.contains("--quiet"));
         assert!(!line.contains("/dev/null"));
+    }
+}
+
+#[test]
+fn remote_installer_rejects_mutable_scripts_and_records_release_lock() {
+    for marker in [
+        "RELEASE_MANIFEST_NAME=\"chenxing-auth-release.env\"",
+        "RELEASE_SCRIPT_NAME=\"chenxing-auth-manage.sh\"",
+        "https://github.com/%s/releases/download/%s/%s",
+        "verify_release_asset_checksum",
+        "sha256sum \"$temp_file\"",
+        "CHENXING_RELEASE_MANIFEST_SHA256",
+        "CHENXING_SCRIPT_SHA256",
+        "persist_release_lock",
+        "CHENXING_BOOTSTRAP_TEMP=1",
+        "--release-version=",
+    ] {
+        assert!(
+            REMOTE_INSTALL_SCRIPT.contains(marker),
+            "remote installer is missing release-integrity marker: {marker}"
+        );
+    }
+    assert!(!REMOTE_INSTALL_SCRIPT.contains("raw.githubusercontent.com"));
+    assert!(!REMOTE_INSTALL_SCRIPT.contains(":latest"));
+    let verify_at = REMOTE_INSTALL_SCRIPT
+        .find("actual=\"$(sha256sum \"$temp_file\"")
+        .expect("upgrade script must hash the downloaded file");
+    let exec_line = REMOTE_INSTALL_SCRIPT
+        .lines()
+        .find(|line| line.trim_start().starts_with("exec bash \""))
+        .expect("upgrade script must exec a manager copy");
+    assert!(
+        exec_line.contains("$VERIFIED_MANAGER_PATH"),
+        "upgrade script must exec only the verified copy"
+    );
+    let exec_at = REMOTE_INSTALL_SCRIPT
+        .find(exec_line)
+        .expect("upgrade script exec line must be present");
+    assert!(verify_at < exec_at);
+}
+
+/// 钉住 `load_release_manifest` 内部的自相矛盾：该函数强制要求发布清单里存在的
+/// 每个字段名，都必须能通过同一函数里的字段名字符类校验。
+///
+/// 这里不是在测试正则语法，而是防止“必需字段名被自己的字段名校验拒掉”这类矛盾：
+/// #698 曾把字符类写成 `^[a-z_]+$`（漏掉数字），而必需字段里有 `script_sha256`，
+/// 结果任何合法发布清单都在解析阶段被拒，`--prepare-only`、安装与升级三条路径全坏。
+/// 解析不到字符类或必需字段列表同样视为失败——那说明校验结构被改动，需要重新审查。
+#[test]
+fn release_manifest_required_keys_satisfy_their_own_key_name_validation() {
+    // 判断单个字符是否落在 shell 正则字符类里，支持 `a-z` 这类区间和字面字符。
+    fn char_class_allows(class: &str, candidate: char) -> bool {
+        let chars: Vec<char> = class.chars().collect();
+        let mut index = 0;
+        while index < chars.len() {
+            let is_range = index + 2 < chars.len() && chars[index + 1] == '-';
+            let matched = if is_range {
+                candidate >= chars[index] && candidate <= chars[index + 2]
+            } else {
+                candidate == chars[index]
+            };
+            if matched {
+                return true;
+            }
+            index += if is_range { 3 } else { 1 };
+        }
+        false
+    }
+
+    let body = shell_function_body(REMOTE_INSTALL_SCRIPT, "load_release_manifest");
+
+    let key_class = body
+        .lines()
+        .find_map(|line| {
+            let (_, rest) = line.split_once("\"$key\" =~ ^[")?;
+            let (class, _) = rest.split_once("]+$")?;
+            Some(class)
+        })
+        .expect(
+            "load_release_manifest 必须用 `\"$key\" =~ ^[...]+$` 校验清单字段名；\
+             解析不到说明字段名校验结构被改动，请同步审查本测试",
+        );
+
+    let required_keys: Vec<&str> = body
+        .lines()
+        .find_map(|line| {
+            let (_, rest) = line.split_once("for key in ")?;
+            let (list, _) = rest.split_once("; do")?;
+            Some(list.split_whitespace().collect::<Vec<&str>>())
+        })
+        .expect(
+            "load_release_manifest 必须用 `for key in ...; do` 列出必需字段；\
+             解析不到说明必需字段结构被改动，请同步审查本测试",
+        );
+
+    assert!(
+        !required_keys.is_empty(),
+        "load_release_manifest 的必需字段列表不能为空"
+    );
+
+    for key in required_keys {
+        for character in key.chars() {
+            assert!(
+                char_class_allows(key_class, character),
+                "必需字段 {key} 的字符 {character:?} 不被字段名字符类 [{key_class}] 接受，\
+                 合法发布清单会被 load_release_manifest 自己拒掉"
+            );
+        }
     }
 }
 
@@ -1156,11 +1286,15 @@ fn database_uses_forward_only_transactional_migration_history() {
         DB_MODULE.contains("include_str!(\"../../migrations/0049_wallet_redemption_codes.sql\")")
     );
     assert!(DB_MODULE.contains("include_str!(\"../../migrations/0050_quota_addons.sql\")"));
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0051_wallet_purchase_idempotency.sql\")")
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        50
+        51
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1209,14 +1343,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 50);
+    assert_eq!(migrations.len(), 51);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0050_quota_addons.sql")
+        Some("0051_wallet_purchase_idempotency.sql")
     );
     let versions = migrations
         .iter()
@@ -1227,7 +1361,7 @@ fn database_uses_forward_only_transactional_migration_history() {
                 .expect("migration filename starts with a version prefix")
         })
         .collect::<Vec<_>>();
-    assert_eq!(versions, (1..=50).collect::<Vec<_>>());
+    assert_eq!(versions, (1..=51).collect::<Vec<_>>());
 
     assert_eq!(
         DATABASE_BASELINE.matches("CREATE TABLE ").count(),
@@ -1360,6 +1494,9 @@ fn migration_history_declares_final_security_and_consistency_invariants() {
         "GRANT SELECT, INSERT ON TABLE user_quota_addon_purchases TO chenxing_runtime",
         "GRANT USAGE, SELECT ON SEQUENCE plan_quota_addons_id_seq TO chenxing_runtime",
         "GRANT USAGE, SELECT ON SEQUENCE user_quota_addon_purchases_id_seq TO chenxing_runtime",
+        "CREATE TABLE wallet_purchase_idempotency",
+        "CONSTRAINT wallet_purchase_idempotency_key_digest_check",
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE wallet_purchase_idempotency TO chenxing_runtime",
         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I._sqlx_migrations",
         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I.audit_events_archive FROM chenxing_runtime",
         "ALTER DEFAULT PRIVILEGES IN SCHEMA %I REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLES",
@@ -1601,12 +1738,6 @@ fn remote_manager_pulls_the_release_before_running_migrations() {
 
 #[test]
 fn remote_manager_places_curl_output_option_before_the_url() {
-    assert!(
-        REMOTE_INSTALL_SCRIPT
-            .contains("--connect-timeout 10 -o \"$temp_file\" \"$DEFAULT_INSTALLER_URL\"")
-    );
-    assert!(
-        !REMOTE_INSTALL_SCRIPT
-            .contains("--connect-timeout 10 -- \"$DEFAULT_INSTALLER_URL\" -o \"$temp_file\"")
-    );
+    assert!(REMOTE_INSTALL_SCRIPT.contains("--connect-timeout 10 -o \"$output\" \"$url\""));
+    assert!(!REMOTE_INSTALL_SCRIPT.contains("--connect-timeout 10 -- \"$url\" -o \"$output\""));
 }

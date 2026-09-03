@@ -159,6 +159,17 @@ impl Deref for SessionWrite {
     }
 }
 
+impl SessionWrite {
+    /// Build the exact Session proof used by high-risk user mutations.
+    ///
+    /// PostgreSQL-backed Sessions always carry an id and issuance generation.
+    /// Missing metadata is rejected by callers rather than silently falling
+    /// back to a user-id-only authorization check.
+    pub(crate) fn user_session_credential(&self) -> Option<crate::users::UserSessionCredential> {
+        crate::users::UserSessionCredential::from_session(self.user_id, &self.session)
+    }
+}
+
 impl<S> FromRequestParts<S> for SessionRead
 where
     AppState: FromRef<S>,

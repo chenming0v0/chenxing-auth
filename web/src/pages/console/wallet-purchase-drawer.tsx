@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
-import { apiFetch, type CatalogPlan, type WalletPurchaseResult } from '../../api'
+import { useEffect, useRef, useState } from 'react'
+import { apiFetch, invalidateEntitlements, type CatalogPlan, type WalletPurchaseResult } from '../../api'
 import { Drawer } from '@chenxing/ui'
 import { Badge, Button, Chip, HudPanel, Notice } from '@chenxing/ui'
+import { newIdempotencyKey } from './developer-shared'
 import { useMutationLock } from '../../use-mutation-lock'
 
 const BILLING_LABEL: Record<string, string> = {
@@ -24,6 +25,7 @@ export function WalletPurchaseDrawer({ onClose, onPurchased }: {
 }) {
   const [plans, setPlans] = useState<CatalogPlan[] | null>(null)
   const [error, setError] = useState('')
+  const purchaseIdempotencyRef = useRef<{ planId: number; key: string } | null>(null)
   const { busy, run } = useMutationLock()
 
   useEffect(() => {
@@ -41,11 +43,22 @@ export function WalletPurchaseDrawer({ onClose, onPurchased }: {
     if (!window.confirm(`确认用 ${formatPoints(plan.price_points)} 辰星点购买「${plan.name}」？`)) return
     setError('')
     await run(async () => {
+      const pending = purchaseIdempotencyRef.current
+      const key = pending?.planId === plan.id ? pending.key : newIdempotencyKey()
+      purchaseIdempotencyRef.current = { planId: plan.id, key }
       try {
         await apiFetch<WalletPurchaseResult>('/api/v1/auth/wallet/purchase', {
           method: 'POST',
+          headers: { 'Idempotency-Key': key },
           body: JSON.stringify({ plan_id: plan.id }),
         })
+        purchaseIdempotencyRef.current = null
+        /* 套餐变了，共享的权益缓存立刻不可信（#687）。必须在 onPurchased() 之前失效：
+           父级回调会触发钱包页重新拉取，也可能让其他页面重新读取权益，
+           顺序反了它们仍会命中购买前的缓存。
+           这里覆盖重放：同一 Idempotency-Key 重试也走 200 成功分支（#701 返回已提交结果），
+           与首次提交同样抵达此处。 */
+        invalidateEntitlements()
         onPurchased()
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : '购买失败。')
