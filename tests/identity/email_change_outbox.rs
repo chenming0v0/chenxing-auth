@@ -122,7 +122,7 @@ impl EmailSender for BlockingSender {
         };
         Box::pin(async move {
             if let Some(database) = database {
-                chenxing_auth::sqlx::query_scalar::<_, i64>("SELECT 1")
+                chenxing_auth::sqlx::query_scalar::<_, i32>("SELECT 1")
                     .fetch_one(&database)
                     .await
                     .map_err(|_| chenxing_auth::notifications::EmailSendError::Delivery)?;
