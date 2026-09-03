@@ -199,7 +199,9 @@ fn wallet_audit(user_id: i64, action: AuditAction, resource_type: &str) -> Audit
 }
 
 async fn wait_for_database_block(database: &chenxing_auth::sqlx::PgPool, blocker_pid: i32) {
-    timeout(StdDuration::from_secs(5), async {
+    // CI runners can spend several seconds in the request's password/session
+    // validation before PostgreSQL observes the resource lock.
+    timeout(StdDuration::from_secs(15), async {
         loop {
             let blocked: bool = chenxing_auth::sqlx::query_scalar(
                 "SELECT EXISTS (
