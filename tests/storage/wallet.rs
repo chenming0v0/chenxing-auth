@@ -6,6 +6,7 @@ use chenxing_auth::{
     audit::{AuditAction, AuditEvent},
     clients::idempotency::IdempotencyKey,
     plans::addons::{QuotaAddonError, QuotaAddonPurchaseInput},
+    sqlx::{Connection, PgConnection},
     users::UserSessionCredential,
     wallet::{
         domain::PurchaseInput, idempotency::WalletIdempotencyContext,
@@ -198,9 +199,18 @@ fn wallet_audit(user_id: i64, action: AuditAction, resource_type: &str) -> Audit
     )
 }
 
-async fn wait_for_database_block(database: &chenxing_auth::sqlx::PgPool, blocker_pid: i32) {
+async fn wait_for_database_block(blocker_pid: i32) {
     // CI runners can spend several seconds in the request's password/session
     // validation before PostgreSQL observes the resource lock.
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    // The isolated test pool has two connections: one is held by the blocker
+    // transaction and the other must remain available to the wallet request.
+    // Observe PostgreSQL from a separate connection so the probe cannot starve
+    // the request it is waiting for.
+    let mut observer = PgConnection::connect(&database_url)
+        .await
+        .expect("connect PostgreSQL lock observer");
     timeout(StdDuration::from_secs(15), async {
         loop {
             let blocked: bool = chenxing_auth::sqlx::query_scalar(
@@ -211,7 +221,7 @@ async fn wait_for_database_block(database: &chenxing_auth::sqlx::PgPool, blocker
                  )",
             )
             .bind(blocker_pid)
-            .fetch_one(database)
+            .fetch_one(&mut observer)
             .await
             .expect("inspect PostgreSQL lock wait");
             if blocked {
@@ -779,7 +789,7 @@ async fn revoked_session_proof_is_rejected_by_every_wallet_side_effect_boundary(
             )
             .await
     });
-    wait_for_database_block(&env.database, blocker_pid).await;
+    wait_for_database_block(blocker_pid).await;
     env.state
         .sessions
         .revoke(&session.token)
@@ -943,7 +953,7 @@ async fn session_expiry_while_waiting_for_plan_lock_prevents_purchase() {
             )
             .await
     });
-    wait_for_database_block(&env.database, blocker_pid).await;
+    wait_for_database_block(blocker_pid).await;
     sleep(StdDuration::from_secs(3)).await;
     plan_lock
         .commit()
