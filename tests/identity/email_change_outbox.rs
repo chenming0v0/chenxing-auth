@@ -509,9 +509,12 @@ async fn single_connection_remains_available_during_smtp_delivery() {
     let second = tokio::spawn(async move {
         start_request(&second_router, &second_cookie, "locked-second@example.com").await
     });
-    let second_response = tokio::time::timeout(std::time::Duration::from_secs(1), second)
+    // Reauthentication and hashing are deliberately expensive. Keep this
+    // deadline long enough for instrumented CI while the first 1s probe above
+    // still detects a connection held during SMTP.
+    let second_response = tokio::time::timeout(std::time::Duration::from_secs(15), second)
         .await
-        .expect("a new challenge must not wait for SMTP delivery")
+        .expect("a new challenge must complete while SMTP delivery is blocked")
         .expect("second request join");
     assert_eq!(second_response.status(), StatusCode::ACCEPTED);
 
