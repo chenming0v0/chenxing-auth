@@ -748,7 +748,9 @@ async fn concurrent_purchases_cannot_drive_balance_negative() {
 /// entitlement mutation after the exact Session row has been revoked.
 #[tokio::test]
 async fn revoked_session_proof_is_rejected_by_every_wallet_side_effect_boundary() {
-    let env = test_state().await;
+    // This scenario keeps the blocker and blocked purchase alive while revoke
+    // opens its own transaction, so the test needs one extra pool connection.
+    let env = support::test_state_with_max_connections(3).await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
