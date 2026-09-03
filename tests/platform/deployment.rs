@@ -992,7 +992,7 @@ fn remote_installer_rejects_mutable_scripts_and_records_release_lock() {
         .find("actual=\"$(sha256sum \"$temp_file\"")
         .expect("upgrade script must hash the downloaded file");
     let exec_at = REMOTE_INSTALL_SCRIPT
-        .find("exec bash \"$latest_manager\"")
+        .find("exec bash \"$VERIFIED_MANAGER_PATH\"")
         .expect("upgrade script must exec only the verified copy");
     assert!(verify_at < exec_at);
 }
