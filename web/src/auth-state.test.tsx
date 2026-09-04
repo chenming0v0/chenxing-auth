@@ -347,3 +347,153 @@ describe('refresh request ordering (#473)', () => {
     expect(entitlementCalls).toBe(2)
   })
 })
+
+/**
+ * 认证事件同时经 BroadcastChannel 和 localStorage 发布，支持两者的标签页会收到两份。
+ * 这里用可控的假 BroadcastChannel 精确复现「同一 nonce 双通道交付」，不依赖 jsdom
+ * 是否自带 BroadcastChannel 实现（#689）。
+ */
+type AuthSyncMessage = { type: 'login' | 'logout'; nonce: string; occurredAt: number }
+type MessageListener = (event: MessageEvent<AuthSyncMessage>) => void
+
+type FakeChannel = {
+  /** AuthProvider 通过该通道发出的事件，按发出顺序。 */
+  posted: AuthSyncMessage[]
+  /** 模拟其他标签页的 BroadcastChannel 消息到达本标签。 */
+  deliver: (data: AuthSyncMessage) => void
+}
+
+function installFakeBroadcastChannel(): FakeChannel[] {
+  const channels: FakeChannel[] = []
+  class StubBroadcastChannel {
+    listeners: MessageListener[] = []
+    posted: AuthSyncMessage[] = []
+    name: string
+    constructor(name: string) {
+      this.name = name
+      channels.push({
+        posted: this.posted,
+        deliver: (data) => {
+          for (const listener of [...this.listeners]) listener({ data } as MessageEvent<AuthSyncMessage>)
+        },
+      })
+    }
+    addEventListener(type: string, listener: MessageListener) {
+      if (type === 'message') this.listeners.push(listener)
+    }
+    removeEventListener(type: string, listener: MessageListener) {
+      if (type === 'message') this.listeners = this.listeners.filter((entry) => entry !== listener)
+    }
+    postMessage(data: AuthSyncMessage) { this.posted.push(data) }
+    close() { this.listeners = [] }
+  }
+  vi.stubGlobal('BroadcastChannel', StubBroadcastChannel)
+  return channels
+}
+
+describe('cross-tab auth event delivery (#689)', () => {
+  function stubAuthNetwork(onMe: () => Promise<Response>) {
+    vi.stubGlobal('fetch', vi.fn((path: string, init?: RequestInit) => {
+      if (path === '/api/v1/auth/session' && String(init?.method).toUpperCase() === 'DELETE') {
+        return Promise.resolve(emptyResponse(204))
+      }
+      if (path === '/api/v1/auth/me') return onMe()
+      throw new Error(`unexpected request: ${path}`)
+    }))
+  }
+
+  async function deliverOverBothChannels(channel: FakeChannel, event: AuthSyncMessage) {
+    await act(async () => {
+      channel.deliver(event)
+    })
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: 'chenxing-auth-sync-event',
+        newValue: JSON.stringify(event),
+      }))
+    })
+  }
+
+  it('refreshes only once when one remote login arrives over both channels', async () => {
+    const channels = installFakeBroadcastChannel()
+    let profileCalls = 0
+    stubAuthNetwork(() => {
+      profileCalls += 1
+      return Promise.resolve(profileCalls === 1
+        ? jsonResponse({ code: 'unauthorized' }, 401)
+        : jsonResponse(ownerProfile()))
+    })
+
+    render(<AuthProvider><AuthStateProbe /></AuthProvider>)
+    await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('unauthenticated'))
+    expect(channels).toHaveLength(1)
+
+    await deliverOverBothChannels(channels[0]!, {
+      type: 'login',
+      nonce: 'dual-delivery-login',
+      occurredAt: Date.now() + 1_000,
+    })
+
+    await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('authenticated'))
+    // 初次 /auth/me（401）+ 远端登录触发的一次 refresh。第二条通道不得再打一次。
+    expect(profileCalls).toBe(2)
+  })
+
+  it('clears local state only once when one remote logout arrives over both channels', async () => {
+    const channels = installFakeBroadcastChannel()
+    stubAuthNetwork(() => Promise.resolve(jsonResponse(ownerProfile())))
+
+    render(<AuthProvider><AuthStateProbe /></AuthProvider>)
+    await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('authenticated'))
+    const generationBefore = Number(screen.getByLabelText('认证代数').textContent)
+
+    await deliverOverBothChannels(channels[0]!, {
+      type: 'logout',
+      nonce: 'dual-delivery-logout',
+      occurredAt: Date.now() + 1_000,
+    })
+
+    expect(screen.getByLabelText('认证状态').textContent).toBe('unauthenticated')
+    expect(Number(screen.getByLabelText('认证代数').textContent)).toBe(generationBefore + 1)
+  })
+
+  it('still processes two distinct events that share one occurredAt timestamp', async () => {
+    const channels = installFakeBroadcastChannel()
+    stubAuthNetwork(() => Promise.resolve(jsonResponse(ownerProfile())))
+
+    render(<AuthProvider><AuthStateProbe /></AuthProvider>)
+    await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('authenticated'))
+    const generationBefore = Number(screen.getByLabelText('认证代数').textContent)
+
+    const occurredAt = Date.now() + 1_000
+    await act(async () => { channels[0]!.deliver({ type: 'logout', nonce: 'same-ms-a', occurredAt }) })
+    await act(async () => { channels[0]!.deliver({ type: 'logout', nonce: 'same-ms-b', occurredAt }) })
+
+    // nonce 不同即两个真实事件，时间戳相等不能把它们折叠成一个。
+    expect(Number(screen.getByLabelText('认证代数').textContent)).toBe(generationBefore + 2)
+  })
+
+  it('ignores its own broadcast echoed back through either channel', async () => {
+    const channels = installFakeBroadcastChannel()
+    let profileCalls = 0
+    stubAuthNetwork(() => {
+      profileCalls += 1
+      return Promise.resolve(jsonResponse(ownerProfile()))
+    })
+
+    render(<AuthProvider><AuthStateProbe /></AuthProvider>)
+    await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('authenticated'))
+
+    fireEvent.click(screen.getByRole('button', { name: '退出登录' }))
+    await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('unauthenticated'))
+    const ownLogout = channels[0]!.posted.at(-1)
+    expect(ownLogout?.type).toBe('logout')
+    const generationAfterLogout = Number(screen.getByLabelText('认证代数').textContent)
+    const profileCallsAfterLogout = profileCalls
+
+    await deliverOverBothChannels(channels[0]!, ownLogout!)
+
+    expect(Number(screen.getByLabelText('认证代数').textContent)).toBe(generationAfterLogout)
+    expect(profileCalls).toBe(profileCallsAfterLogout)
+  })
+})
