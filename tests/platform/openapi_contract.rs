@@ -642,6 +642,15 @@ async fn discovery_auth_methods_match_token_and_revocation_contracts() {
     let expected = serde_json::json!(["client_secret_basic", "client_secret_post", "none"]);
     assert_eq!(body["token_endpoint_auth_methods_supported"], expected);
     assert_eq!(body["revocation_endpoint_auth_methods_supported"], expected);
+    assert_eq!(
+        body["grant_types_supported"],
+        serde_json::json!(["authorization_code", "refresh_token"])
+    );
+    assert_eq!(
+        body["response_modes_supported"],
+        serde_json::json!(["query"])
+    );
+    assert_eq!(body["request_uri_parameter_supported"], false);
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

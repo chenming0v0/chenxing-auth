@@ -347,6 +347,15 @@ async fn openid_configuration_publishes_standard_endpoints() {
         configuration["prompt_values_supported"],
         serde_json::json!(["login", "none", "consent", "select_account"])
     );
+    assert_eq!(
+        configuration["grant_types_supported"],
+        serde_json::json!(["authorization_code", "refresh_token"])
+    );
+    assert_eq!(
+        configuration["response_modes_supported"],
+        serde_json::json!(["query"])
+    );
+    assert_eq!(configuration["request_uri_parameter_supported"], false);
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

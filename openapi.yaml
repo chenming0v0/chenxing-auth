@@ -3996,6 +3996,9 @@ components:
         - userinfo_endpoint
         - jwks_uri
         - response_types_supported
+        - grant_types_supported
+        - response_modes_supported
+        - request_uri_parameter_supported
         - subject_types_supported
         - id_token_signing_alg_values_supported
         - prompt_values_supported
@@ -4009,6 +4012,17 @@ components:
         revocation_endpoint: { type: string, format: uri }
         jwks_uri: { type: string, format: uri }
         response_types_supported: { type: array, items: { type: string } }
+        grant_types_supported:
+          type: array
+          items: { type: string, enum: [authorization_code, refresh_token] }
+          description: "实际支持的 OAuth Grant 类型"
+        response_modes_supported:
+          type: array
+          items: { type: string, enum: [query] }
+          description: "授权响应模式；仅支持 query"
+        request_uri_parameter_supported:
+          type: boolean
+          description: "是否支持 request_uri 参数；当前为 false"
         subject_types_supported: { type: array, items: { type: string } }
         id_token_signing_alg_values_supported: { type: array, items: { type: string } }
         prompt_values_supported:
