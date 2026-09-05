@@ -294,7 +294,7 @@ cat <<EOF
 
 首次打开站点会引导创建首个所有者（Owner）账号。在 Owner 于管理设置中写入本站的
 固定 HTTPS Issuer 之前，服务运行在保护模式：健康检查和前端可用，注册与 OAuth/OIDC
-相关路由保持关闭。Issuer 保存在数据库中，不能从请求 Host 或代理头推导。
+相关路由保持关闭。Issuer 保存在 PostgreSQL app_settings 中，不能从请求 Host 或代理头推导。
 
 升级：在本目录重新运行 bash ./manage.sh 即可（禁止手动 docker compose pull）。
 管理员 Token 和全部随机密钥只保存在 ${ENV_FILE}，请备份并保持私密。
