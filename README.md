@@ -131,39 +131,36 @@ src/
 
 ## Docker 部署
 
-在已安装 Docker Engine、Docker Compose v2、`curl` 或 `wget` 和 `sha256sum` 的服务器上，
-从 GitHub Release 资产下载安装器并运行。必须把版本写死；不要从 `raw` 分支或 `latest`
-镜像启动生产部署：
+安装必须是一键的。在一台已安装 Docker Engine 和 Docker Compose v2 的服务器上，
+粘贴两行命令即可完成部署：
 
 ```bash
-mkdir -p /root/chenxing-auth
-cd /root/chenxing-auth
-export CHENXING_RELEASE_VERSION=v1.1.20  # 替换为已审核的 Release tag
-wget -O chenxing-auth-manage.sh \
-  "https://github.com/chenming0v0/chenxing-auth/releases/download/${CHENXING_RELEASE_VERSION}/chenxing-auth-manage.sh"
-wget -O SHA256SUMS \
-  "https://github.com/chenming0v0/chenxing-auth/releases/download/${CHENXING_RELEASE_VERSION}/SHA256SUMS"
-sha256sum -c <(grep 'chenxing-auth-manage.sh$' SHA256SUMS)
-install -m 700 chenxing-auth-manage.sh manage.sh
-bash ./manage.sh --release-version="${CHENXING_RELEASE_VERSION}"
+mkdir -p /opt/chenxing-auth && cd /opt/chenxing-auth
+wget -O manage.sh https://raw.githubusercontent.com/chenming0v0/chenxing-auth/releases/manage.sh && bash ./manage.sh
 ```
 
-安装器会下载并校验同一 Release 的 `chenxing-auth-release.env` 清单。清单把脚本摘要、
-版本化镜像 tag 和镜像 digest 绑定在一起；脚本只会拉取 `image@sha256:...`，并让 app 与
-migrate 使用同一个不可变引用。部署目录的 `.env` 会记录
-`CHENXING_RELEASE_VERSION`、`CHENXING_RELEASE_MANIFEST_SHA256`、`CHENXING_SCRIPT_SHA256`
-和实际 `CHENXING_IMAGE`，可直接作为审计和回滚锚点。排查问题时可以加 `--debug` 参数，
-输出脱敏后的诊断信息。
+脚本会自动解析最新发布版本、生成全部随机密钥（保存在部署目录 `.env`，权限 0600）、
+拉取镜像、执行数据库迁移并启动服务，最后等待健康检查通过。交互时只会问一个对外端口；
+无人值守安装用 `CHENXING_PORT=8080` 覆盖即可。
 
-**升级已有部署时，必须显式指定目标 Release：**
+**升级：在部署目录重新运行同一条命令。**
 
 ```bash
-CHENXING_RELEASE_VERSION=v1.1.21 bash ./manage.sh
+bash ./manage.sh
 ```
 
-脚本会先固定版本并验证 Release 清单、`SHA256SUMS` 和新脚本摘要，校验通过后才执行新脚本。
-迁移失败或就绪检查失败不会替换现有 `manage.sh` 和已记录的发布锁。要重放或回滚，指定
-另一个已发布的 tag 重新运行同一命令；不要只执行 `docker compose pull && docker compose up -d`。
+`manage.sh` 检测到已有 `.env` 时自动走升级：先执行数据库迁移，成功后才切换新版本，
+`.env` 中的密钥和配置原样保留。迁移或就绪检查失败时旧版本保持运行。禁止手动
+`docker compose pull && up -d`，那会绕过数据库迁移。
+
+固定版本或回滚时才需要显式指定版本：
+
+```bash
+CHENXING_RELEASE_VERSION=v1.1.20 bash ./manage.sh
+```
+
+排查问题时可以加 `--debug` 参数输出诊断信息。v1.1.26 之前的旧部署升级前请重新
+执行上面的 `wget` 一次性刷新 `manage.sh`（旧安装器依赖已停止发布的 Release 清单资产）。
 
 首次部署完成后，打开站点会引导创建首个所有者账号。刚登录时无法注册新用户；在管理设置里配置好本站的 Issuer（站点的固定 HTTPS 地址）后，注册和 OAuth 登录能力才会开放。
 

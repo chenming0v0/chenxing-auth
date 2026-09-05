@@ -18,6 +18,18 @@
 
 - 你的任务不是快速的完成代码任务而是设计我们的项目，不要老是想着最小改动，在该大重构的时候应该大胆大步走，如果你只改动这一点会导致之后的维护更不容易的话！请你直接处理他！而不是一个最小改动，现在项目处于早期版本，放手去改吧！不要被最小改动束缚住！
 
+## 安装与部署铁律
+
+**我们的软件就是要一键安装。** 用户侧的 Docker 部署命令永远只有两行：`wget` 下载 `manage.sh`，`bash ./manage.sh` 执行；升级就是在部署目录重跑同一条命令。禁止任何复杂化安装流程的改动：
+
+- 禁止要求用户手工核对哈希、下载校验清单、输入版本号或执行多步验证仪式。版本解析、下载校验、完整性检查等复杂度只能存在于脚本内部和 CI，不得转嫁给用户。
+- 安装链遵循项目级 `弱智也要装软件` skill 的四文件契约：`manage.sh` 是纯引导器（只下载 `install.sh`、`update.sh`、`deploy/compose.yml` 并按 `.env` 是否存在分发），禁止在其中加入任何安装/升级业务逻辑；首次安装逻辑只在 `install.sh`，升级逻辑只在 `update.sh`。
+- 部署 Compose 定义放在 `deploy/compose.yml`（不放仓库根目录，避免遮蔽开发用 `docker-compose.yml`），由 `manage.sh` 下载到部署目录成为 `compose.yml`。
+- 发布分支 raw URL 是升级通道，`manage.sh`、`install.sh`、`update.sh`、`deploy/compose.yml` 的路径不得变更或失效。
+- 版本默认自动解析 GitHub 最新 Release；`CHENXING_RELEASE_VERSION=vX.Y.Z` 只用于固定版本或回滚，绝不作为普通安装的必填项。
+- `update.sh` 绝不覆盖用户 `.env` 已有值（只补缺失键），迁移先行、失败不切换版本。
+- 修改安装链后必须让 `test_sh/deployment_contract.sh` 覆盖新契约并通过。
+
 ## 安全要求
 
 提交认证相关代码前，必须检查以下事项：

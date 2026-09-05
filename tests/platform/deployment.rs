@@ -3,7 +3,10 @@ use std::path::Path;
 const BUILD_WORKFLOW: &str = include_str!("../../.github/workflows/build.yml");
 const CI_WORKFLOW: &str = include_str!("../../.github/workflows/ci.yml");
 const INSTALL_SCRIPT: &str = include_str!("../../deploy/install.sh");
-const REMOTE_INSTALL_SCRIPT: &str = include_str!("../../manage.sh");
+const MANAGE_SCRIPT: &str = include_str!("../../manage.sh");
+const REMOTE_INSTALL_SCRIPT: &str = include_str!("../../install.sh");
+const REMOTE_UPDATE_SCRIPT: &str = include_str!("../../update.sh");
+const REMOTE_COMPOSE: &str = include_str!("../../deploy/compose.yml");
 const PRODUCTION_COMPOSE: &str = include_str!("../../docker-compose.prod.yml");
 const REDIS_CRASH_RECOVERY_SCRIPT: &str = include_str!("../../test_sh/redis_crash_recovery.sh");
 const TEST_RUNNER_CONTRACT_SCRIPT: &str = include_str!("../../test_sh/test_runner_contract.sh");
@@ -130,10 +133,6 @@ fn release_workflow_publishes_versioned_archives_and_checksums() {
     pinned_action_reference(BUILD_WORKFLOW, "actions/download-artifact");
     pinned_action_reference(BUILD_WORKFLOW, "softprops/action-gh-release");
     for marker in [
-        "Package versioned installer and release manifest",
-        "chenxing-auth-release.env",
-        "chenxing-auth-manage.sh",
-        "needs.container.outputs.digest",
         "SHA256SUMS",
         "(cd dist && sha256sum * > SHA256SUMS)",
         "Verify downloaded release assets",
@@ -146,6 +145,13 @@ fn release_workflow_publishes_versioned_archives_and_checksums() {
         assert!(
             BUILD_WORKFLOW.contains(marker),
             "release workflow is missing marker: {marker}"
+        );
+    }
+    // 安装链已回归 raw 分支四文件契约：发布资产不再打包安装器或清单。
+    for stale in ["chenxing-auth-manage.sh", "chenxing-auth-release.env"] {
+        assert!(
+            !BUILD_WORKFLOW.contains(stale),
+            "release workflow must not package installer asset: {stale}"
         );
     }
 }
@@ -229,20 +235,21 @@ fn deployment_runtime_and_migration_credentials_are_separated() {
     }
     assert!(INSTALL_SCRIPT.contains("run --rm --build migrate"));
     assert!(REMOTE_INSTALL_SCRIPT.contains("run --rm migrate"));
-    for script in [INSTALL_SCRIPT, REMOTE_INSTALL_SCRIPT] {
+    assert!(REMOTE_UPDATE_SCRIPT.contains("run --rm migrate"));
+    for script in [INSTALL_SCRIPT, REMOTE_INSTALL_SCRIPT, REMOTE_UPDATE_SCRIPT] {
         assert!(!script.contains("run --rm app migrate"));
     }
-    assert!(REMOTE_INSTALL_SCRIPT.contains("  migrate:\n"));
-    let generated = REMOTE_INSTALL_SCRIPT
+    assert!(REMOTE_COMPOSE.contains("  migrate:\n"));
+    let generated = REMOTE_COMPOSE
         .split_once("services:\n")
         .map(|(_, body)| body)
-        .expect("remote installer must generate a compose document");
+        .expect("deployment compose must define services");
     let generated_app_start = generated
         .find("  app:")
-        .expect("generated compose must define app");
+        .expect("deployment compose must define app");
     let generated_app_end = generated
         .find("\n  migrate:")
-        .expect("generated compose must define migrate after app");
+        .expect("deployment compose must define migrate after app");
     let generated_app = &generated[generated_app_start..generated_app_end];
     assert!(!generated_app.contains("env_file:"));
     assert!(!generated_app.contains("MIGRATION_DATABASE_URL:"));
@@ -269,19 +276,24 @@ fn installers_harden_env_files_before_any_legacy_read_or_write() {
         );
     }
 
-    let remote_security = REMOTE_INSTALL_SCRIPT
-        .find("if [[ -e \"$ENV_FILE\" || -L \"$ENV_FILE\" ]]")
-        .expect("remote installer must classify every existing .env path");
-    let remote_read = REMOTE_INSTALL_SCRIPT
-        .find("APP_ISSUER=\"$(read_env_value APP_ISSUER)\"")
-        .expect("remote installer must read legacy APP_ISSUER");
-    assert!(remote_security < remote_read);
-    for marker in ["[[ -L \"$ENV_FILE\" ]]", "chmod 600 -- \"$ENV_FILE\""] {
-        assert!(
-            REMOTE_INSTALL_SCRIPT.contains(marker),
-            "remote installer missing {marker}"
-        );
-    }
+    // 远程安装器拒绝把已有部署当新安装：存在 .env（含符号链接）就移交升级路径。
+    assert!(
+        REMOTE_INSTALL_SCRIPT.contains("if [[ -e \"$ENV_FILE\" || -L \"$ENV_FILE\" ]]"),
+        "remote installer must classify every existing .env path"
+    );
+    assert!(REMOTE_INSTALL_SCRIPT.contains("检测到已有 .env"));
+    // 升级脚本必须在读取任何 .env 值之前完成符号链接拒绝和权限加固。
+    let update_symlink = REMOTE_UPDATE_SCRIPT
+        .find("[[ ! -L \"$ENV_FILE\" ]]")
+        .expect("remote updater must reject a symlinked .env");
+    let update_harden = REMOTE_UPDATE_SCRIPT
+        .find("chmod 600 -- \"$ENV_FILE\"")
+        .expect("remote updater must harden .env permissions");
+    let update_first_read = REMOTE_UPDATE_SCRIPT
+        .find("read_env_value CHENXING_RELEASE_VERSION")
+        .expect("remote updater reads the recorded release");
+    assert!(update_symlink < update_first_read);
+    assert!(update_harden < update_first_read);
 }
 
 #[test]
@@ -290,10 +302,9 @@ fn deployment_project_names_are_stable_and_legacy_resolution_fails_closed() {
     assert!(INSTALL_SCRIPT.contains("resolve_legacy_project"));
     assert!(INSTALL_SCRIPT.contains("docker volume inspect"));
     assert!(INSTALL_SCRIPT.contains("fail closed") || INSTALL_SCRIPT.contains("无法确认"));
-    assert!(
-        REMOTE_INSTALL_SCRIPT.contains("append_env_default COMPOSE_PROJECT_NAME chenxing-auth")
-    );
+    assert!(REMOTE_UPDATE_SCRIPT.contains("ensure_env_value COMPOSE_PROJECT_NAME chenxing-auth"));
     assert!(!REMOTE_INSTALL_SCRIPT.contains("resolve_legacy_project"));
+    assert!(!REMOTE_UPDATE_SCRIPT.contains("resolve_legacy_project"));
     let generated = heredoc_body_after(INSTALL_SCRIPT, "    cat > .env <<EOF\n");
     assert!(generated.contains("COMPOSE_PROJECT_NAME="));
     assert!(!INSTALL_SCRIPT.contains("append_env_default COMPOSE_PROJECT_NAME"));
@@ -302,7 +313,7 @@ fn deployment_project_names_are_stable_and_legacy_resolution_fails_closed() {
 
 #[test]
 fn compose_keeps_container_listener_fixed_when_host_port_changes() {
-    for compose in [PRODUCTION_COMPOSE, REMOTE_INSTALL_SCRIPT] {
+    for compose in [PRODUCTION_COMPOSE, REMOTE_COMPOSE] {
         assert!(compose.contains("APP_HOST: 0.0.0.0"));
         assert!(compose.contains("APP_PORT: 3000"));
         assert!(
@@ -387,7 +398,7 @@ fn native_release_archives_ship_and_verify_the_matching_web_bundle() {
 
 #[test]
 fn production_redis_has_durable_credential_state_and_crash_coverage() {
-    for compose in [PRODUCTION_COMPOSE, REMOTE_INSTALL_SCRIPT] {
+    for compose in [PRODUCTION_COMPOSE, REMOTE_COMPOSE] {
         let compose = compose.replace("\r\n", "\n");
         for marker in [
             "      - --appendonly\n      - \"yes\"",
@@ -475,8 +486,9 @@ fn signing_failures_map_to_oauth_unavailable_and_gate_readiness() {
 fn ci_validates_the_remote_installer_without_weakening_coverage() {
     for marker in [
         "bash -n manage.sh",
-        "bash \"$remote_install_dir/manage.sh\" --prepare-only",
-        "chenxing-remote-install",
+        "bash -n install.sh",
+        "bash -n update.sh",
+        "bash test_sh/deployment_contract.sh",
         "config --quiet",
         "--fail-under-lines 75",
     ] {
@@ -533,7 +545,7 @@ fn deployment_configures_redis_namespaces_without_breaking_existing_env_files() 
     assert!(!PRODUCTION_COMPOSE.contains("REDIS_NAMESPACE:-"));
     assert!(REMOTE_INSTALL_SCRIPT.contains("REDIS_NAMESPACE=cx-$(openssl rand -hex 16)"));
     assert!(
-        REMOTE_INSTALL_SCRIPT.contains("append_env_default REDIS_NAMESPACE legacy"),
+        REMOTE_UPDATE_SCRIPT.contains("ensure_env_value REDIS_NAMESPACE legacy"),
         "existing remote installs must retain legacy keys"
     );
     assert!(
@@ -545,7 +557,7 @@ fn deployment_configures_redis_namespaces_without_breaking_existing_env_files() 
         INSTALL_SCRIPT.contains("ensure_env_value REDIS_NAMESPACE legacy"),
         "existing source installs must retain legacy keys"
     );
-    for script in [REMOTE_INSTALL_SCRIPT, INSTALL_SCRIPT] {
+    for script in [REMOTE_INSTALL_SCRIPT, REMOTE_UPDATE_SCRIPT, INSTALL_SCRIPT] {
         assert!(!script.contains("REDIS_NAMESPACE=production"));
         assert!(!script.contains("REDIS_NAMESPACE=${REDIS_NAMESPACE:-production}"));
     }
@@ -934,7 +946,7 @@ fn installer_validates_compose_and_reports_application_logs() {
 #[test]
 fn remote_installer_uses_published_images_and_keeps_download_progress_visible() {
     for marker in [
-        "ghcr.io/${RELEASE_REPOSITORY}:${RELEASE_VERSION}@${values[image_digest]}",
+        "ghcr.io/${RELEASE_REPOSITORY}:${RELEASE_VERSION}",
         "postgres:16-alpine",
         "redis:7-alpine",
         "docker pull \"$CHENXING_IMAGE\"",
@@ -942,9 +954,8 @@ fn remote_installer_uses_published_images_and_keeps_download_progress_visible() 
         "docker pull \"$REDIS_IMAGE\"",
         "compose run --rm migrate",
         "compose up -d app",
-        "MANAGER_NAME=\"manage.sh\"",
         "--debug",
-        "Owner 在管理设置中写入固定的 HTTPS Issuer",
+        "管理设置中写入",
         "PostgreSQL app_settings",
         "--prepare-only",
     ] {
@@ -968,111 +979,66 @@ fn remote_installer_uses_published_images_and_keeps_download_progress_visible() 
 }
 
 #[test]
-fn remote_installer_rejects_mutable_scripts_and_records_release_lock() {
+fn manage_bootstrap_only_downloads_and_dispatches() {
+    // 一键安装铁律：manage.sh 是纯引导器。每次运行重新下载 install.sh /
+    // update.sh / compose.yml，按 .env 是否存在分发；任何安装/升级业务逻辑
+    // （Docker、密钥、迁移、版本解析）都不允许出现在引导器里。
     for marker in [
-        "RELEASE_MANIFEST_NAME=\"chenxing-auth-release.env\"",
-        "RELEASE_SCRIPT_NAME=\"chenxing-auth-manage.sh\"",
-        "https://github.com/%s/releases/download/%s/%s",
-        "verify_release_asset_checksum",
-        "sha256sum \"$temp_file\"",
-        "CHENXING_RELEASE_MANIFEST_SHA256",
-        "CHENXING_SCRIPT_SHA256",
-        "persist_release_lock",
-        "CHENXING_BOOTSTRAP_TEMP=1",
-        "--release-version=",
+        "raw.githubusercontent.com/chenming0v0/chenxing-auth/releases",
+        "fetch_script install.sh install.sh",
+        "fetch_script update.sh update.sh",
+        "deploy/compose.yml",
+        "bash -n \"$temp_file\"",
+        "mktemp",
+        "mv -f",
+        "exec bash \"$INSTALL_DIR/update.sh\" \"$@\"",
+        "exec bash \"$INSTALL_DIR/install.sh\" \"$@\"",
     ] {
         assert!(
-            REMOTE_INSTALL_SCRIPT.contains(marker),
-            "remote installer is missing release-integrity marker: {marker}"
+            MANAGE_SCRIPT.contains(marker),
+            "bootstrap manager is missing marker: {marker}"
         );
     }
-    assert!(!REMOTE_INSTALL_SCRIPT.contains("raw.githubusercontent.com"));
-    assert!(!REMOTE_INSTALL_SCRIPT.contains(":latest"));
-    let verify_at = REMOTE_INSTALL_SCRIPT
-        .find("actual=\"$(sha256sum \"$temp_file\"")
-        .expect("upgrade script must hash the downloaded file");
-    let exec_line = REMOTE_INSTALL_SCRIPT
-        .lines()
-        .find(|line| line.trim_start().starts_with("exec bash \""))
-        .expect("upgrade script must exec a manager copy");
-    assert!(
-        exec_line.contains("$VERIFIED_MANAGER_PATH"),
-        "upgrade script must exec only the verified copy"
-    );
-    let exec_at = REMOTE_INSTALL_SCRIPT
-        .find(exec_line)
-        .expect("upgrade script exec line must be present");
-    assert!(verify_at < exec_at);
+    for forbidden in ["docker", "openssl", "migrate", "POSTGRES", "ADMIN_TOKEN"] {
+        assert!(
+            !MANAGE_SCRIPT.contains(forbidden),
+            "bootstrap manager must not contain business logic: {forbidden}"
+        );
+    }
+    // 下载的脚本必须先通过语法校验再原子替换到位。
+    let verify_at = MANAGE_SCRIPT
+        .find("bash -n \"$temp_file\"")
+        .expect("bootstrap must syntax-check downloaded scripts");
+    let move_at = MANAGE_SCRIPT
+        .find("mv -f -- \"$temp_file\" \"$INSTALL_DIR/$local_name\"")
+        .expect("bootstrap must atomically install downloaded scripts");
+    assert!(verify_at < move_at);
 }
 
-/// 钉住 `load_release_manifest` 内部的自相矛盾：该函数强制要求发布清单里存在的
-/// 每个字段名，都必须能通过同一函数里的字段名字符类校验。
-///
-/// 这里不是在测试正则语法，而是防止“必需字段名被自己的字段名校验拒掉”这类矛盾：
-/// #698 曾把字符类写成 `^[a-z_]+$`（漏掉数字），而必需字段里有 `script_sha256`，
-/// 结果任何合法发布清单都在解析阶段被拒，`--prepare-only`、安装与升级三条路径全坏。
-/// 解析不到字符类或必需字段列表同样视为失败——那说明校验结构被改动，需要重新审查。
 #[test]
-fn release_manifest_required_keys_satisfy_their_own_key_name_validation() {
-    // 判断单个字符是否落在 shell 正则字符类里，支持 `a-z` 这类区间和字面字符。
-    fn char_class_allows(class: &str, candidate: char) -> bool {
-        let chars: Vec<char> = class.chars().collect();
-        let mut index = 0;
-        while index < chars.len() {
-            let is_range = index + 2 < chars.len() && chars[index + 1] == '-';
-            let matched = if is_range {
-                candidate >= chars[index] && candidate <= chars[index + 2]
-            } else {
-                candidate == chars[index]
-            };
-            if matched {
-                return true;
-            }
-            index += if is_range { 3 } else { 1 };
-        }
-        false
-    }
-
-    let body = shell_function_body(REMOTE_INSTALL_SCRIPT, "load_release_manifest");
-
-    let key_class = body
-        .lines()
-        .find_map(|line| {
-            let (_, rest) = line.split_once("\"$key\" =~ ^[")?;
-            let (class, _) = rest.split_once("]+$")?;
-            Some(class)
-        })
-        .expect(
-            "load_release_manifest 必须用 `\"$key\" =~ ^[...]+$` 校验清单字段名；\
-             解析不到说明字段名校验结构被改动，请同步审查本测试",
-        );
-
-    let required_keys: Vec<&str> = body
-        .lines()
-        .find_map(|line| {
-            let (_, rest) = line.split_once("for key in ")?;
-            let (list, _) = rest.split_once("; do")?;
-            Some(list.split_whitespace().collect::<Vec<&str>>())
-        })
-        .expect(
-            "load_release_manifest 必须用 `for key in ...; do` 列出必需字段；\
-             解析不到说明必需字段结构被改动，请同步审查本测试",
-        );
-
-    assert!(
-        !required_keys.is_empty(),
-        "load_release_manifest 的必需字段列表不能为空"
-    );
-
-    for key in required_keys {
-        for character in key.chars() {
+fn release_version_resolves_automatically_and_rejects_mutable_tags() {
+    // 版本解析在脚本内部完成：默认取最新 Release，用户零输入；
+    // CHENXING_RELEASE_VERSION 只用于固定版本或回滚。禁止可变 latest 镜像。
+    for script in [REMOTE_INSTALL_SCRIPT, REMOTE_UPDATE_SCRIPT] {
+        for marker in [
+            "releases/latest",
+            "CHENXING_RELEASE_VERSION",
+            "^v[0-9]+\\.[0-9]+\\.[0-9]+([.-][0-9A-Za-z.-]+)?$",
+            "ghcr.io/${RELEASE_REPOSITORY}:${RELEASE_VERSION}",
+        ] {
             assert!(
-                char_class_allows(key_class, character),
-                "必需字段 {key} 的字符 {character:?} 不被字段名字符类 [{key_class}] 接受，\
-                 合法发布清单会被 load_release_manifest 自己拒掉"
+                script.contains(marker),
+                "release resolution is missing marker: {marker}"
             );
         }
+        assert!(!script.contains(":latest"));
     }
+    // 升级把解析结果写回 .env 作为回滚锚点。
+    assert!(
+        REMOTE_UPDATE_SCRIPT
+            .contains("set_env_value CHENXING_RELEASE_VERSION \"$RELEASE_VERSION\"")
+    );
+    assert!(REMOTE_UPDATE_SCRIPT.contains("set_env_value CHENXING_IMAGE \"$CHENXING_IMAGE\""));
 }
 
 #[test]
@@ -1081,14 +1047,25 @@ fn remote_installer_generates_and_preserves_deployment_secrets() {
         "openssl rand -base64 32",
         "openssl rand -hex 32",
         "chmod 600 -- \"$ENV_FILE\"",
-        "检测到已有 .env，将保留数据库密码、Token 和加密密钥",
-        "AUTH_ENCRYPTION_KEY 必须是 Base64 编码的 32 字节密钥",
     ] {
         assert!(
             REMOTE_INSTALL_SCRIPT.contains(marker),
             "remote installer is missing secret marker: {marker}"
         );
     }
+    // 升级绝不覆盖 .env 已有值：只允许 ensure（缺失才补），禁止重新生成主密钥。
+    for marker in [
+        "保留全部已有密钥",
+        "ensure_env_value POSTGRES_RUNTIME_PASSWORD",
+        "ensure_env_value AUTH_ENCRYPTION_KEYS",
+    ] {
+        assert!(
+            REMOTE_UPDATE_SCRIPT.contains(marker),
+            "remote updater is missing preservation marker: {marker}"
+        );
+    }
+    assert!(!REMOTE_UPDATE_SCRIPT.contains("set_env_value AUTH_ENCRYPTION_KEY"));
+    assert!(!REMOTE_UPDATE_SCRIPT.contains("set_env_value POSTGRES_PASSWORD"));
 }
 
 #[test]
@@ -1108,14 +1085,15 @@ fn fresh_installers_do_not_write_app_issuer_but_keep_legacy_env_compatibility() 
                 .any(|line| line.trim_start().starts_with("APP_ISSUER=")),
             "{name} must not write APP_ISSUER into a fresh .env"
         );
-        assert!(
-            script.contains("APP_ISSUER=\"$(read_env_value APP_ISSUER)\""),
-            "{name} must still read legacy APP_ISSUER from an existing .env"
-        );
     }
-
+    assert!(
+        INSTALL_SCRIPT.contains("APP_ISSUER=\"$(read_env_value APP_ISSUER)\""),
+        "source installer must still read legacy APP_ISSUER from an existing .env"
+    );
     assert!(INSTALL_SCRIPT.contains("APP_ISSUER is read only for older deployments"));
-    assert!(REMOTE_INSTALL_SCRIPT.contains("检测到旧环境中的 APP_ISSUER"));
+    // 远程部署里旧 .env 的 APP_ISSUER 经 Compose 直接透传给应用（数据库设置优先），
+    // 升级脚本本身不读它、也不改它。
+    assert!(REMOTE_COMPOSE.contains("APP_ISSUER: ${APP_ISSUER-}"));
 }
 
 #[test]
@@ -1125,46 +1103,47 @@ fn production_healthchecks_and_installers_use_readiness() {
     assert!(PRODUCTION_COMPOSE.contains(readiness_healthcheck));
     assert!(!PRODUCTION_COMPOSE.contains("http://127.0.0.1:3000/health\"]"));
     assert!(INSTALL_SCRIPT.contains("/health/ready"));
-    assert!(REMOTE_INSTALL_SCRIPT.contains(readiness_healthcheck));
-    let remote_wait = shell_function_body(REMOTE_INSTALL_SCRIPT, "wait_for_application");
-    for marker in [
-        "for attempt in $(seq 1 60); do",
-        "curl --fail --silent --max-time 5",
-        "http://127.0.0.1:3000/health/ready",
-        "return 0",
-        "return 1",
-    ] {
-        assert!(
-            remote_wait.contains(marker),
-            "readiness wait missing marker: {marker}"
-        );
+    assert!(REMOTE_COMPOSE.contains(readiness_healthcheck));
+    for script in [REMOTE_INSTALL_SCRIPT, REMOTE_UPDATE_SCRIPT] {
+        let remote_wait = shell_function_body(script, "wait_for_application");
+        for marker in [
+            "for attempt in $(seq 1 60); do",
+            "curl --fail --silent --max-time 5",
+            "http://127.0.0.1:3000/health/ready",
+            "return 0",
+            "return 1",
+        ] {
+            assert!(
+                remote_wait.contains(marker),
+                "readiness wait missing marker: {marker}"
+            );
+        }
+        assert!(!remote_wait.contains("/health/live"));
     }
-    assert!(!remote_wait.contains("/health/live"));
 }
 
 #[test]
 fn remote_installer_reports_full_readiness_timeout_diagnostics() {
-    let diagnostics = shell_function_body(REMOTE_INSTALL_SCRIPT, "report_application_diagnostics");
-    for marker in [
-        "compose ps >&2 || true",
-        "compose ps -q app",
-        "docker inspect --format",
-        ".State.Health.Status",
-        "compose logs --no-color --tail=200 app >&2 || true",
-    ] {
-        assert!(
-            diagnostics.contains(marker),
-            "readiness diagnostics missing marker: {marker}"
-        );
+    for script in [REMOTE_INSTALL_SCRIPT, REMOTE_UPDATE_SCRIPT] {
+        let diagnostics = shell_function_body(script, "report_application_diagnostics");
+        for marker in [
+            "compose ps >&2 || true",
+            "compose logs --no-color --tail=200 app >&2 || true",
+        ] {
+            assert!(
+                diagnostics.contains(marker),
+                "readiness diagnostics missing marker: {marker}"
+            );
+        }
+        let (_, timeout_handler) = script
+            .split_once("if ! wait_for_application; then\n")
+            .expect("remote scripts must handle readiness timeout");
+        let timeout_handler = timeout_handler
+            .split_once("\nfi\n")
+            .map(|(body, _)| body)
+            .expect("readiness timeout handler must terminate");
+        assert!(timeout_handler.contains("report_application_diagnostics"));
     }
-    let (_, timeout_handler) = REMOTE_INSTALL_SCRIPT
-        .split_once("if ! wait_for_application; then\n")
-        .expect("remote installer must handle readiness timeout");
-    let timeout_handler = timeout_handler
-        .split_once("\nfi\n")
-        .map(|(body, _)| body)
-        .expect("readiness timeout handler must terminate");
-    assert!(timeout_handler.contains("report_application_diagnostics"));
 }
 
 #[test]
@@ -1199,6 +1178,9 @@ fn deployment_files_are_present_at_repository_root() {
     assert!(Path::new(".github/workflows/build.yml").is_file());
     assert!(Path::new("deploy/install.sh").is_file());
     assert!(Path::new("manage.sh").is_file());
+    assert!(Path::new("install.sh").is_file());
+    assert!(Path::new("update.sh").is_file());
+    assert!(Path::new("deploy/compose.yml").is_file());
     assert!(Path::new("docker-compose.prod.yml").is_file());
     assert!(Path::new("Dockerfile").is_file());
     assert!(Path::new("Dockerfile.runtime").is_file());
@@ -1723,21 +1705,24 @@ fn production_app_requires_the_migration_job_to_finish_successfully() {
 
 #[test]
 fn remote_manager_pulls_the_release_before_running_migrations() {
-    let script = REMOTE_INSTALL_SCRIPT.replace("\\r\\n", "\\n");
-    let pull_at = script
-        .find("docker pull \"$CHENXING_IMAGE\"")
-        .expect("published installer must pull the app image");
-    let migrate_at = script
-        .find("run --rm migrate")
-        .expect("remote installer must run the migration job");
-    let start_at = script
-        .find("compose up -d app")
-        .expect("remote manager must start the app after migration");
-    assert!(pull_at < migrate_at && migrate_at < start_at);
+    for script in [REMOTE_INSTALL_SCRIPT, REMOTE_UPDATE_SCRIPT] {
+        let pull_at = script
+            .find("docker pull \"$CHENXING_IMAGE\"")
+            .expect("remote scripts must pull the app image");
+        let migrate_at = script
+            .find("run --rm migrate")
+            .expect("remote scripts must run the migration job");
+        let start_at = script
+            .find("compose up -d app")
+            .expect("remote scripts must start the app after migration");
+        assert!(pull_at < migrate_at && migrate_at < start_at);
+    }
 }
 
 #[test]
 fn remote_manager_places_curl_output_option_before_the_url() {
-    assert!(REMOTE_INSTALL_SCRIPT.contains("--connect-timeout 10 -o \"$output\" \"$url\""));
-    assert!(!REMOTE_INSTALL_SCRIPT.contains("--connect-timeout 10 -- \"$url\" -o \"$output\""));
+    for script in [MANAGE_SCRIPT, REMOTE_INSTALL_SCRIPT, REMOTE_UPDATE_SCRIPT] {
+        assert!(script.contains("--connect-timeout 10 -o \"$output\" \"$url\""));
+        assert!(!script.contains("--connect-timeout 10 -- \"$url\" -o \"$output\""));
+    }
 }

@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# 辰星认证中枢 · 首次安装脚本（由 manage.sh 下载并移交，不建议手动直接运行）
+# 辰星认证中枢 · 升级脚本（由 manage.sh 下载并移交，不建议手动直接运行）
 #
-# 职责：解析发布版本 → 生成全部密钥写入 .env → 校验 Compose → 拉镜像 →
-# 启动依赖 → 数据库迁移 → 启动应用 → 健康检查。升级请运行 bash ./manage.sh。
+# 职责：解析目标发布版本 → 补齐 .env 新增键（绝不覆盖已有值）→ 迁移先行 →
+# 迁移成功后才切换新版本。迁移或就绪检查失败时，旧版本保持运行，部署未改变。
 
 DEFAULT_POSTGRES_IMAGE="postgres:16-alpine"
 DEFAULT_REDIS_IMAGE="redis:7-alpine"
-DEFAULT_PORT="3000"
 RELEASE_REPOSITORY="${CHENXING_RELEASE_REPOSITORY:-chenming0v0/chenxing-auth}"
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 INSTALL_DIR="$(dirname -- "$SCRIPT_PATH")"
 ENV_FILE="$INSTALL_DIR/.env"
 COMPOSE_FILE="$INSTALL_DIR/compose.yml"
 RELEASE_VERSION="${CHENXING_RELEASE_VERSION:-}"
-PREPARE_ONLY=false
 DEBUG_MODE=false
 
 stage() {
@@ -23,13 +21,13 @@ stage() {
 }
 
 fail() {
-    printf '\n安装失败: %s\n' "$1" >&2
+    printf '\n升级失败: %s\n' "$1" >&2
     exit 1
 }
 
 on_error() {
     local status=$?
-    printf '\n安装在第 %s 行失败，退出码 %s。Docker 的错误输出已保留在上方。\n' \
+    printf '\n升级在第 %s 行失败，退出码 %s。Docker 的错误输出已保留在上方。\n' \
         "${BASH_LINENO[0]:-unknown}" "$status" >&2
     if [[ "$DEBUG_MODE" == true && -f "$COMPOSE_FILE" ]] && command_exists docker; then
         report_application_diagnostics || true
@@ -58,8 +56,8 @@ valid_release_version() {
     [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
 }
 
-# 版本自动解析：默认取 GitHub 最新 Release，用户不需要输入任何版本号。
-# 需要固定或回滚时才用 CHENXING_RELEASE_VERSION=vX.Y.Z 覆盖。
+# 版本自动解析：默认升级到 GitHub 最新 Release。回滚或固定版本时用
+# CHENXING_RELEASE_VERSION=vX.Y.Z bash ./manage.sh 重新运行同一命令。
 resolve_release_version() {
     local api_response
     if [[ -n "$RELEASE_VERSION" ]]; then
@@ -70,33 +68,13 @@ resolve_release_version() {
     api_response="$(mktemp)"
     if ! http_get "https://api.github.com/repos/${RELEASE_REPOSITORY}/releases/latest" "$api_response"; then
         rm -f -- "$api_response"
-        fail "无法查询最新发布版本。请检查网络，或用 CHENXING_RELEASE_VERSION=vX.Y.Z bash ./manage.sh 指定版本。"
+        fail "无法查询最新发布版本。请检查网络，或用 CHENXING_RELEASE_VERSION=vX.Y.Z bash ./manage.sh 指定版本；现有部署未改变。"
     fi
     RELEASE_VERSION="$(grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' "$api_response" \
         | head -n 1 | sed 's/.*"\(v[^"]*\)"$/\1/')"
     rm -f -- "$api_response"
     valid_release_version "$RELEASE_VERSION" \
-        || fail "解析到的发布版本无效。请用 CHENXING_RELEASE_VERSION=vX.Y.Z bash ./manage.sh 指定版本。"
-}
-
-valid_port() {
-    [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 ))
-}
-
-url_encode() {
-    local value="$1" char encoded='' byte
-    LC_ALL=C
-    while [[ -n "$value" ]]; do
-        char="${value:0:1}"
-        value="${value:1}"
-        if [[ "$char" =~ [a-zA-Z0-9.~_-] ]]; then
-            encoded+="$char"
-        else
-            printf -v byte '%02X' "'${char}"
-            encoded+="%${byte}"
-        fi
-    done
-    printf '%s' "$encoded"
+        || fail "解析到的发布版本无效。请用 CHENXING_RELEASE_VERSION=vX.Y.Z bash ./manage.sh 指定版本；现有部署未改变。"
 }
 
 read_env_value() {
@@ -109,6 +87,15 @@ read_env_value() {
         fi
     done < "$ENV_FILE"
     return 0
+}
+
+env_has_key() {
+    local key="$1" line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        [[ "$line" == "${key}="* ]] && return 0
+    done < "$ENV_FILE"
+    return 1
 }
 
 set_env_value() {
@@ -127,50 +114,43 @@ set_env_value() {
     mv -f "$temp" "$ENV_FILE"
 }
 
-generate_env() {
-    local port="$1" auth_encryption_key
-    auth_encryption_key="$(openssl rand -base64 32)"
-    umask 077
-    cat > "$ENV_FILE" <<EOF
-COMPOSE_PROJECT_NAME=chenxing-auth
-CHENXING_RELEASE_VERSION=${RELEASE_VERSION}
-CHENXING_IMAGE=${CHENXING_IMAGE}
-POSTGRES_IMAGE=${POSTGRES_IMAGE}
-REDIS_IMAGE=${REDIS_IMAGE}
-REDIS_NAMESPACE=cx-$(openssl rand -hex 16)
-APP_HOST=0.0.0.0
-APP_PORT=${port}
-ADMIN_TOKEN=$(openssl rand -hex 32)
-AUTH_ENCRYPTION_KEY=${auth_encryption_key}
-AUTH_ENCRYPTION_KEYS=kid=active:${auth_encryption_key}
-AUTH_ENCRYPTION_ACTIVE_KID=active
-KEY_DIRECTORY=/var/lib/chenxing-auth/keys
-KEY_ROTATION_GRACE_SECONDS=604800
-KEY_ROTATION_SKEW_ALLOWANCE_SECONDS=3600
-COOKIE_SECURE=true
-POSTGRES_DB=chenxing_auth
-POSTGRES_USER=chenxing
-POSTGRES_PASSWORD=$(openssl rand -hex 32)
-POSTGRES_RUNTIME_USER=chenxing_runtime
-POSTGRES_RUNTIME_PASSWORD=$(openssl rand -hex 32)
-SESSION_TTL_SECONDS=1209600
-AUDIT_ARCHIVE_ENABLED=false
-AUDIT_RETENTION_DAYS=2555
-RUST_LOG=chenxing_auth=info,tower_http=info
-EOF
-    chmod 600 -- "$ENV_FILE"
+# 只在键缺失或为空时补默认值，永不替换用户已有值。
+ensure_env_value() {
+    local key="$1" value="$2"
+    if ! env_has_key "$key"; then
+        printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+        return 0
+    fi
+    [[ -n "$(read_env_value "$key")" ]] && return 0
+    set_env_value "$key" "$value"
 }
 
-write_database_urls() {
+url_encode() {
+    local value="$1" char encoded='' byte
+    LC_ALL=C
+    while [[ -n "$value" ]]; do
+        char="${value:0:1}"
+        value="${value:1}"
+        if [[ "$char" =~ [a-zA-Z0-9.~_-] ]]; then
+            encoded+="$char"
+        else
+            printf -v byte '%02X' "'${char}"
+            encoded+="%${byte}"
+        fi
+    done
+    printf '%s' "$encoded"
+}
+
+ensure_database_urls() {
     local runtime_user runtime_password migration_user migration_password database
     runtime_user="$(url_encode "$(read_env_value POSTGRES_RUNTIME_USER)")"
     runtime_password="$(url_encode "$(read_env_value POSTGRES_RUNTIME_PASSWORD)")"
     migration_user="$(url_encode "$(read_env_value POSTGRES_USER)")"
     migration_password="$(url_encode "$(read_env_value POSTGRES_PASSWORD)")"
     database="$(url_encode "$(read_env_value POSTGRES_DB)")"
-    set_env_value DATABASE_URL \
+    ensure_env_value DATABASE_URL \
         "postgres://${runtime_user}:${runtime_password}@postgres:5432/${database}"
-    set_env_value MIGRATION_DATABASE_URL \
+    ensure_env_value MIGRATION_DATABASE_URL \
         "postgres://${migration_user}:${migration_password}@postgres:5432/${database}"
 }
 
@@ -220,43 +200,41 @@ report_application_diagnostics() {
 for argument in "$@"; do
     case "$argument" in
         --debug) DEBUG_MODE=true ;;
-        --prepare-only) PREPARE_ONLY=true ;;
-        *) fail "未知参数：$argument。支持 --debug 和 --prepare-only。" ;;
+        *) fail "未知参数：$argument。支持 --debug。" ;;
     esac
 done
 
-if [[ -e "$ENV_FILE" || -L "$ENV_FILE" ]]; then
-    fail "检测到已有 .env：这是一个现有部署。升级请运行 bash $INSTALL_DIR/manage.sh。"
-fi
-[[ -f "$COMPOSE_FILE" ]] || fail "缺少 compose.yml。请通过 bash ./manage.sh 运行安装。"
-command_exists openssl || fail "缺少 openssl，无法生成部署密钥。请先安装 openssl。"
+[[ ! -L "$ENV_FILE" ]] || fail ".env 不能是符号链接。"
+[[ -f "$ENV_FILE" ]] || fail "没有找到 .env：这不是一个现有部署。首次安装请运行 bash $INSTALL_DIR/manage.sh。"
+[[ -f "$COMPOSE_FILE" ]] || fail "缺少 compose.yml。请通过 bash ./manage.sh 运行升级。"
+chmod 600 -- "$ENV_FILE"
+command_exists openssl || fail "缺少 openssl，无法补齐部署密钥。请先安装 openssl。"
+command_exists docker || fail "缺少 Docker Engine。请先安装 Docker：https://docs.docker.com/engine/install/"
+docker compose version >/dev/null 2>&1 || fail "缺少 Docker Compose v2 插件。请安装 docker-compose-plugin。"
+docker info >/dev/null 2>&1 || fail "无法连接 Docker daemon；请启动 Docker 或使用有权限的账号运行。"
 
 stage "解析发布版本"
 resolve_release_version
 CHENXING_IMAGE="ghcr.io/${RELEASE_REPOSITORY}:${RELEASE_VERSION}"
-POSTGRES_IMAGE="${POSTGRES_IMAGE:-$DEFAULT_POSTGRES_IMAGE}"
-REDIS_IMAGE="${REDIS_IMAGE:-$DEFAULT_REDIS_IMAGE}"
-printf '发布版本: %s\n镜像: %s\n' "$RELEASE_VERSION" "$CHENXING_IMAGE"
+printf '当前版本: %s\n目标版本: %s\n镜像: %s\n' \
+    "$(read_env_value CHENXING_RELEASE_VERSION)" "$RELEASE_VERSION" "$CHENXING_IMAGE"
 
-stage "生成部署配置"
-port="${CHENXING_PORT:-}"
-if [[ -z "$port" && -t 0 ]]; then
-    read -r -p "请输入对外端口 [${DEFAULT_PORT}]: " port
+stage "补齐 .env 新增配置（保留全部已有密钥）"
+ensure_env_value COMPOSE_PROJECT_NAME chenxing-auth
+ensure_env_value POSTGRES_IMAGE "$DEFAULT_POSTGRES_IMAGE"
+ensure_env_value REDIS_IMAGE "$DEFAULT_REDIS_IMAGE"
+ensure_env_value REDIS_NAMESPACE legacy
+# 旧安装早于最小权限运行库角色；只补缺失/空值，绝不替换正在使用的凭据。
+ensure_env_value POSTGRES_RUNTIME_USER chenxing_runtime
+ensure_env_value POSTGRES_RUNTIME_PASSWORD "$(openssl rand -hex 32)"
+auth_encryption_key="$(read_env_value AUTH_ENCRYPTION_KEY)"
+if [[ -n "$auth_encryption_key" ]]; then
+    ensure_env_value AUTH_ENCRYPTION_KEYS "kid=active:${auth_encryption_key}"
+    ensure_env_value AUTH_ENCRYPTION_ACTIVE_KID active
 fi
-port="${port:-$DEFAULT_PORT}"
-valid_port "$port" || fail "端口必须是 1 到 65535 之间的整数。"
-generate_env "$port"
-write_database_urls
-printf '已生成 .env，权限为 0600。安装目录: %s\n' "$INSTALL_DIR"
-
-if [[ "$PREPARE_ONLY" == true ]]; then
-    printf '已生成 %s（--prepare-only，不启动容器）。\n' "$ENV_FILE"
-    exit 0
-fi
-
-command_exists docker || fail "缺少 Docker Engine。请先安装 Docker：https://docs.docker.com/engine/install/"
-docker compose version >/dev/null 2>&1 || fail "缺少 Docker Compose v2 插件。请安装 docker-compose-plugin。"
-docker info >/dev/null 2>&1 || fail "无法连接 Docker daemon；请启动 Docker 或使用有权限的账号运行。"
+ensure_database_urls
+set_env_value CHENXING_RELEASE_VERSION "$RELEASE_VERSION"
+set_env_value CHENXING_IMAGE "$CHENXING_IMAGE"
 
 stage "校验 Compose 配置"
 compose config --quiet
@@ -264,38 +242,34 @@ printf 'Compose 配置有效。\n'
 
 stage "拉取镜像"
 docker pull "$CHENXING_IMAGE"
-docker pull "$POSTGRES_IMAGE"
-docker pull "$REDIS_IMAGE"
+docker pull "$(read_env_value POSTGRES_IMAGE)"
+docker pull "$(read_env_value REDIS_IMAGE)"
 
 stage "启动 PostgreSQL 和 Redis"
 compose up -d postgres redis
 wait_for_postgres || fail "PostgreSQL 未能在规定时间内就绪。"
 
-stage "执行数据库迁移"
+stage "执行数据库迁移（迁移先行，失败不切换版本）"
 if ! compose run --rm migrate; then
     report_application_diagnostics
-    fail "数据库迁移失败；应用未启动。请修复错误后重新运行 bash $INSTALL_DIR/manage.sh。"
+    fail "数据库迁移失败；正在运行的旧版本未改变。请修复错误后重新运行 bash $INSTALL_DIR/manage.sh。"
 fi
 
-stage "启动辰星认证中枢"
+stage "切换到新版本"
 compose up -d app
 if ! wait_for_application; then
     report_application_diagnostics
-    fail "应用未能在规定时间内就绪。"
+    fail "新版本未能在规定时间内就绪。请查看上方日志。"
 fi
 
-stage "安装完成"
+stage "升级完成"
 compose ps
 cat <<EOF
 
-访问地址: http://服务器地址:${port}
-安装目录: ${INSTALL_DIR}
 当前版本: ${RELEASE_VERSION}
+安装目录: ${INSTALL_DIR}
 
-首次打开站点会引导创建首个所有者（Owner）账号。在 Owner 于管理设置中写入本站的
-固定 HTTPS Issuer 之前，服务运行在保护模式：健康检查和前端可用，注册与 OAuth/OIDC
-相关路由保持关闭。Issuer 保存在 PostgreSQL app_settings 中，不能从请求 Host 或代理头推导。
-
-升级：在本目录重新运行 bash ./manage.sh 即可（禁止手动 docker compose pull）。
-管理员 Token 和全部随机密钥只保存在 ${ENV_FILE}，请备份并保持私密。
+下次升级：在本目录重新运行 bash ./manage.sh 即可。
+回滚：CHENXING_RELEASE_VERSION=v旧版本 bash ./manage.sh。
+禁止手动 docker compose pull && up -d，那会绕过数据库迁移。
 EOF
