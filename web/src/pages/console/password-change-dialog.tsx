@@ -1,4 +1,4 @@
-import { useModalFocus } from '@chenxing/ui'
+import { useModalFocus, ModalOverlay } from '@chenxing/ui'
 import { Button, HudPanel, Icon, PasswordField } from '@chenxing/ui'
 import type { FormEvent } from 'react'
 
@@ -39,11 +39,7 @@ export function PasswordChangeDialog({
   })
 
   return (
-    <div
-      className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center overflow-y-auto bg-black/70 p-4"
-      role="presentation"
-      onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onCancel() }}
-    >
+    <ModalOverlay onDismiss={() => { if (!busy) onCancel() }}>
       <HudPanel
         as="form"
         ref={containerRef}
@@ -76,6 +72,6 @@ export function PasswordChangeDialog({
           <Button type="submit" icon="key-round" disabled={busy}>{busy ? '修改中…' : '确认修改'}</Button>
         </div>
       </HudPanel>
-    </div>
+    </ModalOverlay>
   )
 }

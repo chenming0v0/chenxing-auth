@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import QRCode from 'qrcode'
 import type { SecurityTotpStart } from '../../api'
-import { useModalFocus } from '@chenxing/ui'
+import { useModalFocus, ModalOverlay } from '@chenxing/ui'
 import { Button, CopyValue, HudPanel, Icon } from '@chenxing/ui'
 
 type TotpEnrollmentDialogProps = {
@@ -21,11 +21,7 @@ export function TotpEnrollmentDialog({ data, code, busy, confirming, onCode, onC
   })
 
   return (
-    <div
-      className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center overflow-y-auto bg-black/70 p-4"
-      role="presentation"
-      onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onCancel() }}
-    >
+    <ModalOverlay onDismiss={() => { if (!busy) onCancel() }}>
       <HudPanel
         as="section"
         ref={containerRef}
@@ -33,7 +29,7 @@ export function TotpEnrollmentDialog({ data, code, busy, confirming, onCode, onC
         aria-modal="true"
         aria-labelledby="totp-enrollment-title"
         tabIndex={-1}
-        className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-3xl"
+        className="w-full max-w-3xl"
       >
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -77,7 +73,7 @@ export function TotpEnrollmentDialog({ data, code, busy, confirming, onCode, onC
           </div>
         </div>
       </HudPanel>
-    </div>
+    </ModalOverlay>
   )
 }
 

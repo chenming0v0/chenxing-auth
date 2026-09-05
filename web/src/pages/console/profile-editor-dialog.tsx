@@ -1,4 +1,4 @@
-import { useModalFocus } from '@chenxing/ui'
+import { useModalFocus, ModalOverlay } from '@chenxing/ui'
 import { Button, Field, HudPanel, Icon, PasswordField } from '@chenxing/ui'
 import type { FormEvent } from 'react'
 
@@ -36,11 +36,7 @@ export function ProfileEditorDialog({
   })
 
   return (
-    <div
-      className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center overflow-y-auto bg-black/70 p-4"
-      role="presentation"
-      onMouseDown={(event) => { if (event.target === event.currentTarget) requestCancel() }}
-    >
+    <ModalOverlay onDismiss={requestCancel}>
       <HudPanel
         as="form"
         ref={containerRef}
@@ -48,7 +44,7 @@ export function ProfileEditorDialog({
         aria-modal="true"
         aria-labelledby="profile-editor-title"
         tabIndex={-1}
-        className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-2xl"
+        className="w-full max-w-2xl"
         onSubmit={onSubmit}
       >
         <div className="flex items-start justify-between gap-4">
@@ -84,6 +80,6 @@ export function ProfileEditorDialog({
           </Button>
         </div>
       </HudPanel>
-    </div>
+    </ModalOverlay>
   )
 }
