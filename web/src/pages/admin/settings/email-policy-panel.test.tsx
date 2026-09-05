@@ -62,7 +62,7 @@ function save() {
 describe('EmailPolicyPanel 域名输入', () => {
   it('按后端规则规范化并拒绝邮箱地址', async () => {
     await renderPanel()
-    const input = screen.getByLabelText('输入要添加的邮箱域名')
+    const input = screen.getByLabelText('允许的邮箱域名')
     fireEvent.change(input, { target: { value: '  NEW.EXAMPLE.COM  ' } })
     fireEvent.click(screen.getByRole('button', { name: '添加' }))
     expect(screen.getByText('new.example.com')).toBeTruthy()
@@ -77,7 +77,7 @@ describe('EmailPolicyPanel 域名输入', () => {
     confirmResult = false
     await renderPanel()
     fireEvent.click(screen.getByRole('switch', { name: '启用邮箱域名白名单' }))
-    fireEvent.click(screen.getByRole('button', { name: '移除' }))
+    fireEvent.click(screen.getByRole('button', { name: '移除 corp.example' }))
     save()
 
     expect(confirmCalls).toBe(1)
@@ -103,7 +103,7 @@ describe('EmailPolicyPanel 域名输入', () => {
   it('白名单原本关闭时清空被忽略的列表不要求确认', async () => {
     policy.whitelist_enabled = false
     await renderPanel()
-    fireEvent.click(screen.getByRole('button', { name: '移除' }))
+    fireEvent.click(screen.getByRole('button', { name: '移除 corp.example' }))
     save()
 
     expect(confirmCalls).toBe(0)

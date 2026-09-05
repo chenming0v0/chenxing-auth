@@ -1,6 +1,6 @@
-import { useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { ApiError, apiFetch, type EmailPolicySetting, type UpdateEmailPolicySetting } from '../../../api'
-import { Button, Chip, Field, HudPanel, Icon, Notice, ToggleRow } from '@chenxing/ui'
+import { Button, HudPanel, Icon, Notice, TagInputField, ToggleRow } from '@chenxing/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
 const MAX_ALLOWED_DOMAINS = 128
@@ -76,14 +76,6 @@ export function EmailPolicyPanel({ onMessage, onDirtyChange }: SettingsPanelProp
     setSetting({ ...setting, allowed_domains: [...setting.allowed_domains, domain] })
     setDraftDomain('')
     setDomainError('')
-  }
-
-  function onDomainKey(event: KeyboardEvent<HTMLInputElement>) {
-    if (busy) return
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      addDomain()
-    }
   }
 
   async function save(event: FormEvent) {
@@ -179,49 +171,49 @@ export function EmailPolicyPanel({ onMessage, onDirtyChange }: SettingsPanelProp
             <Notice tone="warning">白名单已启用但允许域名列表为空，无法保存。请至少添加一个域名，或关闭白名单。</Notice>
           ) : null}
           <fieldset disabled={busy} className="contents">
-            <div>
-              <p className="chenxing-label">已允许的域名</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {setting.allowed_domains.length ? setting.allowed_domains.map((domain) => (
-                  <Chip
-                    key={domain}
-                    onRemove={() => {
-                      if (busy) return
-                      setSetting((current) => current ? {
-                        ...current,
-                        allowed_domains: current.allowed_domains.filter((item) => item !== domain),
-                      } : current)
-                    }}
-                  >
-                    {domain}
-                  </Chip>
-                )) : <p className="chenxing-caption">尚未添加域名。</p>}
-              </div>
-            </div>
-            <div className="flex flex-col gap-3 sm:flex-row">
-              <div className="flex-1">
-                <Field
-                  label="输入要添加的邮箱域名"
-                  value={draftDomain}
-                  onChange={(event) => {
-                    if (busy) return
-                    const value = event.target.value
-                    setDraftDomain(value)
-                    if (domainError) setDomainError(domainValidationError(value))
-                  }}
-                  onKeyDown={onDomainKey}
-                  onBlur={() => { if (!busy) setDomainError(domainValidationError(draftDomain)) }}
-                  placeholder="例如: gmail.com"
-                  maxLength={MAX_DOMAIN_LENGTH}
-                  spellCheck={false}
-                  errorText={domainError || undefined}
-                  hint={domainError ? undefined : '仅接受完整域名，例如 example.com；不含 @、协议、路径或通配符。'}
-                />
-              </div>
-              <div className="flex items-end">
-                <Button type="button" icon="plus" onClick={addDomain} disabled={busy}>添加</Button>
-              </div>
-            </div>
+            <TagInputField
+              label="允许的邮箱域名"
+              values={setting.allowed_domains}
+              draft={draftDomain}
+              onDraftChange={(value) => {
+                if (busy) return
+                setDraftDomain(value)
+                if (domainError) setDomainError(domainValidationError(value))
+              }}
+              onAdd={addDomain}
+              onRemove={(domain) => {
+                if (busy) return
+                setSetting((current) => current ? {
+                  ...current,
+                  allowed_domains: current.allowed_domains.filter((item) => item !== domain),
+                } : current)
+              }}
+              onUpdate={(domain, index, nextValue) => {
+                if (busy) return false
+                const normalized = normalizeDomain(nextValue)
+                const error = domainValidationError(nextValue)
+                if (error) {
+                  setDomainError(error)
+                  return false
+                }
+                if (setting.allowed_domains.some((item, itemIndex) => itemIndex !== index && normalizeDomain(item) === normalized)) {
+                  setDomainError('这个邮箱域名已经在允许列表中。')
+                  return false
+                }
+                setSetting((current) => current ? {
+                  ...current,
+                  allowed_domains: current.allowed_domains.map((item, itemIndex) => itemIndex === index ? normalized : item),
+                } : current)
+                setDomainError('')
+                return true
+              }}
+              onBlur={() => { if (!busy) setDomainError(domainValidationError(draftDomain)) }}
+              placeholder="输入域名后按 Enter，例如 gmail.com"
+              maxLength={MAX_DOMAIN_LENGTH}
+              disabled={busy}
+              errorText={domainError || undefined}
+              hint={domainError ? undefined : '仅接受完整域名，例如 example.com；不含 @、协议、路径或通配符。'}
+            />
             <div>
               <Button type="submit" variant="ghost" icon="save" disabled={busy}>保存邮箱域名白名单设置</Button>
             </div>
