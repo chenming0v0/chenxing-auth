@@ -222,28 +222,6 @@ jobs:
           pattern: binary-*
           merge-multiple: true
           path: dist
-      - name: Package versioned installer and release manifest
-        shell: bash
-        env:
-          IMAGE_DIGEST: ${{ needs.container.outputs.digest }}
-        run: |
-          set -euo pipefail
-          version="$GITHUB_REF_NAME"
-          [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
-          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          script_sha256="$(sha256sum manage.sh | awk '{print $1}')"
-          image="ghcr.io/${GITHUB_REPOSITORY}:${version}@${IMAGE_DIGEST}"
-          cp manage.sh "dist/chenxing-auth-manage.sh"
-          chmod 755 "dist/chenxing-auth-manage.sh"
-          cat > "dist/chenxing-auth-release.env" <<EOF
-          schema=1
-          version=${version}
-          image=${image}
-          image_digest=${IMAGE_DIGEST}
-          script=chenxing-auth-manage.sh
-          script_sha256=${script_sha256}
-          EOF
-          sed -i 's/^          //' "dist/chenxing-auth-release.env"
       - name: Generate checksums
         shell: bash
         run: |

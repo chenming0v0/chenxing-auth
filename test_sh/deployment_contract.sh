@@ -15,54 +15,61 @@ assert_private_mode() {
     fi
 }
 
-assert_no_release_staging() {
-    local root="$1" leftovers
-    # `find -type f` alone cannot see this: the upgrade path stages the verified
-    # manager copy (mode 700, security material) inside a `.release.XXXXXX`
-    # directory. If the staging directory survives, every upgrade leaves another
-    # executable copy of the installer behind in the deployment directory.
-    leftovers="$(find "$root" -maxdepth 1 -name '.release.*' -printf '%f\n' | sort | tr '\n' ' ')"
-    if [[ -n "$leftovers" ]]; then
-        printf '%s\n' "release staging directories survived in $root: $leftovers" >&2
-        return 1
-    fi
+expected_files='.env compose.yml install.sh manage.sh update.sh '
+
+list_files() {
+    find "$1" -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' '
 }
 
+# manage.sh 只做引导：每次运行重新下载 install.sh / update.sh / compose.yml。
+# 用假 curl 把“下载”映射到本仓库文件，验证分发契约本身。
+fake_bin="$WORK_DIR/fake-bin"
+mkdir -p "$fake_bin"
+cat > "$fake_bin/curl" <<FAKE_CURL
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT_DIR='$ROOT_DIR'
+FAKE_CURL
+cat >> "$fake_bin/curl" <<'FAKE_CURL'
+output=''
+url=''
+while (($#)); do
+    case "$1" in
+        -o) output="$2"; shift 2 ;;
+        http*) url="$1"; shift ;;
+        *) shift ;;
+    esac
+done
+case "$url" in
+    */deploy/compose.yml) cp "$ROOT_DIR/deploy/compose.yml" "$output" ;;
+    */install.sh) cp "$ROOT_DIR/install.sh" "$output" ;;
+    */update.sh) cp "$ROOT_DIR/update.sh" "$output" ;;
+    *) echo "fake curl: unexpected url: $url" >&2; exit 1 ;;
+esac
+FAKE_CURL
+chmod 755 "$fake_bin/curl"
+
+# ---- 首次安装：无 .env 时 manage.sh 必须移交 install.sh，参数原样透传 ----
 external_key='external-value-must-not-be-used'
 export AUTH_ENCRYPTION_KEY="$external_key"
-mkdir -p "$WORK_DIR/install"
-cp "$ROOT_DIR/manage.sh" "$WORK_DIR/install/manage.sh"
+install_root="$WORK_DIR/install"
+mkdir -p "$install_root"
+cp "$ROOT_DIR/manage.sh" "$install_root/manage.sh"
 release_version=v0.0.0
-script_sha256="$(sha256sum "$ROOT_DIR/manage.sh" | awk '{print $1}')"
-release_manifest="$WORK_DIR/release.env"
-cat > "$release_manifest" <<EOF
-schema=1
-version=${release_version}
-image=ghcr.io/chenming0v0/chenxing-auth:${release_version}@sha256:0000000000000000000000000000000000000000000000000000000000000000
-image_digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
-script=chenxing-auth-manage.sh
-script_sha256=${script_sha256}
-EOF
 CHENXING_PORT=8080 CHENXING_RELEASE_VERSION="$release_version" \
-    CHENXING_RELEASE_MANIFEST_FILE="$release_manifest" \
-    bash "$WORK_DIR/install/manage.sh" --prepare-only >/dev/null
+    PATH="$fake_bin:$PATH" bash "$install_root/manage.sh" --prepare-only >/dev/null
 
-env_file="$WORK_DIR/install/.env"
-compose_file="$WORK_DIR/install/compose.yml"
-manager_file="$WORK_DIR/install/manage.sh"
-[[ -f "$manager_file" ]]
-[[ "$(find "$WORK_DIR/install" -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')" == '.env compose.yml manage.sh ' ]]
-assert_no_release_staging "$WORK_DIR/install"
-[[ "$(stat -c '%a' "$manager_file")" == 700 ]]
+env_file="$install_root/.env"
+compose_file="$install_root/compose.yml"
+[[ "$(list_files "$install_root")" == "$expected_files" ]]
+assert_private_mode "$env_file"
 actual_key="$(awk -F= '$1 == "AUTH_ENCRYPTION_KEY" { print substr($0, index($0, "=") + 1); exit }' "$env_file")"
 ring="$(awk -F= '$1 == "AUTH_ENCRYPTION_KEYS" { print substr($0, index($0, "=") + 1); exit }' "$env_file")"
 [[ -n "$actual_key" && "$actual_key" != "$external_key" ]]
 [[ "$ring" == "kid=active:${actual_key}" ]]
 grep -q "^CHENXING_RELEASE_VERSION=${release_version}$" "$env_file"
-grep -q '^CHENXING_RELEASE_MANIFEST_SHA256=[0-9a-f]\{64\}$' "$env_file"
-grep -q '^CHENXING_SCRIPT_SHA256=[0-9a-f]\{64\}$' "$env_file"
-grep -q '^CHENXING_IMAGE=ghcr.io/chenming0v0/chenxing-auth:v0.0.0@sha256:' "$env_file"
-assert_private_mode "$env_file"
+grep -q "^CHENXING_IMAGE=ghcr.io/chenming0v0/chenxing-auth:${release_version}$" "$env_file"
+grep -q '^APP_PORT=8080$' "$env_file"
 for key in POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD MIGRATION_DATABASE_URL; do
     grep -q "^${key}=." "$env_file"
 done
@@ -87,53 +94,42 @@ assert "chenxing" in str(data["services"]["migrate"]["environment"]["MIGRATION_D
 ' <<< "$config"
 fi
 
-# Existing deployments upgrade by running the same file again. Fake the
-# versioned release asset download and Docker boundary to prove the temporary
-# copy is removed.
+# ---- 升级：已有 .env 时 manage.sh 必须移交 update.sh，保留全部密钥，迁移先行 ----
 upgrade_root="$WORK_DIR/upgrade"
 mkdir -p "$upgrade_root"
 cp "$ROOT_DIR/manage.sh" "$upgrade_root/manage.sh"
 cp "$env_file" "$upgrade_root/.env"
-upgrade_bin="$WORK_DIR/upgrade-bin"
-mkdir -p "$upgrade_bin"
-cat > "$upgrade_bin/curl" <<'FAKE_CURL'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-output=''
-while (($#)); do
-    if [[ "$1" == -o ]]; then
-        output="$2"
-        shift 2
-    else
-        shift
-    fi
-done
-cp "${FAKE_MANAGER_SOURCE:?}" "$output"
-FAKE_CURL
-cat > "$upgrade_bin/docker" <<'FAKE_DOCKER_UPGRADE'
+upgrade_marker="$WORK_DIR/upgrade.marker"
+: > "$upgrade_marker"
+cat > "$fake_bin/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 if [[ "${1:-}" == compose ]]; then
     shift
     command_line="$*"
     case "$command_line" in
-        *" config --quiet"*) exit 0 ;;
-        *" exec -T postgres pg_isready"*) exit 0 ;;
-        *" run --rm migrate"*) exit 0 ;;
-        *" exec -T app curl"*) exit 0 ;;
-        *" up "*) exit 0 ;;
-        *" ps"*) exit 0 ;;
-        *) exit 0 ;;
+        *" run --rm migrate"*) printf '%s\n' migrate >> "${FAKE_DOCKER_MARKER:?}" ;;
+        *" up -d app"*) printf '%s\n' up-app >> "${FAKE_DOCKER_MARKER:?}" ;;
     esac
+    exit 0
 fi
 if [[ "${1:-}" == info || "${1:-}" == version || "${1:-}" == pull ]]; then exit 0; fi
-FAKE_DOCKER_UPGRADE
-chmod 755 "$upgrade_bin/curl" "$upgrade_bin/docker"
-FAKE_MANAGER_SOURCE="$ROOT_DIR/manage.sh" CHENXING_RELEASE_VERSION="$release_version" \
-    CHENXING_RELEASE_MANIFEST_FILE="$release_manifest" PATH="$upgrade_bin:$PATH" \
-    bash "$upgrade_root/manage.sh" >/dev/null
-[[ "$(find "$upgrade_root" -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ')" == '.env compose.yml manage.sh ' ]]
-assert_no_release_staging "$upgrade_root"
+exit 0
+FAKE_DOCKER
+chmod 755 "$fake_bin/docker"
+FAKE_DOCKER_MARKER="$upgrade_marker" CHENXING_RELEASE_VERSION=v0.0.1 \
+    PATH="$fake_bin:$PATH" bash "$upgrade_root/manage.sh" >/dev/null
+[[ "$(list_files "$upgrade_root")" == "$expected_files" ]]
+assert_private_mode "$upgrade_root/.env"
+upgraded_key="$(awk -F= '$1 == "AUTH_ENCRYPTION_KEY" { print substr($0, index($0, "=") + 1); exit }' "$upgrade_root/.env")"
+[[ "$upgraded_key" == "$actual_key" ]]
+old_password="$(awk -F= '$1 == "POSTGRES_PASSWORD" { print substr($0, index($0, "=") + 1); exit }' "$env_file")"
+new_password="$(awk -F= '$1 == "POSTGRES_PASSWORD" { print substr($0, index($0, "=") + 1); exit }' "$upgrade_root/.env")"
+[[ "$new_password" == "$old_password" ]]
+grep -q '^CHENXING_RELEASE_VERSION=v0.0.1$' "$upgrade_root/.env"
+grep -q '^CHENXING_IMAGE=ghcr.io/chenming0v0/chenxing-auth:v0.0.1$' "$upgrade_root/.env"
+[[ "$(tr '\n' ' ' < "$upgrade_marker")" == 'migrate up-app ' ]]
+rm -f "$fake_bin/docker"
 
 # Exercise the source installer upgrade path with a minimal temporary checkout.
 # The fake Docker implementation records whether `up` was reached and reports
@@ -142,9 +138,9 @@ source_root="$WORK_DIR/source-copy"
 mkdir -p "$source_root/deploy"
 cp "$ROOT_DIR/deploy/install.sh" "$source_root/deploy/install.sh"
 cp "$ROOT_DIR/docker-compose.prod.yml" "$source_root/docker-compose.prod.yml"
-fake_bin="$WORK_DIR/fake-bin"
-mkdir -p "$fake_bin"
-cat > "$fake_bin/docker" <<'FAKE_DOCKER'
+src_fake_bin="$WORK_DIR/src-fake-bin"
+mkdir -p "$src_fake_bin"
+cat > "$src_fake_bin/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 if [[ "${1:-}" == compose ]]; then
@@ -178,11 +174,11 @@ if [[ "${1:-}" == volume && "${2:-}" == ls ]]; then
 fi
 exit 0
 FAKE_DOCKER
-cat > "$fake_bin/curl" <<'FAKE_CURL'
+cat > "$src_fake_bin/curl" <<'FAKE_CURL'
 #!/usr/bin/env bash
 exit 0
 FAKE_CURL
-chmod 755 "$fake_bin/docker" "$fake_bin/curl"
+chmod 755 "$src_fake_bin/docker" "$src_fake_bin/curl"
 
 legacy_project="$(basename "$source_root" | tr '[:upper:]' '[:lower:]')"
 cat > "$source_root/.env" <<EOF
@@ -201,7 +197,7 @@ chmod 644 "$source_root/.env"
 marker="$WORK_DIR/fake-docker.marker"
 : > "$marker"
 FAKE_DOCKER_MARKER="$marker" FAKE_DOCKER_PROJECT="$legacy_project" \
-    PATH="$fake_bin:$PATH" bash -c 'hash -r; exec bash "$1"' _ "$source_root/deploy/install.sh" >/dev/null
+    PATH="$src_fake_bin:$PATH" bash -c 'hash -r; exec bash "$1"' _ "$source_root/deploy/install.sh" >/dev/null
 assert_private_mode "$source_root/.env"
 grep -q "^COMPOSE_PROJECT_NAME=${legacy_project}$" "$source_root/.env"
 [[ "$(tr '\n' ' ' < "$marker")" == 'up migrate up ' ]]
@@ -216,7 +212,7 @@ chmod 600 "$moved_root/.env"
 moved_marker="$WORK_DIR/moved.marker"
 : > "$moved_marker"
 if FAKE_DOCKER_MARKER="$moved_marker" FAKE_DOCKER_PROJECT=moved-source \
-    FAKE_DOCKER_NO_VOLUMES=1 PATH="$fake_bin:$PATH" bash -c 'hash -r; exec bash "$1"' _ "$moved_root/deploy/install.sh" >/dev/null 2>&1; then
+    FAKE_DOCKER_NO_VOLUMES=1 PATH="$src_fake_bin:$PATH" bash -c 'hash -r; exec bash "$1"' _ "$moved_root/deploy/install.sh" >/dev/null 2>&1; then
     printf '%s\n' 'moved source without identifiable volumes unexpectedly succeeded' >&2
     exit 1
 fi
