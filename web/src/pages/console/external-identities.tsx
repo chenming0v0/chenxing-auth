@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiFetch, type ExternalIdentity, type ExternalIdentityListResponse, type PublicExternalProvider } from '../../api'
-import { useModalFocus } from '@chenxing/ui'
+import { useModalFocus, ModalOverlay } from '@chenxing/ui'
 import { Badge, Button, HudPanel, Icon, PasswordField } from '@chenxing/ui'
 import { safeRedirectTarget } from '../../safe-redirect'
 import type { MessageTone } from './profile-avatar'
@@ -256,8 +256,8 @@ function UnlinkDialog({ identity, password, busy, onPassword, onCancel, onConfir
   })
 
   return (
-    <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-black/70 p-4" role="presentation">
-      <HudPanel ref={containerRef} as="section" role="dialog" aria-modal="true" aria-labelledby="unlink-external-title" tabIndex={-1} className="relative z-[var(--chenxing-z-dialog)] w-full max-w-md">
+    <ModalOverlay>
+      <HudPanel ref={containerRef} as="section" role="dialog" aria-modal="true" aria-labelledby="unlink-external-title" tabIndex={-1} className="w-full max-w-md">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-error)]">// Re-authentication</p>
@@ -272,7 +272,7 @@ function UnlinkDialog({ identity, password, busy, onPassword, onCancel, onConfir
           <Button type="button" variant="danger" icon="unlink" onClick={onConfirm} disabled={busy}>{busy ? '处理中…' : '确认解除绑定'}</Button>
         </div>
       </HudPanel>
-    </div>
+    </ModalOverlay>
   )
 }
 

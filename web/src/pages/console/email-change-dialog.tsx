@@ -1,4 +1,4 @@
-import { useModalFocus } from '@chenxing/ui'
+import { useModalFocus, ModalOverlay } from '@chenxing/ui'
 import { Button, Field, HudPanel, Icon, Notice, PasswordField } from '@chenxing/ui'
 import type { FormEvent } from 'react'
 
@@ -36,12 +36,8 @@ export function EmailChangeDialog({
   })
 
   return (
-    <div
-      className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center overflow-y-auto bg-black/70 p-4"
-      role="presentation"
-      onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onCancel() }}
-    >
-      <HudPanel ref={containerRef} as="form" role="dialog" aria-modal="true" aria-labelledby="email-change-title" tabIndex={-1} className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-lg" onSubmit={onSubmit}>
+    <ModalOverlay onDismiss={() => { if (!busy) onCancel() }}>
+      <HudPanel ref={containerRef} as="form" role="dialog" aria-modal="true" aria-labelledby="email-change-title" tabIndex={-1} className="w-full max-w-lg" onSubmit={onSubmit}>
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-cyan)]">// Email Security</p>
@@ -78,6 +74,6 @@ export function EmailChangeDialog({
           </Button>
         </div>
       </HudPanel>
-    </div>
+    </ModalOverlay>
   )
 }

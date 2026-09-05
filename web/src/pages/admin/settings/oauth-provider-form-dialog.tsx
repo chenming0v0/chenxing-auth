@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import type { OAuthProviderInput, OAuthProviderSummary } from '../../../api'
 import { useModalFocus } from '@chenxing/ui'
-import { Button, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '@chenxing/ui'
+import { Button, Field, HudPanel, Icon, ModalOverlay, Notice, PasswordField, ToggleRow } from '@chenxing/ui'
 import { SelectField } from '@chenxing/ui'
 import { useDirtyReport } from './panel'
 
@@ -190,8 +190,10 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
   }
 
   return (
-    <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-[rgba(2,4,10,0.72)] px-4 py-8 backdrop-blur-md">
-      <HudPanel ref={containerRef} as="form" role="dialog" aria-modal="true" aria-labelledby="oauth-provider-dialog-title" tabIndex={-1} className="w-full max-w-lg max-h-[90vh] overflow-y-auto" onSubmit={submit}>
+    <ModalOverlay>
+      {/* 面板不设 max-height/overflow：超高时由 ModalOverlay 整体滚动，
+          否则 HudPanel 的角标会跟着内容滚走，滚动条也会切进圆角边框。 */}
+      <HudPanel ref={containerRef} as="form" role="dialog" aria-modal="true" aria-labelledby="oauth-provider-dialog-title" tabIndex={-1} className="w-full max-w-lg" onSubmit={submit}>
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 id="oauth-provider-dialog-title" className="chenxing-h2 flex items-center gap-2">
@@ -292,6 +294,6 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
           </div>
         </div>
       </HudPanel>
-    </div>
+    </ModalOverlay>
   )
 }

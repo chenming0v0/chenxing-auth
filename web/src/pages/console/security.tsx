@@ -3,7 +3,7 @@ import { replaceUrl, useLocation, useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
 import { apiFetch, type SecurityEnrollmentResult, type SecurityFactorSummary, type SecurityPasskeyStart, type SecurityRemovalResult, type SecurityTotpStart } from '../../api'
 import { assertPublicKeyCredential, decodeCreationOptions, serializeAttestation, supportsWebAuthnCreate, type PasskeyChallenge } from '../../passkey'
-import { useDrawerFocus } from '@chenxing/ui'
+import { useDrawerFocus, ModalOverlay } from '@chenxing/ui'
 import { Badge, Button, HudPanel, Icon, Notice, PasswordField } from '@chenxing/ui'
 import { useModalFocus } from '@chenxing/ui'
 import { ExternalIdentities } from './external-identities'
@@ -309,14 +309,14 @@ function RemovalDialog({ method, password, busy, onPassword, onCancel, onConfirm
   })
 
   return (
-    <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-black/70 p-4" role="presentation">
-      <HudPanel ref={containerRef} as="section" role="dialog" aria-modal="true" aria-labelledby="remove-factor-title" tabIndex={-1} className="relative z-[var(--chenxing-z-dialog)] w-full max-w-md">
+    <ModalOverlay>
+      <HudPanel ref={containerRef} as="section" role="dialog" aria-modal="true" aria-labelledby="remove-factor-title" tabIndex={-1} className="w-full max-w-md">
         <div className="flex items-start justify-between gap-4"><div><p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-error)]">// Re-authentication</p><h2 id="remove-factor-title" className="chenxing-h2 mt-2">移除{method === 'totp' ? ' TOTP' : '全部 Passkey'}</h2></div><button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel} disabled={busy}><Icon name="x" size={17} /></button></div>
         <p className="chenxing-caption mt-4">这是敏感安全操作。移除后所有活跃会话都会失效，并需要重新登录。请输入当前密码确认身份。</p>
         <div className="mt-5"><PasswordField id="remove-factor-password" label="当前密码" autoComplete="current-password" value={password} onChange={(event) => onPassword(event.target.value)} /></div>
         <div className="mt-5 flex flex-wrap justify-end gap-3"><Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>取消</Button><Button type="button" variant="danger" icon="trash-2" onClick={onConfirm} disabled={busy}>{busy ? '处理中…' : '确认移除'}</Button></div>
       </HudPanel>
-    </div>
+    </ModalOverlay>
   )
 }
 

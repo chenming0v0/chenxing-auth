@@ -270,6 +270,8 @@ main {
 ::-webkit-scrollbar-track { background: #04060d; }
 ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #1e4b8a, #0f2b52); border-radius: 99px; border: 2px solid #04060d; }
 ::-webkit-scrollbar-thumb:hover { background: #2a6bb8; }
+/* 双滚动条交汇处的角块默认是白色，必须与深色轨道一致 */
+::-webkit-scrollbar-corner { background: #04060d; }
 ::selection { background: rgba(56, 189, 248, 0.4); color: #fff; }
 
 

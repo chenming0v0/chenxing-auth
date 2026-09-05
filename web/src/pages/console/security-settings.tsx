@@ -1,6 +1,6 @@
 import type { FormEvent, ReactNode } from 'react'
 import type { SecurityFactorSummary, SecurityTotpStart } from '../../api'
-import { Badge, Button, Icon } from '@chenxing/ui'
+import { Badge, Button, Icon, SettingsActionRow } from '@chenxing/ui'
 import { TotpEnrollmentDialog } from './totp-enrollment-dialog'
 
 export type SecurityFactorState =
@@ -71,7 +71,7 @@ export function SecuritySettings({
       ) : null}
 
       <div className="space-y-3">
-        <SecurityActionRow
+        <SettingsActionRow
           icon="user"
           title="账户资料"
           description={profileSummary}
@@ -79,7 +79,7 @@ export function SecuritySettings({
           actions={profileAction}
         />
 
-        <SecurityActionRow
+        <SettingsActionRow
           icon="mail"
           title="邮箱地址"
           description={`当前邮箱：${userEmail}`}
@@ -87,7 +87,7 @@ export function SecuritySettings({
           actions={emailAction}
         />
 
-        <SecurityActionRow
+        <SettingsActionRow
           icon="lock-keyhole"
           title="密码管理"
           description="定期更新密码；修改成功后所有现有会话都会被撤销。"
@@ -95,7 +95,7 @@ export function SecuritySettings({
           actions={passwordAction}
         />
 
-        <SecurityActionRow
+        <SettingsActionRow
           icon="key-round"
           accent="gold"
           title="Passkey 登录"
@@ -115,7 +115,7 @@ export function SecuritySettings({
           ) : undefined}
         />
 
-        <SecurityActionRow
+        <SettingsActionRow
           icon="shield-check"
           title="验证器应用"
           description="扫描二维码绑定 TOTP 动态验证码，为密码登录增加独立的第二步验证。"
@@ -144,35 +144,5 @@ export function SecuritySettings({
         />
       ) : null}
     </div>
-  )
-}
-
-function SecurityActionRow({ icon, accent = 'cyan', title, description, status, actions }: {
-  icon: string
-  accent?: 'cyan' | 'gold'
-  title: string
-  description: string
-  status: ReactNode
-  actions?: ReactNode
-}) {
-  const accentClass = accent === 'gold' ? 'text-[var(--chenxing-gold)]' : 'text-[var(--chenxing-cyan)]'
-  return (
-    <section className="rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.38)] p-4 transition-colors duration-200 hover:border-[var(--chenxing-border-strong)] sm:p-5">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex min-w-0 items-start gap-3.5">
-          <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)] ${accentClass}`}>
-            <Icon name={icon} size={19} />
-          </span>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h4 className="chenxing-body text-sm font-semibold">{title}</h4>
-              {status}
-            </div>
-            <p className="chenxing-caption mt-1 max-w-2xl">{description}</p>
-          </div>
-        </div>
-        {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2 lg:justify-end">{actions}</div> : null}
-      </div>
-    </section>
   )
 }

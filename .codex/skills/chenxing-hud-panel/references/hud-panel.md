@@ -29,10 +29,14 @@ export function HudPanel({ children, className = '' }: { children: ReactNode; cl
 - Use `w-full`, `max-w-*`, grid columns, or parent layout to size it.
 - Pass those utilities via `className` so they land on the panel element.
 
+## Missing component fallback
+
+If `@chenxing/ui` does not yet provide a needed component, implement a temporary fallback in the app so the current feature can proceed. Use the project's existing card/panel visual language and keep the fallback-specific styles local to that component. Before or alongside the change, check for an existing issue; otherwise open and cross-link one issue in this repository and one in `chenming0v0/chenxing-ui`, recording the missing component, use case, and proposed shared API. Replace the fallback when the shared component becomes available.
+
 ## Workflow
 
-1. Add or update `.chenxing-hud-panel` in the chenxing-ui repo (`src/styles/components.css`), then update the locked dependency in `web/package-lock.json`.
-2. Use `HudPanel` from `@chenxing/ui` in pages; never hand-roll the class.
+1. For formal panel changes, add or update `.chenxing-hud-panel` in the chenxing-ui repo (`src/styles/components.css`), then update the locked dependency in `web/package-lock.json`.
+2. Use `HudPanel` from `@chenxing/ui` for formal panel surfaces; never hand-roll the public class.
 3. Rebuild the frontend so `web/dist` matches the source:
 
 ```bash

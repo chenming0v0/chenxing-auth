@@ -68,7 +68,7 @@ describe('ConsoleProfile 账户设置布局', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '修改账户资料' }))
     const profileDialog = screen.getByRole('dialog', { name: '修改账户资料' })
-    expect(profileDialog.parentElement?.className).toContain('z-[var(--chenxing-z-overlay)]')
+    expect(profileDialog.parentElement?.className).toContain('chenxing-modal-overlay')
     expect(within(profileDialog).getByLabelText('显示名称')).toHaveProperty('value', '辰星用户')
     expect(within(profileDialog).getByLabelText('用户名')).toHaveProperty('value', 'chenxing')
     expect(within(profileDialog).queryByText(/邮箱/)).toBeNull()
@@ -76,7 +76,7 @@ describe('ConsoleProfile 账户设置布局', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭' }))
     fireEvent.click(screen.getByRole('button', { name: '更改邮箱' }))
     const emailDialog = screen.getByRole('dialog', { name: '更改邮箱' })
-    expect(emailDialog.parentElement?.className).toContain('z-[var(--chenxing-z-overlay)]')
+    expect(emailDialog.parentElement?.className).toContain('chenxing-modal-overlay')
     expect(within(emailDialog).getByText('user@chenxing.star')).toBeTruthy()
     expect(within(emailDialog).getByLabelText('新邮箱地址')).toBeTruthy()
     expect(within(emailDialog).getByLabelText('当前密码')).toBeTruthy()
@@ -243,7 +243,7 @@ describe('ConsoleProfile 账户设置布局', () => {
     fireEvent.click(screen.getByRole('button', { name: '修改密码' }))
 
     const passwordDialog = screen.getByRole('dialog', { name: '修改密码' })
-    expect(passwordDialog.parentElement?.className).toContain('z-[var(--chenxing-z-overlay)]')
+    expect(passwordDialog.parentElement?.className).toContain('chenxing-modal-overlay')
     expect(within(passwordDialog).getByLabelText('当前密码')).toBeTruthy()
     expect(within(passwordDialog).getByLabelText('新密码')).toBeTruthy()
     expect(within(passwordDialog).getByLabelText('确认新密码')).toBeTruthy()
