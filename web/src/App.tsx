@@ -6,7 +6,7 @@ import { getDocumentTitle } from './data'
 import { LandingPage } from './pages/landing'
 import { AuthPage, BootstrapPage } from './pages/auth'
 import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './pages/oauth'
-import { ConsoleOverview, ConsolePlans, ConsoleProfile, ConsoleWallet, AuthorizedApps, SecurityLogsPage } from './pages/console/account'
+import { ConsoleOverview, ConsolePlans, ConsoleProfile, ConsoleWallet, AuthorizedApps, OAuthIdentitiesPage, SecurityLogsPage } from './pages/console/account'
 import { IntegratePage, PlaygroundPage } from './pages/console/developer'
 import { AdminAudit, AdminClients, AdminDashboard, AdminInvitations, AdminOAuthProviders, AdminPlans, AdminUsers, AdminSettings } from './pages/admin'
 import { AuthPanel, AuthShell } from './components/shells'
@@ -85,6 +85,7 @@ function AppContent() {
     '/console': <ConsoleOverview />,
     '/console/plans': <ConsolePlans />,
     '/console/profile': <ConsoleProfile />,
+    '/console/account/oauth-identities': <OAuthIdentitiesPage />,
     '/console/wallet': <ConsoleWallet />,
     '/console/security': <ConsoleProfile />,
     '/settings/security': <ConsoleProfile />,
