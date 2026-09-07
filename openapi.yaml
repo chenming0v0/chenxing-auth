@@ -1331,7 +1331,10 @@ paths:
       security: [{ sessionCookie: [] }]
       responses:
         '200':
-          description: 当前 Session 所属用户已绑定的外部 OAuth 身份；外部身份不属于 TOTP 或 Passkey 因子。
+          description: >-
+            当前 Session 所属用户已绑定的外部 OAuth 身份；外部身份不属于 TOTP 或 Passkey 因子。
+            account_name、avatar_url、last_synced_at 和 extensions 由供应商适配器按需提供；所有扩展字段均为结构化值，
+            客户端不得把它们当作 HTML、JavaScript 或 CSS 执行。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ExternalIdentityListResponse' }
@@ -3534,6 +3537,50 @@ components:
         provider_name: { type: string }
         email: { type: string, format: email, description: Email snapshot received when the identity was linked }
         linked_at: { type: string, format: date-time }
+        account_name: { type: string, nullable: true, maxLength: 256, description: Provider account display name snapshot }
+        name: { type: string, nullable: true, maxLength: 256, description: Provider account name snapshot; accepted for adapter compatibility }
+        avatar_url: { type: string, format: uri, nullable: true, maxLength: 4096, description: Provider avatar URL after server validation }
+        provider_icon: { type: string, format: uri, nullable: true, maxLength: 4096, description: Provider icon URL after server validation }
+        subject_hint: { type: string, nullable: true, maxLength: 512, description: Server-redacted provider subject summary; raw subject is never returned }
+        status: { type: string, maxLength: 64, description: Provider account status }
+        last_synced_at: { type: string, format: date-time, nullable: true }
+        sync_status: { type: string, maxLength: 64, description: Synchronization state; clients must handle unknown states safely }
+        sync_error: { type: string, nullable: true, maxLength: 512, description: Non-sensitive synchronization status detail }
+        extensions:
+          type: array
+          maxItems: 32
+          items: { $ref: '#/components/schemas/ExternalIdentityExtension' }
+    ExternalIdentityExtension:
+      type: object
+      required: [namespace, version, fields, fetched_at]
+      additionalProperties: false
+      properties:
+        namespace: { type: string, maxLength: 128 }
+        version:
+          oneOf:
+            - { type: string, maxLength: 64 }
+            - { type: integer, format: int64, minimum: 0 }
+        fetched_at: { type: string, format: date-time }
+        fields:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/ExternalIdentityExtensionField' }
+    ExternalIdentityExtensionField:
+      type: object
+      required: [key, label, type, value]
+      additionalProperties: false
+      properties:
+        key: { type: string, maxLength: 128 }
+        label: { type: string, maxLength: 256 }
+        type:
+          type: string
+          maxLength: 64
+          description: Known values are text, number, boolean, status, datetime, duration_days, and url
+        value:
+          description: >-
+            JSON value interpreted according to type. Unknown types are retained by clients as an
+            unsupported field and must never be executed as markup, script, or style.
+          nullable: true
     ExternalIdentityBindingStartResponse:
       type: object
       required: [authorization_url]

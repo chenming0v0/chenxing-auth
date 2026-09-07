@@ -41,14 +41,13 @@ export type SecurityRemovalResult = {
   credentials_revoked: boolean
 }
 
-export type ExternalIdentity = {
-  provider: string
-  provider_name: string
-  /** Internal IdP subject is intentionally not exposed by the public API. */
-  email: string
-  linked_at: string
-}
-export type ExternalIdentityListResponse = { items: ExternalIdentity[] }
+export type {
+  ExternalIdentity,
+  ExternalIdentityExtension,
+  ExternalIdentityExtensionField,
+  ExternalIdentityExtensionFieldType,
+  ExternalIdentityListResponse,
+} from './external-identity-types'
 export type ExternalIdentityUnlinkInput = { password: string }
 
 /** 登录页可见的外部身份源，仅包含渲染入口所需的公开字段。 */
