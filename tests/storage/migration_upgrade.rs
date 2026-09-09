@@ -317,8 +317,8 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     // 0033–0051 是后续追加的邀请码、邮箱变更、outbox fence、archive INSERT
     // 回收、access-token 撤销、JSONB shape CHECK、签发时 idle 窗口、
     // auth_method 与 secret 哈希配对 CHECK、client 展示字段、钱包与套餐定价、
-    // 兑换码、配额加购和钱包购买幂等。
-    assert_eq!(applied, (1_i64..=51).collect::<Vec<_>>());
+    // 兑换码、配额加购和钱包购买幂等。0052 是 #706 的外部身份快照列。
+    assert_eq!(applied, (1_i64..=52).collect::<Vec<_>>());
 
     // A v1.1.16 database may already have the 0047 schema change while its
     // ledger stops at 0046. The compatibility repair must record 0047 from
