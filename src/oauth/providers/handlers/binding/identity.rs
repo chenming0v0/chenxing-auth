@@ -58,13 +58,14 @@ pub async fn list_linked_identities(
                     .into_iter()
                     .map(|item| LinkedIdentity {
                         provider: item.provider_slug,
+                        // 契约的 name 回退到 provider 显示名：前端显示名链是
+                        // account_name || name || email，回退收口在这一处，先克隆
+                        // 再在下方消费 item.provider_name，避免重复克隆。
+                        name: Some(item.provider_name.clone()),
                         provider_name: item.provider_name,
                         email: item.email,
                         linked_at: item.created_at,
-                        // 契约的 name 回退到 provider 显示名：前端显示名链是
-                        // account_name || name || email，回退收口在这一处。
                         account_name: item.account_name,
-                        name: Some(item.provider_name.clone()),
                         avatar_url: item.avatar_url,
                         provider_icon: item.provider_icon,
                         subject_hint: item.subject_hint,
