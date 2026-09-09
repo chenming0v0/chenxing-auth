@@ -425,27 +425,6 @@ async fn repository_binds_lists_and_rejects_replay_or_foreign_subject() {
         "subject hint must not leak the raw subject"
     );
     assert_eq!(listed[0].sync_status.as_deref(), Some("success"));
-    // 订阅扩展是运行时组装的：无套餐行时 plan_expires_at 为 NULL，
-    // remaining_days 用 -1 哨兵表示永久有效。
-    let extensions = listed[0].extensions.as_array().expect("extensions array");
-    let subscription = extensions
-        .iter()
-        .find(|entry| entry["namespace"] == "chenxing.subscription")
-        .expect("subscription extension");
-    let keys: Vec<&str> = subscription["fields"]
-        .as_array()
-        .expect("extension fields")
-        .iter()
-        .filter_map(|field| field["key"].as_str())
-        .collect();
-    assert!(
-        keys.contains(&"uid"),
-        "subscription extension must carry uid"
-    );
-    assert!(
-        keys.contains(&"remaining_days"),
-        "subscription extension must carry remaining_days"
-    );
 
     let replay = chenxing_auth::oauth::providers::repository::bind_identity(
         &database, first_user, 0, provider, &identity,
@@ -467,6 +446,54 @@ async fn repository_binds_lists_and_rejects_replay_or_foreign_subject() {
         foreign,
         Err(chenxing_auth::oauth::providers::repository::BindIdentityError::OwnedByAnotherUser)
     ));
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+/// 订阅扩展是 service 层每次读取时组装的（持久化 JSONB 只存绑定快照），
+/// 因此契约断言必须在 service 层做，repository 层拿到的永远是裸 JSONB。
+#[tokio::test]
+async fn service_list_identities_appends_subscription_extension() {
+    let mock = mock_server().await;
+    let (_router, state, database, key_directory) = setup(mock).await;
+    let user = create_user(&database, "extension").await;
+    let provider = create_provider(&state, "extension", mock).await;
+    chenxing_auth::oauth::providers::repository::bind_identity(
+        &database,
+        user,
+        0,
+        provider,
+        &external("subject-ext", "extension@example.test"),
+    )
+    .await
+    .expect("binding");
+
+    let listed = state
+        .external_oauth
+        .list_identities(user)
+        .await
+        .expect("service list identities");
+    assert_eq!(listed.len(), 1);
+    // 无套餐行时 plan_expires_at 为 NULL，remaining_days 用 -1 哨兵表示永久有效。
+    let extensions = listed[0].extensions.as_array().expect("extensions array");
+    let subscription = extensions
+        .iter()
+        .find(|entry| entry["namespace"] == "chenxing.subscription")
+        .expect("subscription extension");
+    let keys: Vec<&str> = subscription["fields"]
+        .as_array()
+        .expect("extension fields")
+        .iter()
+        .filter_map(|field| field["key"].as_str())
+        .collect();
+    assert!(
+        keys.contains(&"uid"),
+        "subscription extension must carry uid"
+    );
+    assert!(
+        keys.contains(&"remaining_days"),
+        "subscription extension must carry remaining_days"
+    );
 
     let _ = std::fs::remove_dir_all(key_directory);
 }
