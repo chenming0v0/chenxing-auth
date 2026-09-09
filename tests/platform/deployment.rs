@@ -1272,11 +1272,15 @@ fn database_uses_forward_only_transactional_migration_history() {
         DB_MODULE
             .contains("include_str!(\"../../migrations/0051_wallet_purchase_idempotency.sql\")")
     );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0052_external_identity_snapshots.sql\")")
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        51
+        52
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
