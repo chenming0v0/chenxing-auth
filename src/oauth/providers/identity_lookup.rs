@@ -147,7 +147,7 @@ pub async fn create_user_with_identity(
     .bind(now)
     .bind(display_name)
     .bind(avatar_url)
-    .bind(subject_hint(&subject))
+    .bind(subject_hint(subject))
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
