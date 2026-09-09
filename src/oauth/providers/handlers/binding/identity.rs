@@ -64,7 +64,7 @@ pub async fn list_linked_identities(
                         // 契约的 name 回退到 provider 显示名：前端显示名链是
                         // account_name || name || email，回退收口在这一处。
                         account_name: item.account_name,
-                        name: Some(item.provider_name),
+                        name: Some(item.provider_name.clone()),
                         avatar_url: item.avatar_url,
                         provider_icon: item.provider_icon,
                         subject_hint: item.subject_hint,
