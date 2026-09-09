@@ -5,24 +5,13 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::domain::{ClientAuthMethod, ProviderRecord, ValidatedProviderInput};
-use crate::db::advisory_lock::{BusinessLock, lock_business};
-use crate::users::domain::{UserId, UserStatus};
-use crate::users::email::EmailAddress;
-use crate::users::email_policy::evaluate_email_policy;
 
-#[derive(Debug, Clone)]
-pub struct ExternalIdentity {
-    pub id: i64,
-    pub provider_id: i64,
-    pub user_id: UserId,
-    pub subject: String,
-    pub email: String,
-    pub user_status: String,
-}
-
+pub use super::identity_lookup::{
+    CreateIdentityError, ExternalIdentity, create_user_with_identity, find_identity,
+};
 pub use super::identity_repository::{
     BindIdentityError, LinkedExternalIdentity, UnlinkIdentityOutcome, bind_identity,
-    list_identities, unlink_identity,
+    list_identities, subject_hint, unlink_identity,
 };
 
 pub async fn insert_provider(
@@ -251,6 +240,7 @@ pub async fn create_user_with_identity(
     provider_id: i64,
     email: &EmailAddress,
     display_name: Option<&str>,
+    avatar_url: Option<&str>,
     subject: &str,
     password_hash: &str,
 ) -> Result<UserId, CreateIdentityError> {
@@ -328,14 +318,18 @@ pub async fn create_user_with_identity(
     // 身份的唯一键是 (provider_id, subject)。
     crate::sqlx::query(
         "INSERT INTO oauth_external_identities
-         (provider_id, user_id, subject, email, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $5)",
+         (provider_id, user_id, subject, email, created_at, updated_at,
+          account_name, avatar_url, subject_hint, last_synced_at, sync_status, extensions)
+         VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $5, 'success', '[]'::jsonb)",
     )
     .bind(provider_id)
     .bind(user_id)
     .bind(subject)
     .bind(email.display())
     .bind(now)
+    .bind(display_name)
+    .bind(avatar_url)
+    .bind(subject_hint(&subject))
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;

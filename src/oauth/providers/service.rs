@@ -8,6 +8,7 @@ use super::{
     claims::ExternalUser,
     domain::{ProviderInput, ProviderRecord, ProviderSummary, ProviderValidationError},
     endpoint_policy::{EndpointPolicy, validate_endpoint_url},
+    extension_snapshot,
     http_client::build_provider_http_client,
     repository::{self, CreateIdentityError},
     secrets::{SecretContext, SecretError, SecretManager},
@@ -63,6 +64,8 @@ pub enum ExternalOAuthError {
     UserDisabled,
     #[error("owner bootstrap is required")]
     OwnerBootstrapRequired,
+    #[error("extension serialization failed: {0}")]
+    Extension(#[from] serde_json::Error),
 }
 
 #[derive(Debug, Error)]
@@ -143,7 +146,10 @@ impl ExternalOAuthService {
         &self,
         user_id: UserId,
     ) -> Result<Vec<repository::LinkedExternalIdentity>, ExternalOAuthError> {
-        Ok(repository::list_identities(&self.pool, user_id).await?)
+        let mut identities = repository::list_identities(&self.pool, user_id).await?;
+        extension_snapshot::append_subscription_extensions(&mut identities)
+            .map_err(ExternalOAuthError::Extension)?;
+        Ok(identities)
     }
 
     pub async fn bind_identity(
@@ -346,6 +352,7 @@ impl ExternalOAuthService {
             provider.id,
             &external.email,
             external.name.as_deref(),
+            external.avatar_url.as_deref(),
             &external.subject,
             UNUSABLE_PASSWORD_HASH,
         )

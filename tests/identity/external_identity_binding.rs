@@ -286,6 +286,8 @@ fn external(subject: &str, email: &str) -> chenxing_auth::oauth::providers::clai
         email: chenxing_auth::users::email::EmailAddress::parse(email).expect("email"),
         name: None,
         email_verified: true,
+        account_name: None,
+        avatar_url: None,
     }
 }
 
@@ -415,6 +417,35 @@ async fn repository_binds_lists_and_rejects_replay_or_foreign_subject() {
             .expect("list identities");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].subject, "subject-1");
+    // Issue #706：绑定时必须写入脱敏快照，绝不落 raw subject。
+    let hint = listed[0].subject_hint.as_deref().expect("subject hint");
+    assert!(!hint.is_empty(), "subject hint must not be empty");
+    assert!(
+        !hint.contains("subject-1"),
+        "subject hint must not leak the raw subject"
+    );
+    assert_eq!(listed[0].sync_status.as_deref(), Some("success"));
+    // 订阅扩展是运行时组装的：无套餐行时 plan_expires_at 为 NULL，
+    // remaining_days 用 -1 哨兵表示永久有效。
+    let extensions = listed[0].extensions.as_array().expect("extensions array");
+    let subscription = extensions
+        .iter()
+        .find(|entry| entry["namespace"] == "chenxing.subscription")
+        .expect("subscription extension");
+    let keys: Vec<&str> = subscription["fields"]
+        .as_array()
+        .expect("extension fields")
+        .iter()
+        .filter_map(|field| field["key"].as_str())
+        .collect();
+    assert!(
+        keys.contains(&"uid"),
+        "subscription extension must carry uid"
+    );
+    assert!(
+        keys.contains(&"remaining_days"),
+        "subscription extension must carry remaining_days"
+    );
 
     let replay = chenxing_auth::oauth::providers::repository::bind_identity(
         &database, first_user, 0, provider, &identity,

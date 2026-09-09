@@ -18,6 +18,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::{fmt, net::SocketAddr};
 
+/// `GET /api/v1/auth/external-identities` 的条目契约（openapi.yaml ExternalIdentity）。
+/// 可选字段全部 `Option`：数据库列本来就是可空的，序列化时 None 落成 null，
+/// 前端 guard 对 undefined/null 都放行，不需要在 handler 里做剔除分支。
 #[derive(Debug, Serialize)]
 struct LinkedIdentity {
     provider: String,
@@ -25,6 +28,17 @@ struct LinkedIdentity {
     email: String,
     #[serde(with = "time::serde::rfc3339")]
     linked_at: time::OffsetDateTime,
+    account_name: Option<String>,
+    name: Option<String>,
+    avatar_url: Option<String>,
+    provider_icon: Option<String>,
+    subject_hint: Option<String>,
+    status: Option<String>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    last_synced_at: Option<time::OffsetDateTime>,
+    sync_status: Option<String>,
+    sync_error: Option<String>,
+    extensions: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -47,6 +61,18 @@ pub async fn list_linked_identities(
                         provider_name: item.provider_name,
                         email: item.email,
                         linked_at: item.created_at,
+                        // account_name 缺失时回退到 name：两者都是展示快照，
+                        // 前端只读 account_name，这里把回退收口在一处。
+                        account_name: item.account_name.or(item.name.clone()),
+                        name: item.name,
+                        avatar_url: item.avatar_url,
+                        provider_icon: item.provider_icon,
+                        subject_hint: item.subject_hint,
+                        status: item.account_status,
+                        last_synced_at: item.last_synced_at,
+                        sync_status: item.sync_status,
+                        sync_error: item.sync_error,
+                        extensions: item.extensions,
                     })
                     .collect(),
             }),

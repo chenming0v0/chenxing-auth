@@ -2,9 +2,28 @@ use crate::{
     sqlx::PgPool,
     users::domain::{UserId, UserStatus},
 };
+use serde_json::Value;
 use time::OffsetDateTime;
 
 use super::claims::ExternalUser;
+
+/// subject_hint 的脱敏摘要：首尾各保留少量字符，中间以星号遮蔽。
+/// 绝不存 raw subject——它对 IdP 是账号主键，对旁观者是可关联的标识。
+pub fn subject_hint(subject: &str) -> String {
+    let chars: Vec<char> = subject.chars().collect();
+    let keep = 2usize;
+    if chars.len() <= keep * 2 {
+        // 太短时全遮：保留任何字符都可能直接暴露短标识。
+        return "*".repeat(chars.len().max(1));
+    }
+    let mut hint = String::with_capacity(chars.len());
+    hint.extend(chars[..keep].iter());
+    for _ in keep..chars.len() - keep {
+        hint.push('*');
+    }
+    hint.extend(chars[chars.len() - keep..].iter());
+    hint
+}
 
 #[derive(Debug, Clone)]
 pub struct LinkedExternalIdentity {
@@ -13,16 +32,50 @@ pub struct LinkedExternalIdentity {
     pub subject: String,
     pub email: String,
     pub created_at: OffsetDateTime,
+    pub account_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub provider_icon: Option<String>,
+    pub subject_hint: Option<String>,
+    pub account_status: Option<String>,
+    pub last_synced_at: Option<OffsetDateTime>,
+    pub sync_status: Option<String>,
+    pub sync_error: Option<String>,
+    pub extensions: Value,
+    /// 生效套餐的到期时间（NULL = 永久或无套餐），供服务层组装订阅扩展。
+    pub plan_expires_at: Option<OffsetDateTime>,
 }
 
 pub async fn list_identities(
     pool: &PgPool,
     user_id: UserId,
 ) -> Result<Vec<LinkedExternalIdentity>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (String, String, String, String, OffsetDateTime)>(
-        "SELECT p.slug, p.name, i.subject, i.email, i.created_at
+    crate::sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            String,
+            OffsetDateTime,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<OffsetDateTime>,
+            Option<String>,
+            Option<String>,
+            Value,
+            Option<OffsetDateTime>,
+        ),
+    >(
+        "SELECT p.slug, p.name, i.subject, i.email, i.created_at,
+                i.account_name, i.avatar_url, i.provider_icon, i.subject_hint,
+                i.account_status, i.last_synced_at, i.sync_status, i.sync_error,
+                i.extensions, u.plan_expires_at
          FROM oauth_external_identities i
          JOIN oauth_providers p ON p.id = i.provider_id
+         JOIN users u ON u.id = i.user_id
          WHERE i.user_id = $1 ORDER BY i.created_at DESC",
     )
     .bind(user_id)
@@ -31,13 +84,39 @@ pub async fn list_identities(
     .map(|rows| {
         rows.into_iter()
             .map(
-                |(provider_slug, provider_name, subject, email, created_at)| {
+                |(
+                    provider_slug,
+                    provider_name,
+                    subject,
+                    email,
+                    created_at,
+                    account_name,
+                    avatar_url,
+                    provider_icon,
+                    subject_hint,
+                    account_status,
+                    last_synced_at,
+                    sync_status,
+                    sync_error,
+                    extensions,
+                    plan_expires_at,
+                )| {
                     LinkedExternalIdentity {
                         provider_slug,
                         provider_name,
                         subject,
                         email,
                         created_at,
+                        account_name,
+                        avatar_url,
+                        provider_icon,
+                        subject_hint,
+                        account_status,
+                        last_synced_at,
+                        sync_status,
+                        sync_error,
+                        extensions,
+                        plan_expires_at,
                     }
                 },
             )
@@ -91,13 +170,19 @@ pub async fn bind_identity(
         return Err(BindIdentityError::AlreadyOwned);
     }
     let inserted = crate::sqlx::query(
-        "INSERT INTO oauth_external_identities (provider_id, user_id, subject, email, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW()) ON CONFLICT DO NOTHING",
+        "INSERT INTO oauth_external_identities
+         (provider_id, user_id, subject, email, created_at, updated_at,
+          account_name, avatar_url, subject_hint, last_synced_at, sync_status, extensions)
+         VALUES ($1, $2, $3, $4, NOW(), NOW(), $5, $6, $7, NOW(), 'success', '[]'::jsonb)
+         ON CONFLICT DO NOTHING",
     )
     .bind(provider_id)
     .bind(user_id)
     .bind(&external.subject)
     .bind(external.email.display())
+    .bind(external.account_name.as_deref())
+    .bind(external.avatar_url.as_deref())
+    .bind(subject_hint(&external.subject))
     .execute(&mut *transaction)
     .await?;
     if inserted.rows_affected() == 0 {
@@ -191,4 +276,25 @@ pub enum BindIdentityError {
     OwnedByAnotherUser,
     #[error("external identity binding session is no longer current")]
     AuthenticationChanged,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::subject_hint;
+
+    #[test]
+    fn long_subject_keeps_head_and_tail() {
+        assert_eq!(subject_hint("gh-subject-42"), "gh*********42");
+    }
+
+    #[test]
+    fn short_subject_is_fully_masked() {
+        assert_eq!(subject_hint("abc"), "***");
+        assert_eq!(subject_hint("abcd"), "****");
+    }
+
+    #[test]
+    fn empty_subject_still_produces_a_hint() {
+        assert_eq!(subject_hint(""), "*");
+    }
 }
