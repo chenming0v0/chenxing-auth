@@ -281,6 +281,7 @@ fn provider_error_response(error_value: ExternalOAuthError, operation: &'static 
         | ExternalOAuthError::ManagementActor(_)
         | ExternalOAuthError::Database(_)
         | ExternalOAuthError::Secret(_)
+        | ExternalOAuthError::Extension(_)
         | ExternalOAuthError::MissingSecret
         | ExternalOAuthError::RemoteRequest
         | ExternalOAuthError::InvalidUserInfo
