@@ -35,24 +35,24 @@ pub(crate) fn invalid_pagination() -> Response {
     )
 }
 
-pub(crate) fn limit(query: &LinkedAccountListQuery) -> Result<usize, Response> {
+pub(crate) fn limit(query: &LinkedAccountListQuery) -> Result<usize, ()> {
     match query.limit.as_deref() {
         None => Ok(50),
         Some(value) => match value.parse::<usize>() {
             Ok(value) if (1..=100).contains(&value) => Ok(value),
-            _ => Err(invalid_pagination()),
+            _ => Err(()),
         },
     }
 }
 
-pub(crate) fn cursor(query: &LinkedAccountListQuery) -> Result<Option<AccountCursor>, Response> {
+pub(crate) fn cursor(query: &LinkedAccountListQuery) -> Result<Option<AccountCursor>, ()> {
     let cursor = match query.cursor.as_deref() {
         None => None,
         Some(value) if value.len() <= 512 => decode_cursor(value),
         Some(_) => None,
     };
     if query.cursor.is_some() && cursor.is_none() {
-        return Err(invalid_pagination());
+        return Err(());
     }
     Ok(cursor)
 }

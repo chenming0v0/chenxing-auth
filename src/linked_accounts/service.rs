@@ -14,7 +14,9 @@ use crate::{
     users::domain::UserId,
 };
 
-use super::repository::{LinkedAccountRepository, LinkedAccountRow, StoreBindingError};
+use super::repository::{
+    LinkedAccountInsert, LinkedAccountRepository, LinkedAccountRow, StoreBindingError,
+};
 
 const PROVIDER_SLUG: &str = "cltermux";
 const PROVIDER_NAME: &str = "CLtermux";
@@ -81,14 +83,16 @@ impl LinkedAccountService {
             .repository
             .insert_binding_for_session(
                 credential,
-                &id,
-                PROVIDER_SLUG,
-                "service_account",
-                &account.uid,
-                &account.subject,
-                account.account_status.as_str(),
-                crate::sqlx::types::Json(account.snapshot_json),
-                now,
+                LinkedAccountInsert {
+                    id,
+                    provider_slug: PROVIDER_SLUG.to_owned(),
+                    kind: "service_account".to_owned(),
+                    uid: account.uid.clone(),
+                    subject: account.subject,
+                    account_status: account.account_status.as_str().to_owned(),
+                    snapshot_json: crate::sqlx::types::Json(account.snapshot_json),
+                    linked_at: now,
+                },
             )
             .await
         {
@@ -117,7 +121,7 @@ impl LinkedAccountService {
             }
             Err(StoreBindingError::Database(error)) => return Err(error.into()),
         };
-        Ok(self.view_from_row(row)?)
+        self.view_from_row(row)
     }
 
     pub async fn refresh(

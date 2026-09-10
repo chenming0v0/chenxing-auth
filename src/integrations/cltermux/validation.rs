@@ -125,11 +125,12 @@ fn parse_account_status(raw: &str) -> Result<AccountStatus, SnapshotRejection> {
 
 fn validate_display(dto: &DisplayDto) -> Result<SnapshotDisplay, SnapshotRejection> {
     // 三个展示字段均可空；非空时只做基本长度约束，避免超长值进入快照。
-    for value in [&dto.name, &dto.email, &dto.avatar_url] {
-        if let Some(value) = value {
-            if value.is_empty() || value.len() > 512 {
-                return Err(SnapshotRejection::Display);
-            }
+    for value in [&dto.name, &dto.email, &dto.avatar_url]
+        .into_iter()
+        .flatten()
+    {
+        if value.is_empty() || value.len() > 512 {
+            return Err(SnapshotRejection::Display);
         }
     }
     Ok(SnapshotDisplay {

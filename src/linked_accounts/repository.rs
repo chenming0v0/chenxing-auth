@@ -85,6 +85,20 @@ pub enum StoreBindingError {
     UserDisabled,
 }
 
+/// 新绑定的持久化输入。将绑定字段作为一个值传递，避免调用方和仓储方法
+/// 同时维护一长串位置参数。
+#[derive(Debug)]
+pub struct LinkedAccountInsert {
+    pub id: String,
+    pub provider_slug: String,
+    pub kind: String,
+    pub uid: String,
+    pub subject: String,
+    pub account_status: String,
+    pub snapshot_json: crate::sqlx::types::Json<Value>,
+    pub linked_at: OffsetDateTime,
+}
+
 /// 判定数据库错误是否来自指定唯一约束。
 ///
 /// 只看约束名而不解析错误文本：错误文本随 PostgreSQL 版本和 locale 变化，
@@ -108,79 +122,13 @@ impl LinkedAccountRepository {
         Self { pool }
     }
 
-    /// 写入一条新绑定，返回落库后的完整行。
-    ///
-    /// 全字段参数化绑定；唯一冲突按约束名映射为
-    /// [`StoreBindingError::UidTaken`] / [`StoreBindingError::UserSlotTaken`]。
-    /// 幂等语义（同一用户重复提交同一 uid → 返回既有绑定）由上层在捕获
-    /// `UidTaken` 后用 [`Self::find_binding_by_uid`] 复查归属实现，仓储不猜测。
-    pub async fn insert_binding(
-        &self,
-        id: &str,
-        user_id: UserId,
-        provider_slug: &str,
-        kind: &str,
-        uid: &str,
-        subject: &str,
-        account_status: &str,
-        snapshot_json: crate::sqlx::types::Json<Value>,
-        linked_at: OffsetDateTime,
-        last_attempt_at: Option<OffsetDateTime>,
-        last_success_at: Option<OffsetDateTime>,
-        sync_status: &str,
-        sync_error: Option<&str>,
-    ) -> Result<LinkedAccountRow, StoreBindingError> {
-        let row = crate::sqlx::query_as::<_, LinkedAccountRow>(
-            "INSERT INTO linked_accounts
-                (id, user_id, provider_slug, kind, uid, subject,
-                 account_status, snapshot_json, linked_at,
-                 last_attempt_at, last_success_at, sync_status, sync_error)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-             RETURNING id, user_id, provider_slug, kind, uid, subject,
-                 binding_version, account_status, snapshot_json, linked_at,
-                 last_attempt_at, last_success_at, sync_status, sync_error",
-        )
-        .bind(id)
-        .bind(user_id)
-        .bind(provider_slug)
-        .bind(kind)
-        .bind(uid)
-        .bind(subject)
-        .bind(account_status)
-        .bind(snapshot_json)
-        .bind(linked_at)
-        .bind(last_attempt_at)
-        .bind(last_success_at)
-        .bind(sync_status)
-        .bind(sync_error)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|error| {
-            if unique_violation(&error, "linked_accounts_provider_uid_key") {
-                StoreBindingError::UidTaken
-            } else if unique_violation(&error, "linked_accounts_provider_user_key") {
-                StoreBindingError::UserSlotTaken
-            } else {
-                StoreBindingError::Database(error)
-            }
-        })?;
-        Ok(row)
-    }
-
     /// Insert after revalidating the exact browser session in the same transaction.
     /// The provider call happens before this method; no provider response can be
     /// committed after the session has been revoked or its epoch advanced.
     pub async fn insert_binding_for_session(
         &self,
         credential: crate::users::UserSessionCredential,
-        id: &str,
-        provider_slug: &str,
-        kind: &str,
-        uid: &str,
-        subject: &str,
-        account_status: &str,
-        snapshot_json: crate::sqlx::types::Json<Value>,
-        linked_at: OffsetDateTime,
+        input: LinkedAccountInsert,
     ) -> Result<LinkedAccountRow, StoreBindingError> {
         let mut transaction = self.pool.begin().await?;
         match crate::users::validate_user_session_in_transaction(&mut transaction, credential)
@@ -205,15 +153,15 @@ impl LinkedAccountRepository {
                  account_status, snapshot_json, linked_at, last_attempt_at, last_success_at,
                  sync_status, sync_error",
         )
-        .bind(id)
+        .bind(&input.id)
         .bind(credential.user_id)
-        .bind(provider_slug)
-        .bind(kind)
-        .bind(uid)
-        .bind(subject)
-        .bind(account_status)
-        .bind(snapshot_json)
-        .bind(linked_at)
+        .bind(&input.provider_slug)
+        .bind(&input.kind)
+        .bind(&input.uid)
+        .bind(&input.subject)
+        .bind(&input.account_status)
+        .bind(input.snapshot_json)
+        .bind(input.linked_at)
         .fetch_one(&mut *transaction)
         .await;
         let row = result.map_err(|error| {

@@ -99,11 +99,11 @@ pub async fn list_linked_accounts(
     };
     let limit = match pagination::limit(&query) {
         Ok(limit) => limit,
-        Err(response) => return response,
+        Err(()) => return pagination::invalid_pagination(),
     };
     let cursor = match pagination::cursor(&query) {
         Ok(cursor) => cursor,
-        Err(response) => return response,
+        Err(()) => return pagination::invalid_pagination(),
     };
     match state.linked_accounts.list(session.user_id).await {
         Ok(items) => with_no_store_headers(pagination::page(items, limit, cursor.as_ref())),

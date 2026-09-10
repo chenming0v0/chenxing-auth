@@ -73,10 +73,9 @@ pub(crate) fn map_service_error(error_value: LinkedAccountServiceError) -> Respo
     | LinkedAccountServiceError::Integration(IntegrationError::RateLimited {
         retry_after_secs,
     }) = error_value
+        && let Ok(value) = HeaderValue::from_str(&retry_after_secs.to_string())
     {
-        if let Ok(value) = HeaderValue::from_str(&retry_after_secs.to_string()) {
-            response.headers_mut().insert(RETRY_AFTER, value);
-        }
+        response.headers_mut().insert(RETRY_AFTER, value);
     }
     response
         .headers_mut()
