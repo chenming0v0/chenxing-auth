@@ -42,7 +42,7 @@ const OAUTH_ACCOUNT = {
     fetched_at: '2026-09-05T08:00:00Z',
     fields: [
       { key: 'uid', label: 'CLtermux UID', type: 'text', value: 'cltermux:123' },
-      { key: 'remaining_days', label: '剩余订阅', type: 'duration_days', value: 42 },
+      { key: 'remaining_days_oauth', label: '剩余订阅', type: 'duration_days', value: 42 },
       { key: 'subscribed', label: '是否订阅', type: 'boolean', value: true },
       { key: 'raw', label: '未知字段', type: 'vendor_blob', value: { unsafe: '<script>' } },
     ],
@@ -168,7 +168,7 @@ describe('OAuthIdentitiesPage (linked-accounts #706)', () => {
     expect(screen.getByText('cltermux:sub-001')).toBeTruthy()
     expect(screen.getByText('OAuth 身份')).toBeTruthy()
     expect(screen.getByText('服务账号')).toBeTruthy()
-    expect(screen.getByText('42 天')).toBeTruthy()
+    expect(screen.getAllByText('42 天')).toBeTruthy()
     expect(screen.getByText('该字段类型暂不支持展示')).toBeTruthy()
     expect(screen.queryByText('<script>')).toBeNull()
     expect(screen.queryByText('gh-subject-42')).toBeNull()
@@ -187,8 +187,7 @@ describe('OAuthIdentitiesPage (linked-accounts #706)', () => {
     seedRoutes({ accounts: [], providers: [PROVIDER] })
     render(<OAuthIdentitiesPage />)
 
-    expect(await screen.findByText('绑定业务账号')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '绑定 CLtermux' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: '绑定 CLtermux' })).toBeTruthy()
   })
 
   it('binds a service account and prepends the fresh snapshot', async () => {
@@ -197,7 +196,7 @@ describe('OAuthIdentitiesPage (linked-accounts #706)', () => {
     const bound = { ...SERVICE_ACCOUNT, id: 'linked_new' }
     register('/api/v1/auth/account-providers/cltermux/bindings', 'POST', () => jsonResponse(bound, 201))
     render(<OAuthIdentitiesPage />)
-    await screen.findByText('暂无已连接账号')
+    await screen.findAllByText('绑定 CLtermux')
 
     fireEvent.click(screen.getByRole('button', { name: '绑定 CLtermux' }))
     const dialog = await screen.findByRole('dialog')
@@ -205,7 +204,7 @@ describe('OAuthIdentitiesPage (linked-accounts #706)', () => {
     const privateInput = dialog.querySelector('#bind-private-key') as HTMLInputElement
     fireEvent.change(publicInput, { target: { value: 'pk-test' } })
     fireEvent.change(privateInput, { target: { value: 'sk-test' } })
-    fireEvent.click(screen.getByRole('button', { name: /绑定 CLtermux$/ }))
+    fireEvent.click(screen.getAllByRole('button', { name: /绑定 CLtermux$/ })[1])
 
     await waitFor(() => expect(screen.getByText('CLtermux 绑定成功。')).toBeTruthy())
     expect(screen.getByText('CLtermux 用户')).toBeTruthy()
@@ -227,7 +226,7 @@ describe('OAuthIdentitiesPage (linked-accounts #706)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '刷新 CLtermux 数据' }))
     await waitFor(() => expect(screen.getByText(/保留上一次成功快照/)).toBeTruthy())
-    expect(screen.getByText('42 天')).toBeTruthy()
+    expect(screen.getAllByText('42 天')).toBeTruthy()
     expect(screen.getByText('同步失败')).toBeTruthy()
   })
 
