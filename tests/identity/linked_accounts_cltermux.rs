@@ -145,15 +145,14 @@ struct Env {
 }
 
 async fn setup(binary_name: &str, mock: std::net::SocketAddr) -> Env {
-    let (state, database, key_directory) = oauth_flow::test_state(binary_name).await;
-    let mut state = state;
+    let (mut state, database, key_directory) = oauth_flow::test_state(binary_name).await;
     state.config.cltermux = Some(cltermux_config(&format!("http://{mock}/")));
-    let integration = Some(
-        chenxing_auth::integrations::cltermux::adapter::CltermuxIntegration::new(
-            state.config.cltermux.as_ref().expect("cltermux config"),
-        )
-        .expect("cltermux integration"),
-    );
+    let integration = match chenxing_auth::integrations::cltermux::adapter::CltermuxIntegration::new(
+        state.config.cltermux.as_ref().expect("cltermux config"),
+    ) {
+        Ok(it) => Some(it),
+        Err(e) => panic!("cltermux integration: {:?}", e),
+    };
     state.linked_accounts = chenxing_auth::linked_accounts::service::LinkedAccountService::new(
         database.clone(),
         state.external_oauth.clone(),
