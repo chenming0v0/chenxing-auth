@@ -7,7 +7,7 @@
 -- unbinding; uid values are permanently non-reusable per provider.
 -- Concurrency consistency relies on the two unique constraints below, not on
 -- check-then-insert application logic.
-CREATE TABLE linked_accounts (
+CREATE TABLE IF NOT EXISTS linked_accounts (
     id TEXT PRIMARY KEY,
     user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     provider_slug TEXT NOT NULL,
@@ -38,5 +38,5 @@ CREATE TABLE linked_accounts (
     CONSTRAINT linked_accounts_provider_uid_key UNIQUE (provider_slug, uid),
     CONSTRAINT linked_accounts_provider_user_key UNIQUE (provider_slug, user_id)
 );
-CREATE INDEX linked_accounts_user_id_idx ON linked_accounts (user_id);
+CREATE INDEX IF NOT EXISTS linked_accounts_user_id_idx ON linked_accounts (user_id);
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE linked_accounts TO chenxing_runtime;
