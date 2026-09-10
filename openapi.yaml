@@ -1601,6 +1601,56 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/chenxing/exchange:
+    post:
+      tags: [User Auth/Security]
+      summary: 用辰星 Access Token 换取会话令牌
+      operationId: exchangeChenxingSession
+      security: [{ bearerAuth: [] }]
+      description: >-
+        使用 CLtermux 等客户端持有的辰星 Access Token 换取短期 Session Token。
+        Authorization Bearer 必须是有效的辰星用户 Access Token（OAuth 发行者签发）；令牌只在内存中验证，不记录日志。
+        session_token 是 RS256 签名的短期 JWT，有效期不超过 300 秒；响应体永远不包含 access_token、refresh_token
+        或 id_token。device_id 与 device_info 仅用于审计，不持久化；device_info 永不以明文写入日志。
+        错误码：401 invalid_chenxing_token；403 account_not_linked / account_disabled / insufficient_scope；
+        429 rate_limited；503 provider_unavailable。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CltermuxExchangeInput' }
+      responses:
+        '200':
+          description: 会话令牌兑换成功；响应体只含 session_token、uid 与 expires_at，不包含任何长期凭据
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CltermuxExchangeResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401':
+          description: 辰星 Access Token 无效或已撤销，错误码 invalid_chenxing_token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: 无权限，错误码 account_not_linked / account_disabled / insufficient_scope
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '429':
+          description: 限流触发，错误码 rate_limited，响应可带 Retry-After
+          headers:
+            Retry-After: { schema: { type: integer, minimum: 1 } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: 供应商或依赖暂不可用，错误码 provider_unavailable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
   /api/v1/auth/external-providers:
     get:
       tags: [User Auth/Browser Login]
@@ -3855,6 +3905,24 @@ components:
         binding_version: { type: integer, format: int32, minimum: 1 }
         resolved_at: { type: string, format: date-time }
         valid_until: { type: string, format: date-time }
+    CltermuxExchangeInput:
+      type: object
+      required: [device_id]
+      additionalProperties: false
+      properties:
+        device_id: { type: string, minLength: 1, maxLength: 255, description: 客户端设备标识，仅用于审计，不持久化 }
+        device_info: { type: string, maxLength: 1024, description: 客户端设备信息，仅用于审计，永不以明文写入日志 }
+    CltermuxExchangeResponse:
+      type: object
+      required: [session_token, uid, expires_at]
+      additionalProperties: false
+      description: >-
+        短期会话令牌兑换结果。响应体永远不包含 access_token、refresh_token 或 id_token；
+        也不包含签名密钥、服务间凭据或任何长期秘密。
+      properties:
+        session_token: { type: string, description: RS256 签名的短期会话 JWT，有效期不超过 300 秒 }
+        uid: { type: string, maxLength: 255, description: 当前用户的辰星用户 ID }
+        expires_at: { type: string, format: date-time, description: session_token 的过期时间 }
     ExternalIdentityExtension:
       type: object
       required: [namespace, version, fields, fetched_at]

@@ -51,6 +51,7 @@ use crate::{
         remove_security_passkey_factor, remove_security_totp_factor,
         start_security_passkey_registration, start_security_totp_enrollment,
     },
+    linked_accounts::exchange::exchange,
     linked_accounts::handlers::{
         account_providers, bind_linked_account, delete_linked_account, get_linked_account,
         list_linked_accounts, refresh_linked_account, resolve,
@@ -386,6 +387,7 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
             post(refresh_linked_account),
         )
         .route("/api/v1/integrations/cltermux/resolve", post(resolve))
+        .route("/api/v1/auth/chenxing/exchange", post(exchange))
         .route(
             "/api/v1/auth/session",
             axum::routing::delete(revoke_session),

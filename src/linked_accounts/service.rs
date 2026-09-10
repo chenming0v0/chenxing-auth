@@ -274,6 +274,7 @@ impl LinkedAccountService {
             uid: row.uid,
             binding_id: row.id,
             binding_version: row.binding_version,
+            account_status: row.account_status,
         })
     }
 
@@ -340,6 +341,8 @@ pub struct ResolveBinding {
     pub uid: String,
     pub binding_id: String,
     pub binding_version: i32,
+    /// 绑定的账号事实状态，由兑换端点判定 disabled / missing（Issue #709）。
+    pub account_status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

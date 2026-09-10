@@ -9,6 +9,7 @@
 //! 一致性的权威来源：仓储层靠唯一冲突的约束名区分"同一用户重复提交同一 uid"
 //! 与"uid 被他人占用"，不做 check-then-insert。
 
+pub mod exchange;
 pub mod handlers;
 mod pagination;
 pub mod repository;
