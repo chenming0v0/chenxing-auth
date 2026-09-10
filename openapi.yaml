@@ -1414,6 +1414,193 @@ paths:
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/account-providers:
+    get:
+      tags: [User Auth/Security]
+      summary: 查询当前用户可绑定的业务账号供应商
+      operationId: listAccountProviders
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 当前启用且可供用户绑定的业务供应商，不包含服务端 URL 或凭据
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountProviderListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/account-providers/{provider}/bindings:
+    post:
+      tags: [User Auth/Security]
+      summary: 绑定当前用户的业务服务账号
+      operationId: bindLinkedAccount
+      security:
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      description: >-
+        仅支持 provider=cltermux。请求中的公钥和私钥只在本次请求内转发给 CLtermux verify；服务端
+        先完成无副作用的供应商验证，再在同一数据库业务操作内重新校验精确 Session、session_epoch、用户状态
+        和 provider 唯一约束后保存已校验的 uid、subject 与快照。凭据、Token 和原始 subject 永不落库；同一用户
+        重复提交同一映射返回既有绑定，其他用户占用返回 409，且不泄露占用者。
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string, enum: [cltermux] } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LinkedAccountCredentialBindInput' }
+      responses:
+        '201':
+          description: 绑定成功，返回已校验的业务账号快照
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LinkedAccount' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '504': { $ref: '#/components/responses/GatewayTimeout' }
+  /api/v1/auth/linked-accounts:
+    get:
+      tags: [User Auth/Security]
+      summary: 查询当前用户已连接的账号
+      operationId: listLinkedAccounts
+      security: [{ sessionCookie: [] }]
+      description: >-
+        聚合 OAuth 外部身份与业务服务账号。列表只读取辰星本地快照，不在读取请求中调用供应商；按 linked_at
+        与 id 稳定倒序分页。cursor 是服务端生成的不透明值，不能由客户端解码或修改。
+      parameters:
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: cursor, in: query, required: false, schema: { type: string, maxLength: 512 } }
+      responses:
+        '200':
+          description: 当前用户的分页账号列表；无更多结果时 next_cursor 为 null
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LinkedAccountListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/linked-accounts/{id}:
+    get:
+      tags: [User Auth/Security]
+      summary: 查询当前用户的单个已连接账号
+      operationId: getLinkedAccount
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      responses:
+        '200':
+          description: 已连接账号及最近一次成功同步的快照
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LinkedAccount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [User Auth/Security]
+      summary: 解除当前用户的业务账号绑定
+      operationId: deleteLinkedAccount
+      security:
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      description: >-
+        必须通过 Session Cookie、CSRF Cookie、X-CSRF-Token 和当前密码复验。不存在或不属于当前用户的 id
+        统一返回 404；成功只删除辰星绑定关系，不撤销 CLtermux 自己的业务 Session。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LinkedAccountDeleteInput' }
+      responses:
+        '204': { description: 解绑成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/auth/linked-accounts/{id}/refresh:
+    post:
+      tags: [User Auth/Security]
+      summary: 刷新当前用户的业务账号快照
+      operationId: refreshLinkedAccount
+      security:
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      description: >-
+        每个用户/provider 受 30 秒冷却保护。上游暂时不可用且已有成功快照时，返回旧快照并将 sync.status
+        标记为 failed；从未成功同步过时返回上游错误。明确 disabled/missing 只更新本地事实，不删除绑定关系。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      responses:
+        '200':
+          description: 刷新后的快照，或上游暂时失败时保留的旧快照
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LinkedAccount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429':
+          description: 刷新冷却或供应商限流，响应带 Retry-After
+          headers:
+            Retry-After: { schema: { type: integer, minimum: 1 } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '504': { $ref: '#/components/responses/GatewayTimeout' }
+  /api/v1/integrations/cltermux/resolve:
+    post:
+      tags: [User Auth/Security]
+      summary: 为 CLtermux 解析已验证的辰星 Access Token
+      operationId: resolveCltermuxAccount
+      security: [{ integrationBearer: [] }]
+      description: >-
+        CLtermux 服务端调用的受保护解析接口。Authorization Bearer 是独立的服务间凭据；请求体中的 access_token
+        只在内存中验证，不记录日志。服务端从签名、Issuer、受撤销状态、aud allowlist、授权 scope 和当前用户状态
+        得到 subject、client_id 与 scope，不接受调用方自行声明这些字段。响应 valid_until 不超过辰星 Token 剩余寿命和
+        5 分钟，所有响应禁止缓存。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CltermuxResolveInput' }
+      responses:
+        '200':
+          description: 当前授权范围内的 CLtermux 绑定
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CltermuxResolveResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/external-providers:
     get:
       tags: [User Auth/Browser Login]
@@ -3407,6 +3594,7 @@ paths:
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+    integrationBearer: { type: http, scheme: bearer, description: CLtermux 到辰星的独立服务间 Bearer 凭据；仅用于 resolve，不得复用 ADMIN_TOKEN、OAuth Client Secret 或用户凭据 }
     adminBearer: { type: http, scheme: bearer, description: 系统 ADMIN_TOKEN 自动化通道，权限等价于 Owner 且无用户 ID，不需要浏览器 CSRF。ADMIN_TOKEN 为空时整个管理面关闭：Bearer 与 sessionCookie 两条通道都被拒绝，已初始化的管理接口统一返回 403 admin_disabled；唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口 }
     basicClientAuth: { type: http, scheme: basic }
     sessionCookie: { type: apiKey, in: cookie, name: __Host-chenxing_session, description: HTTPS 浏览器部署使用的 host-only Session Cookie；仅 loopback HTTP 本地开发使用不带前缀的兼容名称。数据库事务型管理写在精确 Session 行锁取得后，以数据库语句时间复核撤销、代际、绝对过期和该 Session 固化的 idle 窗口；锁等待期间失效返回 401 invalid_session，业务副作用及成功审计回滚。管理接口只有在 ADMIN_TOKEN 非空时才接受此通道；ADMIN_TOKEN 为空时统一返回 403 admin_disabled }
@@ -3452,6 +3640,8 @@ components:
       schema: { type: string, enum: [invalid, corrupt] }
   responses:
     BadRequest: { description: 请求错误；JSON 请求体无法解析时返回 400 invalid_json，且不暴露 serde 字段或类型细节, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    BadGateway: { description: 上游供应商返回无效响应或拒绝了服务凭据, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    GatewayTimeout: { description: 上游供应商请求超时, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     PayloadTooLarge: { description: JSON 请求体超过端点允许的大小时返回 413 payload_too_large，响应不包含请求体或解析细节, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' }, example: { code: payload_too_large, message: request body exceeds the allowed size } } } }
     UnsupportedMediaType: { description: JSON 请求缺少正确的 Content-Type 时返回 415 unsupported_media_type, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' }, example: { code: unsupported_media_type, message: request Content-Type must be application/json } } } }
     InvalidJsonData: { description: JSON 语法正确但字段类型无法反序列化时返回 422 invalid_json，响应不包含字段或 Rust/serde 类型细节, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' }, example: { code: invalid_json, message: request body must be valid JSON } } } }
@@ -3550,6 +3740,121 @@ components:
           type: array
           maxItems: 32
           items: { $ref: '#/components/schemas/ExternalIdentityExtension' }
+    AccountProviderListResponse:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AccountProvider' }
+    AccountProvider:
+      type: object
+      required: [id, name, icon_url, kind, binding_method, can_refresh]
+      additionalProperties: false
+      properties:
+        id: { type: string, maxLength: 128 }
+        name: { type: string, maxLength: 256 }
+        icon_url: { type: string, format: uri, nullable: true, maxLength: 4096 }
+        kind: { type: string, enum: [service_account] }
+        binding_method: { type: string, enum: [credentials] }
+        can_refresh: { type: boolean }
+    LinkedAccountListResponse:
+      type: object
+      required: [items, next_cursor]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/LinkedAccount' }
+        next_cursor: { type: string, nullable: true, maxLength: 512 }
+    LinkedAccount:
+      type: object
+      required: [id, kind, provider, uid, subject_hint, display, account_status, linked_at, capabilities, sync, extensions]
+      additionalProperties: false
+      properties:
+        id: { type: string, maxLength: 128 }
+        kind: { type: string, enum: [service_account, oauth_identity] }
+        provider: { $ref: '#/components/schemas/LinkedAccountProvider' }
+        uid: { type: string, nullable: true, maxLength: 255 }
+        subject_hint: { type: string, nullable: true, maxLength: 512 }
+        display: { $ref: '#/components/schemas/LinkedAccountDisplay' }
+        account_status: { type: string, enum: [active, disabled, missing, unknown] }
+        linked_at: { type: string, format: date-time }
+        capabilities: { $ref: '#/components/schemas/LinkedAccountCapabilities' }
+        sync: { $ref: '#/components/schemas/LinkedAccountSync' }
+        extensions:
+          type: array
+          maxItems: 32
+          items: { $ref: '#/components/schemas/ExternalIdentityExtension' }
+    LinkedAccountProvider:
+      type: object
+      required: [id, name, icon_url]
+      additionalProperties: false
+      properties:
+        id: { type: string, maxLength: 128 }
+        name: { type: string, maxLength: 256 }
+        icon_url: { type: string, format: uri, nullable: true, maxLength: 4096 }
+    LinkedAccountDisplay:
+      type: object
+      required: [name, email, avatar_url]
+      additionalProperties: false
+      properties:
+        name: { type: string, nullable: true, maxLength: 512 }
+        email: { type: string, nullable: true, format: email, maxLength: 512 }
+        avatar_url: { type: string, nullable: true, format: uri, maxLength: 4096 }
+    LinkedAccountCapabilities:
+      type: object
+      required: [can_login, can_refresh]
+      additionalProperties: false
+      properties:
+        can_login: { type: boolean }
+        can_refresh: { type: boolean }
+    LinkedAccountSync:
+      type: object
+      required: [status, last_attempt_at, last_success_at, stale_after, refresh_after, error]
+      additionalProperties: false
+      properties:
+        status: { type: string, enum: [never, success, failed, unsupported] }
+        last_attempt_at: { type: string, format: date-time, nullable: true }
+        last_success_at: { type: string, format: date-time, nullable: true }
+        stale_after: { type: string, format: date-time, nullable: true }
+        refresh_after: { type: string, format: date-time, nullable: true }
+        error: { type: string, nullable: true, maxLength: 128 }
+    LinkedAccountCredentialBindInput:
+      type: object
+      required: [public_key, private_key]
+      additionalProperties: false
+      properties:
+        public_key: { type: string, minLength: 1, maxLength: 255, writeOnly: true }
+        private_key: { type: string, minLength: 1, maxLength: 255, writeOnly: true }
+    LinkedAccountDeleteInput:
+      type: object
+      required: [password]
+      additionalProperties: false
+      properties:
+        password: { type: string, format: password, minLength: 1, maxLength: 128, writeOnly: true }
+    CltermuxResolveInput:
+      type: object
+      required: [access_token]
+      additionalProperties: false
+      properties:
+        access_token: { type: string, minLength: 1, maxLength: 16384, writeOnly: true, description: 辰星签发的 Access Token；服务端仅在内存中处理且不记录 }
+    CltermuxResolveResponse:
+      type: object
+      required: [issuer, subject, client_id, scope, provider, uid, binding_id, binding_version, resolved_at, valid_until]
+      additionalProperties: false
+      properties:
+        issuer: { type: string, format: uri }
+        subject: { type: string, maxLength: 255 }
+        client_id: { type: string, maxLength: 128 }
+        scope: { type: string }
+        provider: { type: string, enum: [cltermux] }
+        uid: { type: string, maxLength: 255 }
+        binding_id: { type: string, maxLength: 128 }
+        binding_version: { type: integer, format: int32, minimum: 1 }
+        resolved_at: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
     ExternalIdentityExtension:
       type: object
       required: [namespace, version, fields, fetched_at]

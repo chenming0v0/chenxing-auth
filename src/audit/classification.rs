@@ -79,6 +79,14 @@ audit_actions! {
     OauthProviderDisabled => "oauth_provider_disabled" => (Auth, Warning),
     ExternalIdentityLink => "external_identity_link" => (Account, Notice),
     ExternalIdentityUnlink => "external_identity_unlink" => (Account, Critical),
+    // Issue #706：业务服务（CLtermux）绑定走 linked_accounts 表，与 OAuth 外部
+    // 身份绑定同属账号维度。绑定成功是 Notice（对齐 ExternalIdentityLink），
+    // 绑定失败是 Warning（对齐 LoginFailure 一类的失败事件）；刷新是常规同步
+    // 动作，Notice；resolve 被拒是授权拒绝，Warning（对齐 AdminAuthorizationDenied）。
+    CltermuxCredentialBind => "cltermux_credential_bind" => (Account, Notice),
+    CltermuxCredentialBindFailure => "cltermux_credential_bind_failure" => (Account, Warning),
+    CltermuxCredentialRefresh => "cltermux_credential_refresh" => (Account, Notice),
+    CltermuxResolveDenied => "cltermux_resolve_denied" => (Account, Warning),
     PasskeySettingUpdate => "passkey_setting_update" => (Auth, Critical),
 
     SessionRevoke => "session_revoke" => (Session, Warning),

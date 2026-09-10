@@ -43,7 +43,7 @@ enum Exempt {
 }
 
 /// 状态改变路由的 CSRF 豁免白名单：`(路径, 方法, 依据)`。
-const EXEMPTIONS: [(&str, &str, Exempt); 14] = [
+const EXEMPTIONS: [(&str, &str, Exempt); 15] = [
     // —— OAuth 协议端点 ——
     ("/oauth/authorize", "post", Exempt::FrontChannelProtocol),
     ("/oauth/token", "post", Exempt::NonBrowserCredential),
@@ -80,6 +80,11 @@ const EXEMPTIONS: [(&str, &str, Exempt); 14] = [
         "/api/v1/auth/passkeys/authentication/finish",
         "post",
         Exempt::PreAuthTicket,
+    ),
+    (
+        "/api/v1/integrations/cltermux/resolve",
+        "post",
+        Exempt::NonBrowserCredential,
     ),
 ];
 

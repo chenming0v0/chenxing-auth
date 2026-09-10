@@ -400,6 +400,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "external identity snapshots",
             include_str!("../../migrations/0052_external_identity_snapshots.sql"),
         ),
+        (
+            53,
+            "cltermux linked accounts",
+            include_str!("../../migrations/0053_cltermux_linked_accounts.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

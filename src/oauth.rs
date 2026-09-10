@@ -14,7 +14,7 @@ pub mod consent;
 pub mod consent_cache;
 mod consent_cache_scripts;
 mod form;
-mod grant_gate;
+pub(crate) mod grant_gate;
 pub mod handlers;
 pub mod id_token;
 mod issuance_fence;

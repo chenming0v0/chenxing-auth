@@ -1,5 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
+#[path = "state/issuer_worker.rs"]
+mod issuer_worker;
+
 use crate::{
     admin::AdminAuthenticator,
     audit::AuditService,
@@ -10,7 +13,9 @@ use crate::{
     config::Config,
     consents::ConsentService,
     db::Database,
+    integrations::cltermux::{adapter::CltermuxIntegration, types::IntegrationError},
     keys::{KeyManager, KeyManagerError},
+    linked_accounts::service::LinkedAccountService,
     notifications::{EmailOutbox, EmailSender, SmtpEmailSender},
     oauth::providers::{
         endpoint_policy::EndpointPolicy,
@@ -35,7 +40,7 @@ use crate::{
     users::service::UserService,
     wallet::{redemption_service::RedemptionService, service::WalletService},
     web_dist::{WebDistError, WebDistRoot},
-    workers::{WorkerContext, WorkerHealth},
+    workers::WorkerHealth,
 };
 
 #[derive(Clone)]
@@ -79,6 +84,7 @@ pub struct AppState {
     pub audit: AuditService,
     pub factors: AuthFactorService,
     pub external_oauth: ExternalOAuthService,
+    pub linked_accounts: LinkedAccountService,
     pub email_sender: Arc<dyn EmailSender>,
     pub email_outbox: EmailOutbox,
     pub external_login_states: ExternalLoginStateStore,
@@ -102,6 +108,8 @@ pub enum StateError {
     Keys(#[from] KeyManagerError),
     #[error("external OAuth initialization failed: {0}")]
     ExternalOAuth(#[from] crate::oauth::providers::service::ExternalOAuthError),
+    #[error("CLtermux integration initialization failed: {0}")]
+    Cltermux(#[from] IntegrationError),
     #[error("external OAuth secret initialization failed: {0}")]
     ExternalOAuthSecret(#[from] crate::oauth::providers::secrets::SecretError),
     #[error("persisted credential migration failed: {0}")]
@@ -413,6 +421,13 @@ impl AppState {
             settings.clone(),
             config.redis_keyspace.clone(),
         );
+        let cltermux = config
+            .cltermux
+            .as_ref()
+            .map(CltermuxIntegration::new)
+            .transpose()?;
+        let linked_accounts =
+            LinkedAccountService::new(database.clone(), external_oauth.clone(), cltermux);
 
         Ok(Self {
             config,
@@ -441,58 +456,10 @@ impl AppState {
             audit,
             factors,
             external_oauth,
+            linked_accounts,
             external_login_states,
             email_sender,
             email_outbox,
         })
-    }
-
-    /// 周期性回读 Issuer generation。通知只负责降低延迟，轮询才是 PgBouncer 与
-    /// 断线场景下的可靠收敛上界；读取失败保留最后一个合法快照。
-    pub async fn run_issuer_sync_worker(self, mut worker: WorkerContext) {
-        let mut interval = tokio::time::interval(crate::settings::ISSUER_SYNC_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tokio::select! {
-                _ = worker.wait_for_shutdown() => break,
-                _ = interval.tick() => {}
-            }
-            worker.reporter().heartbeat();
-            let expected = self.issuer.state();
-            match crate::settings::issuer::load_raw(&self.database).await {
-                Ok(record) => match self
-                    .issuer
-                    .apply_raw_if_unchanged(&expected, record.as_ref())
-                {
-                    Ok(Some(snapshot)) => {
-                        tracing::info!(
-                            event = "issuer.runtime_applied",
-                            generation = snapshot.generation(),
-                            issuer = %snapshot.issuer(),
-                            "applied persisted issuer to the running instance"
-                        );
-                        worker.reporter().success();
-                    }
-                    Ok(None) => worker.reporter().success(),
-                    Err(error_value) => {
-                        tracing::error!(
-                            event = "issuer.runtime_invalid",
-                            generation = record.as_ref().map(|record| record.generation),
-                            error = %error_value,
-                            "persisted issuer is invalid; protocol routes are fail-closed"
-                        );
-                        worker.reporter().retryable_failure();
-                    }
-                },
-                Err(error_value) => {
-                    tracing::warn!(
-                        event = "issuer.runtime_reload_failed",
-                        error = %error_value,
-                        "failed to reload issuer; retaining the last runtime state"
-                    );
-                    worker.reporter().retryable_failure();
-                }
-            }
-        }
     }
 }
