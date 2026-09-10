@@ -42,11 +42,22 @@ export type SecurityRemovalResult = {
 }
 
 export type {
+  AccountProvider,
+  AccountProviderListResponse,
   ExternalIdentity,
   ExternalIdentityExtension,
   ExternalIdentityExtensionField,
   ExternalIdentityExtensionFieldType,
   ExternalIdentityListResponse,
+  LinkedAccount,
+  LinkedAccountCapabilities,
+  LinkedAccountCredentialBindInput,
+  LinkedAccountDeleteInput,
+  LinkedAccountDisplay,
+  LinkedAccountKind,
+  LinkedAccountListResponse,
+  LinkedAccountProvider,
+  LinkedAccountSync,
 } from './external-identity-types'
 export type ExternalIdentityUnlinkInput = { password: string }
 

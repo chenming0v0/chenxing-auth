@@ -1,4 +1,6 @@
 import type {
+  AccountProvider,
+  AccountProviderListResponse,
   AdminMeResponse,
   AuthStatusResponse,
   AuthorizationDecisionResponse,
@@ -6,6 +8,8 @@ import type {
   ExternalIdentityExtension,
   ExternalIdentityExtensionField,
   ExternalIdentityListResponse,
+  LinkedAccount,
+  LinkedAccountListResponse,
   PendingAuthorization,
   UserMe,
   UserRole,
@@ -94,6 +98,71 @@ function isExternalIdentityListResponse(value: unknown): value is ExternalIdenti
     && value.items.every(isExternalIdentity)
 }
 
+/** guard 上限与 openapi.yaml maxItems/maxLength 对齐；超出即整体拒绝，不做半截渲染。 */
+const MAX_LINKED_ACCOUNT_ITEMS = 100
+
+function isNullableBoundedString(value: unknown, max: number): boolean {
+  return value === null || isBoundedString(value, max)
+}
+
+function isAccountProvider(value: unknown): value is AccountProvider {
+  if (!isRecord(value)
+    || !isBoundedString(value.id, 128)
+    || !isBoundedString(value.name, 256)
+    || !isNullableBoundedString(value.icon_url, 4096)
+    || value.kind !== 'service_account'
+    || value.binding_method !== 'credentials'
+    || typeof value.can_refresh !== 'boolean') return false
+  return Object.keys(value).every((key) =>
+    ['id', 'name', 'icon_url', 'kind', 'binding_method', 'can_refresh'].includes(key))
+}
+
+function isAccountProviderListResponse(value: unknown): value is AccountProviderListResponse {
+  return isRecord(value)
+    && Array.isArray(value.items)
+    && value.items.length <= MAX_LINKED_ACCOUNT_ITEMS
+    && value.items.every(isAccountProvider)
+}
+
+function isLinkedAccount(value: unknown): value is LinkedAccount {
+  if (!isRecord(value)
+    || !isBoundedString(value.id, 128)
+    || (value.kind !== 'service_account' && value.kind !== 'oauth_identity')
+    || !isNullableBoundedString(value.uid, 255)
+    || !isNullableBoundedString(value.subject_hint, 512)
+    || !isBoundedString(value.account_status, 64)
+    || !isBoundedString(value.linked_at, 128)) return false
+  if (!isRecord(value.provider)
+    || !isBoundedString(value.provider.id, 128)
+    || !isBoundedString(value.provider.name, 256)
+    || !isNullableBoundedString(value.provider.icon_url, 4096)) return false
+  if (!isRecord(value.display)
+    || !isNullableBoundedString(value.display.name, 512)
+    || !isNullableBoundedString(value.display.email, 512)
+    || !isNullableBoundedString(value.display.avatar_url, 4096)) return false
+  if (!isRecord(value.capabilities)
+    || typeof value.capabilities.can_login !== 'boolean'
+    || typeof value.capabilities.can_refresh !== 'boolean') return false
+  if (!isRecord(value.sync)
+    || !isBoundedString(value.sync.status, 64)
+    || !isNullableBoundedString(value.sync.last_attempt_at, 128)
+    || !isNullableBoundedString(value.sync.last_success_at, 128)
+    || !isNullableBoundedString(value.sync.stale_after, 128)
+    || !isNullableBoundedString(value.sync.refresh_after, 128)
+    || !isNullableBoundedString(value.sync.error, 512)) return false
+  return Array.isArray(value.extensions)
+    && value.extensions.length <= MAX_EXTERNAL_IDENTITY_EXTENSIONS
+    && value.extensions.every(isExternalIdentityExtension)
+}
+
+function isLinkedAccountListResponse(value: unknown): value is LinkedAccountListResponse {
+  return isRecord(value)
+    && Array.isArray(value.items)
+    && value.items.length <= MAX_LINKED_ACCOUNT_ITEMS
+    && value.items.every(isLinkedAccount)
+    && (value.next_cursor === null || isBoundedString(value.next_cursor, 512))
+}
+
 function isUserRole(value: unknown): value is UserRole {
   return value === 'user' || value === 'admin' || value === 'owner'
 }
@@ -164,6 +233,15 @@ export function responseGuard(path: string, method: string): ResponseGuard | und
   if (endpoint === '/api/v1/auth/status') return isAuthStatusResponse
   if (endpoint === '/api/v1/admin/auth/me') return isAdminMeResponse
   if (endpoint === '/api/v1/auth/external-identities' && method === 'GET') return isExternalIdentityListResponse
+  if (endpoint === '/api/v1/auth/linked-accounts' && method === 'GET') return isLinkedAccountListResponse
+  if (endpoint === '/api/v1/auth/account-providers' && method === 'GET') return isAccountProviderListResponse
+
+  const linkedAccountEndpoint = /^\/api\/v1\/auth\/linked-accounts\/[^/]+$/
+  if (linkedAccountEndpoint.test(endpoint) && method === 'GET') return isLinkedAccount
+  const linkedAccountWriteEndpoint = /^\/api\/v1\/auth\/linked-accounts\/[^/]+\/(refresh)$/
+  if (linkedAccountWriteEndpoint.test(endpoint) && method === 'POST') return isLinkedAccount
+  const linkedAccountBindEndpoint = /^\/api\/v1\/auth\/account-providers\/[^/]+\/bindings$/
+  if (linkedAccountBindEndpoint.test(endpoint) && method === 'POST') return isLinkedAccount
 
   const pendingEndpoint = /^\/api\/v1\/oauth\/authorize\/requests\/[^/]+$/
   if (pendingEndpoint.test(endpoint)) {

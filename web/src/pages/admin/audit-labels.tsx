@@ -25,6 +25,10 @@ export const ACTION_CATALOG: Record<string, ActionInfo> = {
   oauth_provider_disabled: { label: '停用身份提供商', severity: 'warning' },
   external_identity_link: { label: '绑定外部身份', severity: 'notice' },
   external_identity_unlink: { label: '解绑外部身份', severity: 'critical' },
+  cltermux_credential_bind: { label: '绑定 CLtermux 账号', severity: 'notice' },
+  cltermux_credential_bind_failure: { label: '绑定尝试被拒绝', severity: 'warning' },
+  cltermux_credential_refresh: { label: '同步 CLtermux 数据', severity: 'notice' },
+  cltermux_resolve_denied: { label: 'CLtermux 解析被拒绝', severity: 'warning' },
   passkey_setting_update: { label: '更新通行密钥设置', severity: 'critical' },
   session_revoke: { label: '撤销会话', severity: 'warning' },
   oauth_consent: { label: '授权应用', severity: 'notice' },
@@ -86,6 +90,7 @@ export const ACTION_CATALOG: Record<string, ActionInfo> = {
 export const RESOURCE_LABELS: Record<string, string> = {
   session: '会话',
   user: '用户',
+  linked_account: '已连接账号',
   oauth_client: 'OAuth 客户端',
   oauth_provider: '身份提供商',
   oauth_authorization: 'OAuth 授权',

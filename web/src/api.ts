@@ -1,7 +1,12 @@
 import { responseGuard } from './api-response-guards'
 import type {
+  AccountProviderListResponse,
   ApiRequestInit,
   EntitlementsResponse,
+  LinkedAccount,
+  LinkedAccountCredentialBindInput,
+  LinkedAccountDeleteInput,
+  LinkedAccountListResponse,
   PendingAuthorization,
   UserMe,
 } from './api-types'
@@ -113,6 +118,17 @@ const safeMessages = new Map<string, string>([
   ['plan_archived', '已归档的套餐不能分配给用户。'],
   ['invalid_expiration', '到期时间格式不正确，请重新选择。'],
   ['oauth_provider_not_found', '该外部身份源不可用或已被停用。'],
+  ['credential_invalid', 'CLtermux 凭据校验未通过，请核对公钥与私钥是否匹配。'],
+  ['account_disabled', '该业务账号已被停用，暂时无法执行此操作。'],
+  ['account_not_found', '供应商上不存在该业务账号。'],
+  ['account_already_linked', '该业务账号已绑定，请直接刷新数据。'],
+  ['linked_account_not_found', '该绑定不存在或已移除，请刷新列表。'],
+  ['provider_capability_unsupported', '该供应商暂不支持此操作。'],
+  ['provider_invalid_response', '供应商响应异常，请稍后重试。'],
+  ['provider_auth_failed', '平台与供应商之间的认证已失效，请联系管理员。'],
+  ['provider_unavailable', '供应商暂时不可用，请稍后重试。'],
+  ['provider_timeout', '供应商响应超时，请稍后重试。'],
+  ['rate_limited', '操作过于频繁，请稍后重试。'],
   ['invalid_oauth_provider', '外部身份源配置不完整，请检查 Endpoint、Scopes 和 Email Verified Claim。'],
   ['oauth_login_failed', '外部身份源登录未完成，请重试。'],
   ['oauth_login_rate_limited', '外部登录尝试过于频繁，请稍后重试。'],
@@ -343,4 +359,47 @@ export function getEntitlements(force = false): Promise<EntitlementsResponse> {
 /** 注销与身份切换：当前所有按身份缓存的数据都不可信。目前只有权益一项。 */
 export function clearApiCache(): void {
   invalidateEntitlements()
+}
+
+/* ====== 已连接账号（Issue #706）======
+   注意：/api/v1/integrations/cltermux/resolve 是 CLtermux 服务间接口（独立 Bearer 凭据），
+   浏览器侧不提供调用函数。 */
+
+/**
+ * 读取已连接账号分页。cursor 为服务端不透明值：只在「加载更多」时原样回传。
+ * `redirectOn401: false` 让列表页自己决定错误呈现，不把用户直接弹回登录页。
+ */
+export function listLinkedAccounts(cursor?: string | null): Promise<LinkedAccountListResponse> {
+  const params = new URLSearchParams()
+  if (cursor) params.set('cursor', cursor)
+  const suffix = cursor ? `?${params.toString()}` : ''
+  return apiFetch<LinkedAccountListResponse>(`/api/v1/auth/linked-accounts${suffix}`, { redirectOn401: false })
+}
+
+export function listAccountProviders(): Promise<AccountProviderListResponse> {
+  return apiFetch<AccountProviderListResponse>('/api/v1/auth/account-providers', { redirectOn401: false })
+}
+
+/** 凭据只存在于本次请求体内，由服务端转发给 CLtermux verify；成功返回已校验快照。 */
+export function bindLinkedAccount(provider: string, input: LinkedAccountCredentialBindInput): Promise<LinkedAccount> {
+  return apiFetch<LinkedAccount>(
+    `/api/v1/auth/account-providers/${encodeURIComponent(provider)}/bindings`,
+    { method: 'POST', redirectOn401: false, body: JSON.stringify(input) },
+  )
+}
+
+/** 刷新单个账号的快照；每用户/供应商有 30 秒冷却，429 时 Retry-After 由 safeErrorMessage 兜底。 */
+export function refreshLinkedAccount(id: string): Promise<LinkedAccount> {
+  return apiFetch<LinkedAccount>(
+    `/api/v1/auth/linked-accounts/${encodeURIComponent(id)}/refresh`,
+    { method: 'POST', redirectOn401: false },
+  )
+}
+
+/** 解绑业务服务账号，需要密码复验；密码不传缓存、不写日志。 */
+export function unlinkLinkedAccount(id: string, input: LinkedAccountDeleteInput): Promise<void> {
+  return apiFetch<void>(
+    `/api/v1/auth/linked-accounts/${encodeURIComponent(id)}`,
+    { method: 'DELETE', redirectOn401: false, body: JSON.stringify(input) },
+  )
 }

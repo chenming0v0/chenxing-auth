@@ -85,6 +85,7 @@ function AppContent() {
     '/console': <ConsoleOverview />,
     '/console/plans': <ConsolePlans />,
     '/console/profile': <ConsoleProfile />,
+    // 已连接账号聚合页（Issue #706）：同时承载 OAuth 身份与业务服务账号（CLtermux）
     '/console/account/oauth-identities': <OAuthIdentitiesPage />,
     '/console/wallet': <ConsoleWallet />,
     '/console/security': <ConsoleProfile />,
