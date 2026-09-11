@@ -102,9 +102,6 @@ pub async fn exchange(
         return error::bad_request("invalid_request", BAD_REQUEST_MESSAGE);
     }
 
-    let Some(config) = state.config.cltermux.as_ref() else {
-        return denied(&state, None).await;
-    };
     let Some(token) = bearer_token(&headers) else {
         return denied(&state, None).await;
     };
@@ -112,6 +109,16 @@ pub async fn exchange(
         Ok(claims) => claims,
         Err(_) => return denied(&state, None).await,
     };
+    let provider = match state
+        .settings
+        .account_provider_for_client(&claims.aud)
+        .await
+    {
+        Ok(Some(value)) => value,
+        Ok(None) => return denied(&state, Some(&claims.sub)).await,
+        Err(_) => return unavailable(&state, Some(&claims.sub)).await,
+    };
+    let config = &provider.config;
     // 撤销检查沿用 resolve 的口径：Redis 故障同样 fail-closed，因为无法证明
     // 令牌未被撤销时不能签出新的会话令牌。
     match state.revocations.is_revoked(token).await {
@@ -173,7 +180,7 @@ pub async fn exchange(
         Err(_) => return unavailable(&state, Some(&claims.sub)).await,
     }
 
-    let binding = match state.linked_accounts.resolve(user_id).await {
+    let binding = match state.linked_accounts.resolve(user_id, &provider.slug).await {
         Ok(binding) => binding,
         Err(LinkedAccountServiceError::NotFound) => {
             record_denied(&state, Some(&claims.sub), "account_not_linked").await;

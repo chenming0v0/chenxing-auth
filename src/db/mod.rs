@@ -405,6 +405,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "cltermux linked accounts",
             include_str!("../../migrations/0053_cltermux_linked_accounts.sql"),
         ),
+        (
+            54,
+            "account provider registry",
+            include_str!("../../migrations/0054_account_provider_registry.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

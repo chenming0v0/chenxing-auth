@@ -4,6 +4,7 @@ import { Notice, PageIntro } from '@chenxing/ui'
 import { AdminGate, useAdminAccess } from './shared'
 import { useDraftLeaveGuard, useFlashMessage } from './settings/panel'
 import { OAuthProvidersPanel } from './settings/oauth-providers-panel'
+import { AccountProvidersPanel } from './settings/account-providers-panel'
 
 export function AdminOAuthProviders() {
   const access = useAdminAccess()
@@ -19,7 +20,8 @@ export function AdminOAuthProviders() {
 export function OAuthProvidersPageBody() {
   const { flash, message } = useFlashMessage()
   const [dirty, setDirty] = useState(false)
-  useDraftLeaveGuard(dirty)
+  const [accountDirty, setAccountDirty] = useState(false)
+  useDraftLeaveGuard(dirty || accountDirty)
   return (
     <>
       <PageIntro
@@ -29,6 +31,9 @@ export function OAuthProvidersPageBody() {
       />
       {message ? <div className="mb-6"><Notice tone={message.tone}>{message.text}</Notice></div> : null}
       <OAuthProvidersPanel onMessage={flash} onDirtyChange={setDirty} />
+      <div className="mt-6">
+        <AccountProvidersPanel onMessage={flash} onDirtyChange={setAccountDirty} />
+      </div>
     </>
   )
 }

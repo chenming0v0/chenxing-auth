@@ -83,6 +83,8 @@ pub enum StoreBindingError {
     SessionInvalid,
     #[error("the user account is disabled")]
     UserDisabled,
+    #[error("provider changed while verifying credentials")]
+    ProviderChanged,
 }
 
 /// 新绑定的持久化输入。将绑定字段作为一个值传递，避免调用方和仓储方法
@@ -91,6 +93,7 @@ pub enum StoreBindingError {
 pub struct LinkedAccountInsert {
     pub id: String,
     pub provider_slug: String,
+    pub provider_version: Option<i64>,
     pub kind: String,
     pub uid: String,
     pub subject: String,
@@ -142,6 +145,20 @@ impl LinkedAccountRepository {
             crate::users::UserSessionValidation::UserDisabled => {
                 transaction.rollback().await?;
                 return Err(StoreBindingError::UserDisabled);
+            }
+        }
+        if let Some(version) = input.provider_version {
+            // Same lock as registry writes, after the user/session locks.
+            let raw = crate::sqlx::query_scalar::<_, Option<String>>(
+                "SELECT setting_value FROM app_settings WHERE setting_key = 'account_providers' FOR SHARE",
+            ).fetch_one(&mut *transaction).await?;
+            let providers = crate::settings::account_providers::decode(raw.as_deref())
+                .map_err(|_| StoreBindingError::ProviderChanged)?;
+            if !providers
+                .iter()
+                .any(|p| p.slug == input.provider_slug && p.enabled && p.version == version)
+            {
+                return Err(StoreBindingError::ProviderChanged);
             }
         }
         let result = crate::sqlx::query_as::<_, LinkedAccountRow>(

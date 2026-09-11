@@ -14,6 +14,7 @@ import type {
   UserMe,
   UserRole,
 } from './api-types'
+import { isManagedAccountProvider } from './account-provider-types'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -225,6 +226,10 @@ type ResponseGuard = (value: unknown) => boolean
 
 export function responseGuard(path: string, method: string): ResponseGuard | undefined {
   const endpoint = path.split('?')[0]
+  if (endpoint === '/api/v1/admin/account-providers' && method === 'GET') {
+    return (value) => Array.isArray(value) && value.every(isManagedAccountProvider)
+  }
+  if (/^\/api\/v1\/admin\/account-providers\/[^/]+$/.test(endpoint) && method === 'PUT') return isManagedAccountProvider
   if (endpoint === '/api/v1/auth/me') return isUserMeResponse
   // 头像的 PUT / DELETE 返回完整资料；GET 返回图片字节，不走 apiFetch。
   if (endpoint === '/api/v1/auth/me/avatar' && (method === 'PUT' || method === 'DELETE')) {

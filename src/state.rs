@@ -13,7 +13,7 @@ use crate::{
     config::Config,
     consents::ConsentService,
     db::Database,
-    integrations::cltermux::{adapter::CltermuxIntegration, types::IntegrationError},
+    integrations::cltermux::types::IntegrationError,
     keys::{KeyManager, KeyManagerError},
     linked_accounts::service::LinkedAccountService,
     notifications::{EmailOutbox, EmailSender, SmtpEmailSender},
@@ -102,6 +102,8 @@ pub enum StateError {
     Issuer(#[from] crate::settings::IssuerSettingError),
     #[error("settings initialization failed: {0}")]
     Settings(#[from] crate::settings::SettingsServiceError),
+    #[error(transparent)]
+    AccountProviders(#[from] crate::settings::account_providers::AccountProviderError),
     #[error("redis configuration is invalid: {0}")]
     Redis(#[from] redis::RedisError),
     #[error("key manager initialization failed: {0}")]
@@ -293,8 +295,12 @@ impl AppState {
             crate::settings::repository::has_smtp_password_ciphertext(&database)
                 .await
                 .map_err(crate::db::DbError::from)?;
+        let business_ciphertext_exists =
+            crate::settings::account_providers::has_ciphertext(&database)
+                .await
+                .map_err(crate::db::DbError::from)?;
         let persisted_secret_ciphertext_exists =
-            provider_ciphertext_exists || smtp_ciphertext_exists;
+            provider_ciphertext_exists || smtp_ciphertext_exists || business_ciphertext_exists;
         let StartupKeyMaterial {
             keys,
             secrets: secret_manager,
@@ -421,13 +427,12 @@ impl AppState {
             settings.clone(),
             config.redis_keyspace.clone(),
         );
-        let cltermux = config
-            .cltermux
-            .as_ref()
-            .map(CltermuxIntegration::new)
-            .transpose()?;
+        if let Some(legacy) = config.cltermux.as_ref() {
+            settings.import_legacy_account_provider(legacy).await?;
+        }
         let linked_accounts =
-            LinkedAccountService::new(database.clone(), external_oauth.clone(), cltermux);
+            LinkedAccountService::new(database.clone(), external_oauth.clone(), None)
+                .with_provider_settings(settings.clone());
 
         Ok(Self {
             config,

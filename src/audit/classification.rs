@@ -77,6 +77,7 @@ audit_actions! {
     OauthProviderUpdate => "oauth_provider_update" => (Auth, Critical),
     OauthProviderActive => "oauth_provider_active" => (Auth, Critical),
     OauthProviderDisabled => "oauth_provider_disabled" => (Auth, Warning),
+    AccountProviderSave => "account_provider_save" => (Auth, Critical),
     ExternalIdentityLink => "external_identity_link" => (Account, Notice),
     ExternalIdentityUnlink => "external_identity_unlink" => (Account, Critical),
     // Issue #706：业务服务（CLtermux）绑定走 linked_accounts 表，与 OAuth 外部

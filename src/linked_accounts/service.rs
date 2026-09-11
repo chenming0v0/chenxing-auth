@@ -52,6 +52,7 @@ pub struct LinkedAccountService {
     repository: LinkedAccountRepository,
     external_oauth: ExternalOAuthService,
     cltermux: Option<CltermuxIntegration>,
+    provider_settings: Option<crate::settings::SettingsService>,
 }
 
 impl LinkedAccountService {
@@ -64,19 +65,49 @@ impl LinkedAccountService {
             repository: LinkedAccountRepository::new(pool),
             external_oauth,
             cltermux,
+            provider_settings: None,
         }
+    }
+
+    pub fn with_provider_settings(mut self, settings: crate::settings::SettingsService) -> Self {
+        self.provider_settings = Some(settings);
+        self
+    }
+
+    async fn integration(
+        &self,
+        slug: &str,
+    ) -> Result<(CltermuxIntegration, Option<i64>), LinkedAccountServiceError> {
+        if let Some(settings) = &self.provider_settings {
+            let provider = settings
+                .account_provider(slug)
+                .await
+                .map_err(|_| IntegrationError::ProviderUnavailable)?
+                .ok_or(LinkedAccountServiceError::NotConfigured)?;
+            return Ok((
+                CltermuxIntegration::new(&provider.config)?,
+                Some(provider.version),
+            ));
+        }
+        if slug != PROVIDER_SLUG {
+            return Err(LinkedAccountServiceError::NotConfigured);
+        }
+        Ok((
+            self.cltermux
+                .clone()
+                .ok_or(LinkedAccountServiceError::NotConfigured)?,
+            None,
+        ))
     }
 
     pub async fn bind_cltermux(
         &self,
+        provider_slug: &str,
         credential: crate::users::UserSessionCredential,
         credentials: CredentialBundle,
         now: OffsetDateTime,
     ) -> Result<LinkedAccountView, LinkedAccountServiceError> {
-        let integration = self
-            .cltermux
-            .as_ref()
-            .ok_or(LinkedAccountServiceError::NotConfigured)?;
+        let (integration, provider_version) = self.integration(provider_slug).await?;
         let account = integration.verify(credentials).await?;
         let id = format!("link_{}", Uuid::new_v4().simple());
         let row = match self
@@ -85,7 +116,8 @@ impl LinkedAccountService {
                 credential,
                 LinkedAccountInsert {
                     id,
-                    provider_slug: PROVIDER_SLUG.to_owned(),
+                    provider_slug: provider_slug.to_owned(),
+                    provider_version,
                     kind: "service_account".to_owned(),
                     uid: account.uid.clone(),
                     subject: account.subject,
@@ -100,7 +132,7 @@ impl LinkedAccountService {
             Err(StoreBindingError::UidTaken) => {
                 let Some(existing) = self
                     .repository
-                    .find_binding_by_uid(PROVIDER_SLUG, &account.uid)
+                    .find_binding_by_uid(provider_slug, &account.uid)
                     .await?
                 else {
                     return Err(LinkedAccountServiceError::AlreadyLinked);
@@ -112,6 +144,9 @@ impl LinkedAccountService {
             }
             Err(StoreBindingError::UserSlotTaken) => {
                 return Err(LinkedAccountServiceError::AlreadyLinked);
+            }
+            Err(StoreBindingError::ProviderChanged) => {
+                return Err(LinkedAccountServiceError::NotConfigured);
             }
             Err(StoreBindingError::SessionInvalid) => {
                 return Err(LinkedAccountServiceError::SessionInvalid);
@@ -135,6 +170,7 @@ impl LinkedAccountService {
             .find_binding_by_id(binding_id, user_id)
             .await?
             .ok_or(LinkedAccountServiceError::NotFound)?;
+        let (integration, _) = self.integration(&row.provider_slug).await?;
         if let Some(last_attempt) = row.last_attempt_at {
             let elapsed = now - last_attempt;
             if elapsed < REFRESH_COOLDOWN {
@@ -152,10 +188,6 @@ impl LinkedAccountService {
             return Err(LinkedAccountServiceError::NotFound);
         }
         let claimed_version = row.binding_version + 1;
-        let integration = self
-            .cltermux
-            .as_ref()
-            .ok_or(LinkedAccountServiceError::NotConfigured)?;
         let result = integration.lookup(&row.uid).await;
         match result {
             Ok(account) if account.account_status == AccountStatus::Disabled => {
@@ -230,6 +262,18 @@ impl LinkedAccountService {
             .map(|row| self.view_from_row(row))
             .collect::<Result<Vec<_>, _>>()?;
         let oauth_rows = self.external_oauth.list_identities(user_id).await?;
+        if let Some(settings) = &self.provider_settings {
+            let providers = settings
+                .account_providers()
+                .await
+                .map_err(|_| IntegrationError::ProviderUnavailable)?;
+            for item in &mut items {
+                if let Some(provider) = providers.iter().find(|p| p.slug == item.provider.id) {
+                    item.provider.name = provider.name.clone();
+                    item.capabilities.can_refresh = provider.enabled;
+                }
+            }
+        }
         items.extend(oauth_rows.into_iter().map(oauth_view));
         items.sort_by(|left, right| {
             right
@@ -264,10 +308,11 @@ impl LinkedAccountService {
     pub async fn resolve(
         &self,
         user_id: UserId,
+        provider_slug: &str,
     ) -> Result<ResolveBinding, LinkedAccountServiceError> {
         let row = self
             .repository
-            .find_binding_by_user_and_provider(user_id, PROVIDER_SLUG)
+            .find_binding_by_user_and_provider(user_id, provider_slug)
             .await?
             .ok_or(LinkedAccountServiceError::NotFound)?;
         Ok(ResolveBinding {
@@ -278,8 +323,28 @@ impl LinkedAccountService {
         })
     }
 
-    pub fn provider_descriptors(&self) -> Vec<AccountProviderView> {
-        self.cltermux
+    pub async fn provider_descriptors(
+        &self,
+    ) -> Result<Vec<AccountProviderView>, LinkedAccountServiceError> {
+        if let Some(settings) = &self.provider_settings {
+            return Ok(settings
+                .account_providers()
+                .await
+                .map_err(|_| IntegrationError::ProviderUnavailable)?
+                .into_iter()
+                .filter(|provider| provider.enabled)
+                .map(|provider| AccountProviderView {
+                    id: provider.slug,
+                    name: provider.name,
+                    icon_url: None,
+                    kind: "service_account".to_owned(),
+                    binding_method: "credentials".to_owned(),
+                    can_refresh: true,
+                })
+                .collect());
+        }
+        Ok(self
+            .cltermux
             .as_ref()
             .map(|_| {
                 vec![AccountProviderView {
@@ -291,7 +356,7 @@ impl LinkedAccountService {
                     can_refresh: true,
                 }]
             })
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 
     fn view_from_row(

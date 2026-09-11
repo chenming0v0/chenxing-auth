@@ -333,6 +333,14 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
             get(list_providers).post(create_provider),
         )
         .route(
+            "/api/v1/admin/account-providers",
+            get(crate::admin::account_provider_handlers::list),
+        )
+        .route(
+            "/api/v1/admin/account-providers/{slug}",
+            axum::routing::put(crate::admin::account_provider_handlers::save),
+        )
+        .route(
             "/api/v1/admin/oauth/providers/{slug}",
             axum::routing::put(update_provider),
         )
