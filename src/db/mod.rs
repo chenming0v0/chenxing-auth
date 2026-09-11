@@ -395,6 +395,16 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "wallet purchase idempotency",
             include_str!("../../migrations/0051_wallet_purchase_idempotency.sql"),
         ),
+        (
+            52,
+            "external identity snapshots",
+            include_str!("../../migrations/0052_external_identity_snapshots.sql"),
+        ),
+        (
+            53,
+            "cltermux linked accounts",
+            include_str!("../../migrations/0053_cltermux_linked_accounts.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

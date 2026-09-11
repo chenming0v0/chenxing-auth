@@ -81,6 +81,7 @@ impl Config {
             trusted_proxies: TrustedProxies::none(),
             security_limits: super::super::limits::SecurityLimits::default(),
             audit_retention: AuditRetentionConfig::default(),
+            cltermux: None,
         })
     }
 }

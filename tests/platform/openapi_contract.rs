@@ -336,21 +336,21 @@ fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
         openapi
             .matches("#/components/responses/PayloadTooLarge")
             .count(),
-        50,
+        54,
         "every JSON request-body operation must declare the unified 413 envelope"
     );
     assert_eq!(
         openapi
             .matches("#/components/responses/UnsupportedMediaType")
             .count(),
-        50,
+        54,
         "every JSON request-body operation must declare the unified 415 envelope"
     );
     assert_eq!(
         openapi
             .matches("#/components/responses/InvalidJsonData")
             .count(),
-        50,
+        54,
         "every JSON request-body operation must declare the unified 422 envelope"
     );
     assert_eq!(
@@ -526,12 +526,12 @@ fn openapi_paths_match_all_static_axum_routes() {
     let paths = openapi_paths();
     assert_eq!(
         routes.len(),
-        116,
+        123,
         "route inventory changed; review contract"
     );
     assert_eq!(
         paths.len(),
-        116,
+        123,
         "OpenAPI path inventory changed; review contract"
     );
     assert_eq!(routes, paths, "Axum and OpenAPI path inventories diverged");

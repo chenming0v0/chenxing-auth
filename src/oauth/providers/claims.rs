@@ -61,6 +61,11 @@ pub struct ExternalUser {
     pub email: EmailAddress,
     pub name: Option<String>,
     pub email_verified: bool,
+    /// 展示用账号名快照。没有独立 claim 时回退到 `name`，两者都缺则不展示。
+    pub account_name: Option<String>,
+    /// 头像 URL 快照。只接受 http/https 的合法 URL，其余一律丢弃：
+    /// IdP 返回的字节不可信，原样透传会把 `javascript:` 之类的载荷送进浏览器。
+    pub avatar_url: Option<String>,
 }
 
 impl ExternalUser {
@@ -88,14 +93,31 @@ impl ExternalUser {
             .and_then(|path| claim_string(claims, path))
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty());
+        let account_name = claim_string(claims, "account_name")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .or_else(|| name.clone());
+        let avatar_url = claim_string(claims, "avatar_url")
+            .or_else(|| claim_string(claims, "picture"))
+            .filter(|value| is_http_url(value));
 
         Ok(Self {
             subject,
             email,
             name,
             email_verified: true,
+            account_name,
+            avatar_url,
         })
     }
+}
+
+/// 快照 URL 的最低门槛：能解析、scheme 是 http/https、有主机。
+/// 不做可达性检查——这里只决定「存不存」，不是「能不能访问」。
+fn is_http_url(value: &str) -> bool {
+    url::Url::parse(value)
+        .ok()
+        .is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.has_host())
 }
 
 pub fn extract_claim<'a>(claims: &'a Value, path: &str) -> Option<&'a Value> {

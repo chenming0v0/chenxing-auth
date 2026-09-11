@@ -43,7 +43,7 @@ enum Exempt {
 }
 
 /// 状态改变路由的 CSRF 豁免白名单：`(路径, 方法, 依据)`。
-const EXEMPTIONS: [(&str, &str, Exempt); 14] = [
+const EXEMPTIONS: [(&str, &str, Exempt); 16] = [
     // —— OAuth 协议端点 ——
     ("/oauth/authorize", "post", Exempt::FrontChannelProtocol),
     ("/oauth/token", "post", Exempt::NonBrowserCredential),
@@ -80,6 +80,19 @@ const EXEMPTIONS: [(&str, &str, Exempt); 14] = [
         "/api/v1/auth/passkeys/authentication/finish",
         "post",
         Exempt::PreAuthTicket,
+    ),
+    (
+        "/api/v1/integrations/cltermux/resolve",
+        "post",
+        Exempt::NonBrowserCredential,
+    ),
+    // 一键登录兑换（Issue #709）：凭据是 `Authorization: Bearer` 里的辰星 Access
+    // Token，由非浏览器客户端（手机端）显式附加，浏览器不会自动携带，因此不存在
+    // CSRF 可借用的自动凭据面。
+    (
+        "/api/v1/auth/chenxing/exchange",
+        "post",
+        Exempt::NonBrowserCredential,
     ),
 ];
 

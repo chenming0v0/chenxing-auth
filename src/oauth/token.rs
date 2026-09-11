@@ -15,6 +15,17 @@ pub struct AccessTokenClaims {
     pub exp: usize,
     pub iat: usize,
     pub scope: String,
+    /// 辰星到 CLtermux 的会话令牌扩展（Issue #709）。
+    ///
+    /// 普通 Access Token 不携带这些 claim：`skip_serializing_if` 让缺失值在
+    /// 序列化时完全消失，`default` 让旧的、没有这些键的令牌仍可被解码成 `None`。
+    /// 因此扩展 claim 是纯增量，不改变既有令牌的字节形态。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_version: Option<i32>,
 }
 
 #[cfg(test)]
@@ -137,9 +148,47 @@ pub fn issue_access_token_at(
     lifetime_seconds: u64,
     now: time::OffsetDateTime,
 ) -> Result<String, TokenError> {
+    let claims = base_claims(issuer, subject, audience, scopes, lifetime_seconds, now)?;
+    encode_claims(keys, &claims)
+}
+
+/// 签发携带 CLtermux 业务绑定扩展的会话令牌（Issue #709）。
+///
+/// 与 [`issue_access_token_at`] 共用 RS256 + active `kid` 的签发路径，只在标准
+/// claims 之外填充 `uid` / `binding_id` / `binding_version`。普通 Access Token
+/// 的这些字段保持 `None`，序列化结果不因本函数而改变。
+#[allow(clippy::too_many_arguments)]
+pub fn issue_session_token_at(
+    keys: &KeyManager,
+    issuer: &str,
+    subject: &str,
+    audience: &str,
+    scopes: &[String],
+    lifetime_seconds: u64,
+    now: time::OffsetDateTime,
+    uid: &str,
+    binding_id: &str,
+    binding_version: i32,
+) -> Result<String, TokenError> {
+    let mut claims = base_claims(issuer, subject, audience, scopes, lifetime_seconds, now)?;
+    claims.uid = Some(uid.to_owned());
+    claims.binding_id = Some(binding_id.to_owned());
+    claims.binding_version = Some(binding_version);
+    encode_claims(keys, &claims)
+}
+
+/// 构造标准 claims。扩展字段一律为 `None`，由调用方按需填充。
+fn base_claims(
+    issuer: &str,
+    subject: &str,
+    audience: &str,
+    scopes: &[String],
+    lifetime_seconds: u64,
+    now: time::OffsetDateTime,
+) -> Result<AccessTokenClaims, TokenError> {
     let now = usize::try_from(now.unix_timestamp()).map_err(|_| TokenError::InvalidLifetime)?;
     let lifetime = usize::try_from(lifetime_seconds).map_err(|_| TokenError::InvalidLifetime)?;
-    let claims = AccessTokenClaims {
+    Ok(AccessTokenClaims {
         iss: issuer.trim_end_matches('/').to_owned(),
         sub: subject.to_owned(),
         aud: audience.to_owned(),
@@ -148,11 +197,18 @@ pub fn issue_access_token_at(
             .ok_or(TokenError::InvalidLifetime)?,
         iat: now,
         scope: scopes.join(" "),
-    };
+        uid: None,
+        binding_id: None,
+        binding_version: None,
+    })
+}
+
+/// RS256 编码，使用当前 active 的 `kid`。
+fn encode_claims(keys: &KeyManager, claims: &AccessTokenClaims) -> Result<String, TokenError> {
     let mut header = Header::new(Algorithm::RS256);
     let signing_key = keys
         .active_signing_key_if_ready()
         .ok_or(TokenError::SigningUnavailable)?;
     header.kid = Some(signing_key.key_id().to_owned());
-    encode(&header, &claims, signing_key.encoding_key()).map_err(TokenError::from)
+    encode(&header, claims, signing_key.encoding_key()).map_err(TokenError::from)
 }

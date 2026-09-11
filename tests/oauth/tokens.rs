@@ -38,6 +38,9 @@ fn expired_access_token_is_rejected_without_clock_leeway() {
             .checked_sub(2)
             .expect("current timestamp is after epoch"),
         scope: "openid".to_owned(),
+        uid: None,
+        binding_id: None,
+        binding_version: None,
     };
     let signing_key = keys.active_signing_key();
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);

@@ -3,7 +3,7 @@ import { useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
 import { apiFetch, ApiError, type SessionItem, type UserMe } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, EmptyState, HudPanel, Icon, Notice } from '@chenxing/ui'
+import { Badge, Button, EmptyState, HudPanel, Icon, Notice, SessionItem as SessionRow } from '@chenxing/ui'
 import { ProfileAvatar, type MessageTone } from './profile-avatar'
 import { formatDate } from '../../data'
 import logoSrc from '../../assets/logo.png'
@@ -331,21 +331,20 @@ export function ConsoleProfile() {
 
         <HudPanel>
           <div className="mb-5 flex items-center justify-between">
-            <div><h2 className="chenxing-h2">活跃会话</h2><p className="chenxing-caption mt-1">只显示会话时间和当前标记，不展示 IP、User-Agent 或 payload。</p></div>
+            <div><h2 className="chenxing-h2">登录会话</h2></div>
             <Icon name="lock" className="text-[var(--chenxing-cyan)]" size={18} />
           </div>
           {sessions.length ? (
-            <div className="space-y-3">
+            <div>
               {sessions.map((session) => (
-                <div key={session.id} className="flex flex-wrap items-center gap-4 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(255,255,255,0.02)] p-4">
-                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[var(--chenxing-cyan-soft)] text-[var(--chenxing-cyan)]"><Icon name="shield-check" size={16} /></span>
-                  <div className="min-w-0 flex-1">
-                    <p className="chenxing-body text-sm font-semibold">{session.current ? '当前会话' : '其他会话'}</p>
-                    <p className="chenxing-caption chenxing-mono">创建于 {formatDate(session.created_at)} · 到期 {formatDate(session.expires_at)}</p>
-                  </div>
-                  {session.current ? <Badge tone="success">当前</Badge> : null}
-                  <Button variant="danger" icon="x" disabled={busySessionId !== null} onClick={() => void revokeSession(session)}>撤销</Button>
-                </div>
+                <SessionRow
+                  key={session.id}
+                  icon="shield-check"
+                  title={session.current ? '当前会话' : '其他会话'}
+                  status={session.current ? <Badge tone="success">当前</Badge> : null}
+                  description={<><p>创建于 <time dateTime={session.created_at}>{formatDate(session.created_at)}</time></p><p>到期时间 <time dateTime={session.expires_at}>{formatDate(session.expires_at)}</time></p></>}
+                  actions={<Button variant="danger" icon="x" disabled={busySessionId !== null} onClick={() => void revokeSession(session)}>撤销</Button>}
+                />
               ))}
             </div>
           ) : (

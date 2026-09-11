@@ -1272,11 +1272,18 @@ fn database_uses_forward_only_transactional_migration_history() {
         DB_MODULE
             .contains("include_str!(\"../../migrations/0051_wallet_purchase_idempotency.sql\")")
     );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0052_external_identity_snapshots.sql\")")
+    );
+    assert!(
+        DB_MODULE.contains("include_str!(\"../../migrations/0053_cltermux_linked_accounts.sql\")")
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        51
+        53
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1325,14 +1332,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 51);
+    assert_eq!(migrations.len(), 53);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0051_wallet_purchase_idempotency.sql")
+        Some("0053_cltermux_linked_accounts.sql")
     );
     let versions = migrations
         .iter()
@@ -1343,7 +1350,7 @@ fn database_uses_forward_only_transactional_migration_history() {
                 .expect("migration filename starts with a version prefix")
         })
         .collect::<Vec<_>>();
-    assert_eq!(versions, (1..=51).collect::<Vec<_>>());
+    assert_eq!(versions, (1..=53).collect::<Vec<_>>());
 
     assert_eq!(
         DATABASE_BASELINE.matches("CREATE TABLE ").count(),

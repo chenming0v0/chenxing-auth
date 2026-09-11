@@ -91,6 +91,7 @@ fn requires_configured_issuer(path: &str) -> bool {
             "/.well-known/openid-configuration"
                 | "/.well-known/jwks.json"
                 | "/api/v1/auth/external-providers"
+                | "/api/v1/integrations/cltermux/resolve"
                 | "/api/v1/auth/totp/setup"
                 | "/api/v1/auth/security/totp/enrollment/start"
         )
