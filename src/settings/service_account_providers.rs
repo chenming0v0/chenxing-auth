@@ -198,7 +198,8 @@ impl SettingsService {
     ) -> Result<(), Error> {
         let mut tx = self.pool.begin().await?;
         crate::sqlx::query(
-            "INSERT INTO app_settings (setting_key, setting_value) VALUES ($1, NULL)
+            "INSERT INTO app_settings (setting_key, setting_value, updated_at)
+            VALUES ($1, NULL, NOW())
             ON CONFLICT (setting_key) DO NOTHING",
         )
         .bind(ACCOUNT_PROVIDERS_KEY)
@@ -242,7 +243,8 @@ pub(crate) async fn lock_registry(
     tx: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
 ) -> Result<Vec<StoredAccountProvider>, Error> {
     crate::sqlx::query(
-        "INSERT INTO app_settings (setting_key, setting_value) VALUES ($1, '[]')
+        "INSERT INTO app_settings (setting_key, setting_value, updated_at)
+        VALUES ($1, '[]', NOW())
         ON CONFLICT (setting_key) DO NOTHING",
     )
     .bind(ACCOUNT_PROVIDERS_KEY)

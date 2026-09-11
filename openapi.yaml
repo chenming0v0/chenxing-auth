@@ -1580,6 +1580,9 @@ paths:
         只在内存中验证，不记录日志。服务端从签名、Issuer、受撤销状态、aud allowlist、授权 scope 和当前用户状态
         得到 subject、client_id 与 scope，不接受调用方自行声明这些字段。响应 valid_until 不超过辰星 Token 剩余寿命和
         5 分钟，所有响应禁止缓存。
+        多供应商模式先验证用户令牌，再用 aud 选择已启用的供应商并校验其独立入站凭据。
+        401 invalid_chenxing_token 表示用户令牌无效或授权已撤销；
+        401 invalid_integration_credential 表示缺少服务凭据、aud 未匹配已启用供应商，或凭据与所选供应商不匹配。
       requestBody:
         required: true
         content:
@@ -3470,6 +3473,9 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/oauth/providers:
     get:

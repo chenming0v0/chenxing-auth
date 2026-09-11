@@ -7,6 +7,7 @@ mod db_isolation;
 #[path = "../support/oauth_flow.rs"]
 mod oauth_flow;
 
+mod account_provider_registry;
 mod cookie_security;
 mod csrf;
 mod csrf_route_coverage;

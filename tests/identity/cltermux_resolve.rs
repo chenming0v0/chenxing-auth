@@ -8,9 +8,8 @@
 //! CLTERMUX_INTEROP_INBOUND_TOKEN` 调用辰星，携带辰星签发的用户 access token。
 //! 测试直接用 `issue_access_token` 造令牌，绕过完整 OAuth 流程。
 //!
-//! `config.cltermux` 直接注入（`Config::from_values_with_issuer` 不读进程
-//! env，测试无需 `env::set_var`）。resolve 路径不触发出站调用，base_url
-//! 只需通过形状校验。
+//! 通过遗留配置导入初始化数据库供应商注册表，不修改进程环境。
+//! resolve 路径不触发出站调用，base_url 只需通过形状校验。
 
 use axum::{
     Router,
@@ -43,7 +42,13 @@ struct Env {
 
 async fn setup(binary_name: &str) -> Env {
     let (mut state, database, key_directory) = oauth_flow::test_state(binary_name).await;
-    state.config.cltermux = Some(cltermux_config(vec![ALLOWED_CLIENT_ID.to_owned()]));
+    let config = cltermux_config(vec![ALLOWED_CLIENT_ID.to_owned()]);
+    state
+        .settings
+        .import_legacy_account_provider(&config)
+        .await
+        .expect("import legacy cltermux provider");
+    state.config.cltermux = Some(config);
     let router = api::router(state.clone());
     Env {
         router,
@@ -204,10 +209,14 @@ fn error_code(body: &Value) -> String {
 #[tokio::test]
 async fn resolve_rejects_wrong_inbound_bearer_with_401() {
     let env = setup("cltermux_resolve").await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let (user_id, client_id) =
+        seed_user_and_client(&env.database, &suffix, &["openid"], &["cltermux:access"]).await;
+    let token = issue_token(&env.state, user_id, &client_id, &["cltermux:access"]);
     let response = resolve_request(
         &env.router,
         Some("totally-wrong-inbound-token-0123456789"),
-        json!({"access_token": "whatever"}),
+        json!({"access_token": token}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -238,10 +247,10 @@ async fn resolve_rejects_client_outside_allowlist_with_401() {
         json!({"access_token": token}),
     )
     .await;
-    // aud 不在 allowed_client_ids：fail-closed 401（invalid_chenxing_token）。
+    // aud 不在已配置供应商的 allowlist：fail-closed 401。
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let body = oauth_flow::json_body(response).await;
-    assert_eq!(error_code(&body), "invalid_chenxing_token");
+    assert_eq!(error_code(&body), "invalid_integration_credential");
 }
 
 #[tokio::test]
@@ -387,10 +396,11 @@ async fn resolve_without_binding_returns_404() {
 #[tokio::test]
 async fn resolve_fails_closed_when_integration_is_none() {
     let env = setup_disabled("cltermux_resolve_disabled").await;
+    let token = issue_token(&env.state, 1, ALLOWED_CLIENT_ID, &["cltermux:access"]);
     let response = resolve_request(
         &env.router,
         Some(INBOUND_TOKEN),
-        json!({"access_token": "whatever"}),
+        json!({"access_token": token}),
     )
     .await;
     // 集成未配置：fail-closed 401，不泄露"未配置"以外的信息。

@@ -51,7 +51,13 @@ struct Env {
 
 async fn setup(binary_name: &str) -> Env {
     let (mut state, database, key_directory) = oauth_flow::test_state(binary_name).await;
-    state.config.cltermux = Some(cltermux_config());
+    let config = cltermux_config();
+    state
+        .settings
+        .import_legacy_account_provider(&config)
+        .await
+        .expect("import legacy cltermux provider");
+    state.config.cltermux = Some(config);
     let router = api::router(state.clone());
     Env {
         router,
