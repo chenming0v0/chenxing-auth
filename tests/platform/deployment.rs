@@ -38,6 +38,22 @@ const PUBLISHED_MIGRATION_CHECKSUMS: &str =
 /// Where both production images place the built frontend bundle.
 const WEB_DIST_IMAGE_PATH: &str = "/usr/local/share/chenxing-auth/web/dist";
 
+/// Sorted `*.sql` filenames in the repository's `migrations` directory.
+///
+/// This is the independent source of truth for how many migrations exist and
+/// what they are named; tests compare the embedded registrations against it
+/// instead of re-pinning a hard-coded total.
+fn migration_file_names() -> Vec<String> {
+    let mut names = std::fs::read_dir("migrations")
+        .expect("migrations directory")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "sql"))
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
 fn migration_history_sql() -> String {
     let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
@@ -1279,11 +1295,33 @@ fn database_uses_forward_only_transactional_migration_history() {
     assert!(
         DB_MODULE.contains("include_str!(\"../../migrations/0053_cltermux_linked_accounts.sql\")")
     );
+    assert!(
+        DB_MODULE.contains("include_str!(\"../../migrations/0054_account_provider_registry.sql\")")
+    );
+
+    // The migrations directory is the independent source of truth for the
+    // current history. Every on-disk SQL file must be embedded exactly once in
+    // src/db/mod.rs, and the embedded set must not contain anything the
+    // directory lacks, so registration can never silently drift from the
+    // directory and no migration total needs to be re-pinned here.
+    let migration_files = migration_file_names();
+    assert!(
+        !migration_files.is_empty(),
+        "the forward-only history must contain at least one migration"
+    );
+    for file_name in &migration_files {
+        let registration = format!("include_str!(\"../../migrations/{file_name}\")");
+        assert!(
+            DB_MODULE.contains(registration.as_str()),
+            "embedded migrator is missing registration for {file_name}"
+        );
+    }
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        53
+        migration_files.len(),
+        "embedded migration registrations must match the migrations directory exactly"
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1325,32 +1363,25 @@ fn database_uses_forward_only_transactional_migration_history() {
     assert!(DB_ROLES_MODULE.contains("CREATE ROLE chenxing_runtime LOGIN"));
     assert!(!DATABASE_BASELINE.contains("CREATE ROLE"));
 
-    let mut migrations = std::fs::read_dir("migrations")
-        .expect("migrations directory")
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "sql"))
-        .map(|entry| entry.file_name())
-        .collect::<Vec<_>>();
-    migrations.sort();
-    assert_eq!(migrations.len(), 53);
     assert_eq!(
-        migrations.first().and_then(|name| name.to_str()),
-        Some("0001_initial.sql")
+        migration_files.first().map(String::as_str),
+        Some("0001_initial.sql"),
+        "the forward-only history must start at the initial schema"
     );
-    assert_eq!(
-        migrations.last().and_then(|name| name.to_str()),
-        Some("0053_cltermux_linked_accounts.sql")
-    );
-    let versions = migrations
+    let versions = migration_files
         .iter()
-        .map(|name| {
-            let file_name = name.to_string_lossy();
+        .map(|file_name| {
             file_name[..4]
                 .parse::<u32>()
                 .expect("migration filename starts with a version prefix")
         })
         .collect::<Vec<_>>();
-    assert_eq!(versions, (1..=53).collect::<Vec<_>>());
+    assert_eq!(
+        versions,
+        (1..=u32::try_from(migration_files.len()).expect("migration count fits in u32"))
+            .collect::<Vec<_>>(),
+        "migration versions must be contiguous and forward-only"
+    );
 
     assert_eq!(
         DATABASE_BASELINE.matches("CREATE TABLE ").count(),
