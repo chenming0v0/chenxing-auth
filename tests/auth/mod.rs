@@ -4,6 +4,10 @@
 
 #[path = "../support/db_isolation.rs"]
 mod db_isolation;
+#[path = "../support/harness.rs"]
+mod harness;
+#[path = "../support/http.rs"]
+mod http;
 #[path = "../support/oauth_flow.rs"]
 mod oauth_flow;
 #[path = "../support/totp_time.rs"]
