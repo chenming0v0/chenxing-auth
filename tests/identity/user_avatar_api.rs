@@ -1,87 +1,33 @@
 use axum::{
     Router,
-    body::{Body, to_bytes},
-    http::{Request, StatusCode, header::SET_COOKIE},
+    body::Body,
+    http::{Request, StatusCode},
 };
 use chenxing_auth::auth_factors::{crypto::decrypt_totp_secret, repository};
 use chenxing_auth::users::avatar_image::{MAX_UPLOAD_BYTES, MIN_SOURCE_EDGE, STORED_EDGE};
-use chenxing_auth::{api, config::Config, state::AppState};
 use image::{ImageFormat, Rgba, RgbaImage};
-use serde_json::Value;
 use std::io::Cursor;
 use std::time::{SystemTime, UNIX_EPOCH};
 use totp_rs::{Algorithm, TOTP};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow};
+use crate::{harness, http};
 
 const ADMIN_TOKEN: &str = "user-avatar-admin-token";
 
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("user_avatar_api", &database_url).await;
-    let key_directory =
-        std::env::temp_dir().join(format!("chenxing-session-ui-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.admin_token = ADMIN_TOKEN.to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let router = api::router(
-        AppState::new_with_pool(config, database.clone())
-            .await
-            .expect("state"),
-    );
-    oauth_flow::ensure_owner_bootstrapped(&router, &database, "user_avatar_api", "user_avatar_api")
+    let harness::Harness {
+        router,
+        database,
+        key_directory,
+        ..
+    } = harness::HarnessBuilder::new("user_avatar_api")
+        .admin_token(ADMIN_TOKEN)
+        .bootstrap_owner()
+        .build()
         .await;
-    db_isolation::isolate_user_ids(&database, "user_avatar_api").await;
     (router, database, key_directory)
-}
-
-async fn json(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body"),
-    )
-    .expect("JSON")
-}
-
-fn cookies(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get_all(SET_COOKIE)
-        .iter()
-        .map(|value| {
-            value
-                .to_str()
-                .expect("cookie")
-                .split(';')
-                .next()
-                .unwrap()
-                .to_owned()
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn csrf(cookies: &str) -> String {
-    cookies
-        .split(';')
-        .find_map(|part| part.trim().strip_prefix("chenxing_csrf="))
-        .expect("csrf cookie")
-        .to_owned()
 }
 
 async fn register(router: &Router, username: &str, email: &str, password: &str) {
@@ -126,8 +72,8 @@ async fn login(
         .await
         .expect("login response");
     if response.status() == StatusCode::ACCEPTED {
-        let pending_cookie = cookies(&response);
-        let pending = json(response).await;
+        let pending_cookie = http::set_cookies(&response);
+        let pending = http::json_body(response).await;
         if pending["status"] == "factor_required" {
             let code = current_totp_code(database, email).await;
             let response = router
@@ -150,8 +96,8 @@ async fn login(
                 .await
                 .expect("factor login response");
             assert_eq!(response.status(), StatusCode::OK);
-            let cookie_header = cookies(&response);
-            let csrf_token = csrf(&cookie_header);
+            let cookie_header = http::set_cookies(&response);
+            let csrf_token = http::cookie_value(&cookie_header, "chenxing_csrf");
             return (cookie_header, csrf_token);
         }
         assert!(pending.get("login_ticket").is_none());
@@ -169,7 +115,7 @@ async fn login(
             .await
             .expect("TOTP setup response");
         assert_eq!(response.status(), StatusCode::OK);
-        let setup = json(response).await;
+        let setup = http::json_body(response).await;
         let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
         let response = router
             .clone()
@@ -190,13 +136,13 @@ async fn login(
             .await
             .expect("TOTP confirmation response");
         assert_eq!(response.status(), StatusCode::OK);
-        let cookie_header = cookies(&response);
-        let csrf_token = csrf(&cookie_header);
+        let cookie_header = http::set_cookies(&response);
+        let csrf_token = http::cookie_value(&cookie_header, "chenxing_csrf");
         return (cookie_header, csrf_token);
     }
     assert_eq!(response.status(), StatusCode::OK);
-    let cookie_header = cookies(&response);
-    let csrf_token = csrf(&cookie_header);
+    let cookie_header = http::set_cookies(&response);
+    let csrf_token = http::cookie_value(&cookie_header, "chenxing_csrf");
     (cookie_header, csrf_token)
 }
 
@@ -297,7 +243,7 @@ async fn avatar_upload_re_encodes_and_bounds_storage() {
     let upload = png_fixture(900, 700);
     let response = put_avatar(&router, &cookies, &csrf, upload.clone()).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let profile = json(response).await;
+    let profile = http::json_body(response).await;
     assert!(profile["avatar_updated_at"].is_string());
 
     let (stored, mime): (Vec<u8>, String) = chenxing_auth::sqlx::query_as(
@@ -447,21 +393,27 @@ async fn server_independently_rejects_invalid_avatars() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json(response).await["code"], "avatar_too_small");
+    assert_eq!(http::json_body(response).await["code"], "avatar_too_small");
 
     // 格式白名单按魔数判定，不看 Content-Type。
     let mut gif = b"GIF89a".to_vec();
     gif.extend_from_slice(&[0u8; 512]);
     let response = put_avatar(&router, &cookies, &csrf, gif).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json(response).await["code"], "avatar_unsupported_format");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "avatar_unsupported_format"
+    );
 
     // 合法魔数 + 垃圾载荷：解码必须失败且不 panic。
     let mut forged = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     forged.extend_from_slice(&[0xab; 512]);
     let response = put_avatar(&router, &cookies, &csrf, forged).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json(response).await["code"], "avatar_undecodable");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "avatar_undecodable"
+    );
 
     // 超出体积上限由中间件在进入处理器前拦下。
     let response = put_avatar(&router, &cookies, &csrf, vec![0u8; MAX_UPLOAD_BYTES + 1]).await;

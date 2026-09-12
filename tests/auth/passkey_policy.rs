@@ -1,6 +1,6 @@
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
 use chenxing_auth::{
@@ -14,10 +14,9 @@ use chenxing_auth::{
 use serde_json::Value;
 use std::time::Duration;
 use totp_rs::TOTP;
-use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow};
+use crate::{db_isolation, harness, http, oauth_flow};
 
 const PASSWORD: &str = "correct horse battery";
 
@@ -40,50 +39,23 @@ async fn setup() -> (Router, sqlx::PgPool, std::path::PathBuf) {
 async fn setup_with_derived_webauthn(
     derive_webauthn_from_issuer: bool,
 ) -> (Router, sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database =
-        db_isolation::isolated_pool_with_max_connections("passkey_policy", &database_url, 6).await;
+    let (state, database, key_directory, _admin_token, binary_name) =
+        harness::HarnessBuilder::new("passkey_policy")
+            .admin_token("passkey-policy-token")
+            .max_connections(6)
+            .configure(move |config| {
+                config.auth_encryption_keys = current_key_ring();
+                if derive_webauthn_from_issuer {
+                    config.webauthn_rp_id_explicit = false;
+                    config.webauthn_origin_explicit = false;
+                }
+            })
+            .build_state()
+            .await;
     set_passkey_setting(&database, true).await;
-
-    let key_directory =
-        std::env::temp_dir().join(format!("chenxing-passkey-policy-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.admin_token = "passkey-policy-token".to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    config.auth_encryption_keys = current_key_ring();
-    if derive_webauthn_from_issuer {
-        config.webauthn_rp_id_explicit = false;
-        config.webauthn_origin_explicit = false;
-    }
-    let router = api::router(
-        AppState::new_with_pool(config, database.clone())
-            .await
-            .expect("state"),
-    );
-    oauth_flow::ensure_owner_bootstrapped(&router, &database, "passkey_policy", "passkey_policy")
-        .await;
+    let router = api::router(state);
+    oauth_flow::ensure_owner_bootstrapped(&router, &database, &binary_name, &binary_name).await;
     (router, database, key_directory)
-}
-
-async fn json(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body"),
-    )
-    .expect("JSON response")
 }
 
 async fn request(
@@ -100,11 +72,11 @@ async fn request(
     if let Some(authorization) = authorization {
         builder = builder.header("authorization", authorization);
     }
-    router
-        .clone()
-        .oneshot(builder.body(Body::from(body.to_string())).expect("request"))
-        .await
-        .expect("response")
+    http::send(
+        router,
+        builder.body(Body::from(body.to_string())).expect("request"),
+    )
+    .await
 }
 
 async fn request_with_session(
@@ -115,39 +87,18 @@ async fn request_with_session(
     cookie: &str,
     csrf: &str,
 ) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("cookie", cookie)
-                .header("x-csrf-token", csrf)
-                .body(Body::from(body.to_string()))
-                .expect("request"),
-        )
-        .await
-        .expect("response")
-}
-
-fn cookie_header(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .map(|value| value.split(';').next().expect("cookie pair"))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn cookie_value(cookie: &str, name: &str) -> String {
-    cookie
-        .split(';')
-        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
-        .expect("cookie value")
-        .to_owned()
+    http::send(
+        router,
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("cookie", cookie)
+            .header("x-csrf-token", csrf)
+            .body(Body::from(body.to_string()))
+            .expect("request"),
+    )
+    .await
 }
 
 async fn create_user(router: &Router, database: &sqlx::PgPool) -> (i64, String) {
@@ -167,7 +118,7 @@ async fn create_user(router: &Router, database: &sqlx::PgPool) -> (i64, String) 
     )
     .await;
     let status = response.status();
-    let body = json(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -248,7 +199,7 @@ async fn login(router: &Router, username: &str) -> Value {
         response.status(),
         StatusCode::OK | StatusCode::ACCEPTED
     ));
-    json(response).await
+    http::json_body(response).await
 }
 
 async fn login_with_cookie(router: &Router, username: &str) -> (Value, String) {
@@ -260,8 +211,8 @@ async fn login_with_cookie(router: &Router, username: &str) -> (Value, String) {
         None,
     )
     .await;
-    let cookie = cookie_header(&response);
-    let body = json(response).await;
+    let cookie = http::set_cookies(&response);
+    let body = http::json_body(response).await;
     (body, cookie)
 }
 
@@ -317,7 +268,10 @@ async fn passkey_policy_does_not_turn_passkey_into_password_mfa() {
 
     let response = update_passkey_setting(&router, false).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(json(response).await["code"], "passkey_disable_blocked");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "passkey_disable_blocked"
+    );
 
     insert_totp(&database, passkey_user).await;
     let response = update_passkey_setting(&router, false).await;
@@ -341,7 +295,7 @@ async fn passkey_policy_does_not_turn_passkey_into_password_mfa() {
     .await
     .expect("recovery audit event");
     assert_eq!(recovery_audit.as_deref(), Some("passkey_recovery_required"));
-    let csrf = cookie_value(&session_cookie, "chenxing_csrf");
+    let csrf = http::cookie_value(&session_cookie, "chenxing_csrf");
     let setup_response = request_with_session(
         &router,
         "POST",
@@ -352,7 +306,7 @@ async fn passkey_policy_does_not_turn_passkey_into_password_mfa() {
     )
     .await;
     assert_eq!(setup_response.status(), StatusCode::OK);
-    let setup = json(setup_response).await;
+    let setup = http::json_body(setup_response).await;
     let totp =
         TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP setup");
     let response = request_with_session(
@@ -427,7 +381,10 @@ async fn passkey_disable_rejects_unavailable_totp_ciphertext() {
 
     let response = update_passkey_setting(&router, false).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(json(response).await["code"], "passkey_disable_blocked");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "passkey_disable_blocked"
+    );
     let enabled: bool = sqlx::query_scalar(
         "SELECT (setting_value::jsonb ->> 'enabled')::boolean
          FROM app_settings WHERE setting_key = 'passkey'",
@@ -456,7 +413,7 @@ async fn passkey_disable_rejects_totp_encrypted_by_retired_key() {
 
     let response = update_passkey_setting(&router, false).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    let body = json(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(body["code"], "passkey_disable_blocked");
     assert!(!body.to_string().contains("retired"));
 
@@ -518,7 +475,10 @@ async fn passkey_disable_rechecks_after_a_registration_commits_under_policy_lock
         .expect("commit staged Passkey registration");
     let response = request.await.expect("join disable request");
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(json(response).await["code"], "passkey_disable_blocked");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "passkey_disable_blocked"
+    );
 
     sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)
@@ -592,7 +552,7 @@ async fn issuer_update_rechecks_passkeys_after_policy_lock() {
     let response = request.await.expect("join issuer update");
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(
-        json(response).await["code"],
+        http::json_body(response).await["code"],
         "issuer_passkey_migration_required"
     );
 
@@ -701,7 +661,7 @@ async fn issuer_update_without_runtime_snapshot_rejects_passkey_incompatible_cha
     let response = put_issuer(&router, "https://other.example.com", 1).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(
-        json(response).await["code"],
+        http::json_body(response).await["code"],
         "issuer_passkey_migration_required"
     );
     assert_eq!(
@@ -734,7 +694,7 @@ async fn invalid_runtime_still_rejects_passkey_incompatible_issuer_change() {
     let response = put_issuer(&router, "https://other.example.com", 1).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(
-        json(response).await["code"],
+        http::json_body(response).await["code"],
         "issuer_passkey_migration_required"
     );
     assert_eq!(
@@ -855,7 +815,7 @@ async fn issuer_update_without_snapshot_rechecks_passkeys_after_policy_lock() {
     let response = request.await.expect("join issuer update");
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(
-        json(response).await["code"],
+        http::json_body(response).await["code"],
         "issuer_passkey_migration_required"
     );
     assert_eq!(

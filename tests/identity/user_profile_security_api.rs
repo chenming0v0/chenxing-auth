@@ -1,32 +1,25 @@
 use axum::{
-    Router,
     body::Body,
     http::{Method, Request, StatusCode},
 };
-use chenxing_auth::api;
-use serde_json::Value;
 use tower::ServiceExt;
 
-use crate::oauth_flow;
+use crate::{harness, http, oauth_flow};
 
 const PASSWORD: &str = "correct horse battery";
 
-fn csrf_token(cookie: &str) -> &str {
-    cookie
-        .split(';')
-        .find_map(|part| part.trim().strip_prefix("chenxing_csrf="))
-        .expect("csrf cookie")
-}
-
-async fn json_body(response: axum::response::Response) -> Value {
-    oauth_flow::json_body(response).await
-}
-
 #[tokio::test]
 async fn username_change_requires_current_password() {
-    let (state, database, key_directory) =
-        oauth_flow::test_state("user_profile_security_api").await;
-    let router: Router = api::router(state);
+    let harness::Harness {
+        router,
+        database,
+        key_directory,
+        ..
+    } = harness::HarnessBuilder::new("user_profile_security_api")
+        // 原 `oauth_flow::test_state` 会放大 QPS 窗口，保持一致。
+        .qps_window_override()
+        .build()
+        .await;
     oauth_flow::ensure_owner_bootstrapped(
         &router,
         &database,
@@ -53,7 +46,7 @@ async fn username_change_requires_current_password() {
         .expect("login response");
     assert_eq!(login.status(), StatusCode::OK);
     let cookie = oauth_flow::cookie_header(&login);
-    let csrf = csrf_token(&cookie).to_owned();
+    let csrf = http::cookie_value(&cookie, "chenxing_csrf");
 
     let response = router
         .oneshot(
@@ -73,7 +66,7 @@ async fn username_change_requires_current_password() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
-        json_body(response).await["code"],
+        http::json_body(response).await["code"],
         "current_password_required"
     );
     let _ = std::fs::remove_dir_all(key_directory);

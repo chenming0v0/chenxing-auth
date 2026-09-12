@@ -2,19 +2,13 @@ use std::time::Duration;
 
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
-use chenxing_auth::{
-    api,
-    config::Config,
-    sessions::{cookies, domain::Session, store::SessionStore},
-    state::AppState,
-};
-use serde_json::Value;
+use chenxing_auth::sessions::{cookies, domain::Session, store::SessionStore};
 use tower::ServiceExt;
 
-use crate::{db_isolation, oauth_flow as key_directory};
+use crate::http;
 
 async fn setup() -> (
     Router,
@@ -22,43 +16,23 @@ async fn setup() -> (
     String,
     std::path::PathBuf,
 ) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let harness = crate::harness::HarnessBuilder::new("admin_token_disabled")
+        .admin_token("")
+        .build()
+        .await;
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("admin_token_disabled", &database_url).await;
-    let key_directory = key_directory::isolated_key_directory("admin-token-disabled");
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url.clone(),
-        3600,
+    (
+        harness.router,
+        harness.database,
+        redis_url,
+        harness.key_directory,
     )
-    .expect("config");
-    config.admin_token.clear();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("state");
-
-    (api::router(state), database, redis_url, key_directory)
-}
-
-async fn json(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body"),
-    )
-    .expect("JSON")
 }
 
 async fn assert_admin_disabled(response: axum::response::Response) {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let body = json(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(body["code"], "admin_disabled");
 }
 
@@ -109,7 +83,7 @@ async fn empty_admin_token_closes_bearer_and_browser_admin_channels_but_keeps_bo
         .await
         .expect("bootstrap response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    let owner_id = json(response).await["id"]
+    let owner_id = http::json_body(response).await["id"]
         .as_i64()
         .expect("bootstrapped owner id");
 

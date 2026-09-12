@@ -1,13 +1,13 @@
 //! Issue #663: email-change code verification must have an atomic, bounded
 //! failure budget even when requests arrive concurrently.
 
-use crate::{db_isolation, oauth_flow as key_directory};
+use crate::harness;
 
 use std::sync::{Arc, Mutex};
 
 use chenxing_auth::{
     auth_limiter::{AuthFailureLimiter, FailureDimension, domain::LimiterFuture},
-    config::{AuthEncryptionKey, AuthEncryptionKeyRing, Config},
+    config::{AuthEncryptionKey, AuthEncryptionKeyRing},
     notifications::{EmailMessage, EmailSendError, EmailSender},
     state::AppState,
     users::{
@@ -93,35 +93,19 @@ async fn setup() -> (
     i64,
     std::path::PathBuf,
 ) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool_with_max_connections(
-        "email_change_attempt_budget",
-        &database_url,
-        16,
-    )
-    .await;
-    let key_directory = key_directory::isolated_key_directory("email-change-attempt-budget");
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("test config");
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
+    let (state, database, key_directory, _admin_token, _suffix) =
+        harness::HarnessBuilder::new("email_change_attempt_budget")
+            // 原 raw Config 未设置 admin token，保持禁用管理 bearer。
+            .admin_token("")
+            .max_connections(16)
+            .configure(|config| {
+                config.auth_encryption_keys = test_email_encryption_keys();
+            })
+            .build_state()
+            .await;
     let email_encryption_keys = test_email_encryption_keys();
-    config.auth_encryption_keys = email_encryption_keys.clone();
     let sender = Arc::new(CapturingSender::default());
-    let mut state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("test state")
-        .with_email_sender(sender);
+    let mut state = state.with_email_sender(sender);
     state.users = state
         .users
         .clone()

@@ -11,13 +11,12 @@
 
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
 use chenxing_auth::{
     api,
     clock::SharedClock,
-    config::Config,
     sessions::{cookies, domain::Session},
     state::AppState,
 };
@@ -25,7 +24,7 @@ use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow, totp_time};
+use crate::{harness, http, oauth_flow, totp_time};
 
 const ADMIN_TOKEN: &str = "passkey-recovery-admin-token";
 const PASSWORD: &str = "correct horse battery";
@@ -39,37 +38,14 @@ struct Harness {
 
 impl Harness {
     async fn new() -> Self {
-        let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned()
-        });
-        let redis_url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-        let database = db_isolation::isolated_pool("passkey_recovery", &database_url).await;
-        let key_directory = oauth_flow::isolated_key_directory("passkey-recovery");
-        let mut config = Config::from_values_with_issuer(
-            "127.0.0.1".to_owned(),
-            3000,
-            "http://127.0.0.1:3000".to_owned(),
-            database_url,
-            redis_url,
-            3600,
-        )
-        .expect("test configuration");
-        config.admin_token = ADMIN_TOKEN.to_owned();
-        config.cookie_secure = false;
-        config.key_directory = key_directory.to_string_lossy().into_owned();
-        let state = AppState::new_with_pool(config, database.clone())
-            .await
-            .expect("test state")
-            .with_clock(SharedClock::fixed(totp_time::centered_now()));
+        let (state, database, key_directory, _admin_token, binary_name) =
+            harness::HarnessBuilder::new("passkey_recovery")
+                .admin_token(ADMIN_TOKEN)
+                .build_state()
+                .await;
+        let state = state.with_clock(SharedClock::fixed(totp_time::centered_now()));
         let router = api::router(state.clone());
-        oauth_flow::ensure_owner_bootstrapped(
-            &router,
-            &database,
-            "passkey_recovery",
-            "passkey_recovery",
-        )
-        .await;
+        oauth_flow::ensure_owner_bootstrapped(&router, &database, &binary_name, &binary_name).await;
         Self {
             router,
             state,
@@ -81,15 +57,6 @@ impl Harness {
     fn cleanup(self) {
         let _ = std::fs::remove_dir_all(self.key_directory);
     }
-}
-
-async fn json_body(response: axum::response::Response) -> serde_json::Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body"),
-    )
-    .expect("JSON response")
 }
 
 async fn last_owner(database: &chenxing_auth::sqlx::PgPool) -> (i64, String) {
@@ -191,7 +158,7 @@ async fn create_user(router: &Router, role: &str) -> (i64, String) {
         .await
         .expect("create user response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    let user_id = json_body(response).await["id"]
+    let user_id = http::json_body(response).await["id"]
         .as_i64()
         .expect("created user id");
     (user_id, username)
@@ -228,25 +195,6 @@ async fn get_me(router: &Router, cookie: &str) -> axum::response::Response {
         .expect("me response")
 }
 
-fn pending_cookie(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .map(|value| value.split(';').next().expect("cookie pair"))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn cookie_value(cookie: &str, name: &str) -> String {
-    cookie
-        .split(';')
-        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
-        .expect("cookie value")
-        .to_owned()
-}
-
 /// 末位 Owner 丢失全部 Passkey 后，系统 Token 是唯一不形成闭环的恢复入口。
 #[tokio::test]
 async fn system_token_recovers_last_owner_without_existing_passkey_or_session() {
@@ -264,7 +212,7 @@ async fn system_token_recovers_last_owner_without_existing_passkey_or_session() 
     // 关键：不带 Session Cookie、不带 CSRF、不验 Passkey。
     let reset = reset_with_token(&harness.router, owner_id).await;
     assert_eq!(reset.status(), StatusCode::OK);
-    let body = json_body(reset).await;
+    let body = http::json_body(reset).await;
     assert_eq!(body["user_id"], owner_id);
     assert_eq!(body["removed"], 2);
     assert_eq!(body["credentials_revoked"], true);
@@ -311,9 +259,9 @@ async fn system_token_recovers_last_owner_without_existing_passkey_or_session() 
         .await
         .expect("owner password login response");
     assert_eq!(login.status(), StatusCode::OK);
-    let login_cookie = pending_cookie(&login);
-    let csrf = cookie_value(&login_cookie, cookies::csrf_cookie_name(false));
-    let login_body = json_body(login).await;
+    let login_cookie = http::set_cookies(&login);
+    let csrf = http::cookie_value(&login_cookie, cookies::csrf_cookie_name(false));
+    let login_body = http::json_body(login).await;
     assert!(login_body["expires_at"].as_str().is_some());
 
     let setup = harness
@@ -332,7 +280,7 @@ async fn system_token_recovers_last_owner_without_existing_passkey_or_session() 
         .await
         .expect("totp setup response");
     assert_eq!(setup.status(), StatusCode::OK);
-    let setup_body = json_body(setup).await;
+    let setup_body = http::json_body(setup).await;
     let totp = TOTP::from_url(setup_body["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
     let previous = totp_time::previous_timestep(harness.state.clock.now());
     let confirm = harness
@@ -395,7 +343,10 @@ async fn missing_passkeys_roll_back_revocation() {
 
     let reset = reset_with_token(&harness.router, user_id).await;
     assert_eq!(reset.status(), StatusCode::NOT_FOUND);
-    assert_eq!(json_body(reset).await["code"], "passkey_factor_not_found");
+    assert_eq!(
+        http::json_body(reset).await["code"],
+        "passkey_factor_not_found"
+    );
     assert_eq!(
         session_epoch(&harness.database, user_id).await,
         epoch_before
@@ -408,7 +359,7 @@ async fn missing_passkeys_roll_back_revocation() {
 
     let unknown = reset_with_token(&harness.router, 9_000_000_001).await;
     assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
-    assert_eq!(json_body(unknown).await["code"], "user_not_found");
+    assert_eq!(http::json_body(unknown).await["code"], "user_not_found");
 
     harness.cleanup();
 }
@@ -442,7 +393,7 @@ async fn passkey_reset_requires_owner_or_system_token() {
         .await
         .expect("admin reset response");
     assert_eq!(denied.status(), StatusCode::FORBIDDEN);
-    assert_eq!(json_body(denied).await["code"], "admin_forbidden");
+    assert_eq!(http::json_body(denied).await["code"], "admin_forbidden");
     assert_eq!(passkey_count(&harness.database, target_id).await, 1);
 
     let without_csrf = harness
@@ -461,7 +412,7 @@ async fn passkey_reset_requires_owner_or_system_token() {
         .await
         .expect("owner reset without CSRF response");
     assert_eq!(without_csrf.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json_body(without_csrf).await["code"], "csrf_invalid");
+    assert_eq!(http::json_body(without_csrf).await["code"], "csrf_invalid");
     assert_eq!(passkey_count(&harness.database, target_id).await, 1);
 
     let allowed = harness
@@ -481,7 +432,7 @@ async fn passkey_reset_requires_owner_or_system_token() {
         .await
         .expect("owner reset response");
     assert_eq!(allowed.status(), StatusCode::OK);
-    assert_eq!(json_body(allowed).await["removed"], 1);
+    assert_eq!(http::json_body(allowed).await["removed"], 1);
     assert_eq!(passkey_count(&harness.database, target_id).await, 0);
     let totp_still_there: bool = chenxing_auth::sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM user_totp_factors WHERE user_id = $1)",

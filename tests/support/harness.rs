@@ -1,28 +1,39 @@
 #![allow(dead_code)]
 
-//! 共享集成测试脚手架：统一 49 个测试文件里各自手写的 `async fn setup()`。
-//!
-//! 历史包袱是每个测试文件都自己拼 Config / AppState / Router，admin token、
-//! `max_connections`、Redis keyspace、owner 引导、`isolate_user_ids` 各写各的，
-//! 稍有偏差就产生环境态串扰。`HarnessBuilder` 把这条链路收敛成一个显式配置面。
+//! 共享集成测试脚手架：把 Config / AppState / Router 的构造收敛成一个显式配置面。
 //!
 //! ## 模块声明约定
 //!
 //! `harness.rs` 由每个测试目标的 `mod.rs` 通过 `#[path = "../support/harness.rs"]`
-//! 引入，因此模块树里的 `super` 指向该测试目标的 crate 根。调用方必须自行声明
-//! 以下兄弟支持模块，`harness.rs` 通过 `super::` 引用它们：
+//! 引入，因此模块树里的 `super` 指向该测试目标的 crate 根。`key_directory` 是每个
+//! 测试目标在 crate 根声明的唯一实例（`support/key_directory.rs`），`oauth_flow` 只
+//! 对它做转发。本文件通过 `super::key_directory` 使用它，并复用
+//! `oauth_flow::qps_window`，不再自行用 `#[path]` 声明这些子模块——同一进程里重复
+//! 声明会在同一个 process-id 临时目录上各自构建密钥模板，产生真实竞态。
+//! 因此调用方必须同时声明：
 //!
 //! ```rust,ignore
 //! #[path = "../support/db_isolation.rs"]
 //! mod db_isolation;
+//! #[path = "../support/key_directory.rs"]
+//! mod key_directory;
 //! #[path = "../support/oauth_flow.rs"]
 //! mod oauth_flow;
 //! #[path = "../support/harness.rs"]
 //! mod harness;
 //! ```
 //!
-//! `key_directory` 与 `qps_window` 是 `harness.rs` 的私有子模块，由本文件用
-//! `#[path]` 自行声明，调用方无需（也不应）额外声明。
+//! ## 选项与语义边界
+//!
+//! - [`HarnessBuilder::new`] 默认对齐
+//!   `oauth_flow::test_state_with_max_connections_and_keyspace`：`flow-admin-token`、
+//!   `max_connections = 2`、默认 Redis keyspace、`cookie_secure = false`。
+//! - [`HarnessBuilder::build`] 构建 Router，并在之后执行 owner 引导 / user id 隔离。
+//! - [`HarnessBuilder::build_state`] 只构建 `AppState`。它与 owner 引导 / user id 隔离
+//!   互斥（那两步需要 Router），携带对应标记会在任何 env / DB I/O 之前 panic。
+//! - [`HarnessBuilder::qps_window_override`] 默认关闭。只有显式调用才把 QPS 窗口放大到
+//!   测试值，避免隐式改变限流语义；依赖大窗口的用例必须自己声明。
+//! - [`HarnessBuilder::configure`] 只允许调用一次，重复调用 panic，而不是静默覆盖。
 //!
 //! ## 用法
 //!
@@ -38,12 +49,6 @@
 use axum::Router;
 use chenxing_auth::{api, config::Config, redis_keyspace::RedisKeyspace, state::AppState};
 
-#[path = "key_directory.rs"]
-mod key_directory;
-
-#[path = "qps_window.rs"]
-mod qps_window;
-
 /// 已构建的测试环境。
 ///
 /// `router`、`state` 与 `database` 指向同一份隔离 schema；`key_directory` 是该
@@ -57,11 +62,18 @@ pub struct Harness {
     pub binary_name: String,
 }
 
+/// 一个在 `AppState` 构建前改写默认 `Config` 的一次性钩子。
+///
+/// 具名化 `HarnessBuilder::configure` 的字段类型，避免 `Option<Box<dyn FnOnce…>>`
+/// 触发 `clippy::type_complexity`；语义与内联写法完全一致。
+type ConfigHook = Box<dyn FnOnce(&mut Config) + Send + 'static>;
+
 /// 构建 [`Harness`] 的链式配置器。
 ///
 /// 默认值对齐 `oauth_flow::test_state_with_max_connections_and_keyspace`：
 /// admin token `flow-admin-token`、`max_connections = 2`、默认 Redis keyspace、
-/// 不引导 owner、不做额外 user id 隔离、`cookie_secure = false`、无额外配置钩子。
+/// 不引导 owner、不做额外 user id 隔离、`cookie_secure = false`、无额外配置钩子、
+/// 不注入 QPS 窗口（见 [`HarnessBuilder::qps_window_override`]）。
 pub struct HarnessBuilder {
     binary_name: String,
     admin_token: String,
@@ -69,7 +81,8 @@ pub struct HarnessBuilder {
     redis_keyspace: RedisKeyspace,
     bootstrap_owner: bool,
     isolate_ids: bool,
-    configure: Option<Box<dyn FnOnce(&mut Config) + Send + 'static>>,
+    qps_window_override: bool,
+    configure: Option<ConfigHook>,
 }
 
 impl HarnessBuilder {
@@ -82,6 +95,7 @@ impl HarnessBuilder {
             redis_keyspace: RedisKeyspace::default(),
             bootstrap_owner: false,
             isolate_ids: false,
+            qps_window_override: false,
             configure: None,
         }
     }
@@ -122,19 +136,37 @@ impl HarnessBuilder {
         self
     }
 
+    /// 在 `AppState` 构建后把 QPS 窗口放大到测试值（见 `oauth_flow::qps_window`）。
+    ///
+    /// 默认关闭：限流语义属于被测行为，只有依赖「多发落在同一窗口」的用例才应显式开启。
+    pub fn qps_window_override(mut self) -> Self {
+        self.qps_window_override = true;
+        self
+    }
+
     /// 在默认 Config 字段全部落定之后、`AppState::new_with_pool` 之前应用自定义配置。
     ///
     /// 用于覆盖 `oauth_provider_loopback_enabled`、`cltermux`、自定义 issuer 等
-    /// 不在默认面上的字段。
+    /// 不在默认面上的字段。只允许调用一次：重复调用会 panic，而不是静默丢弃先前的
+    /// 变更；多项修改请在同一个闭包里完成。
     pub fn configure(mut self, f: impl FnOnce(&mut Config) + Send + 'static) -> Self {
+        assert!(
+            self.configure.is_none(),
+            "HarnessBuilder::configure() may only be called once; compose the mutations in a single closure"
+        );
         self.configure = Some(Box::new(f));
         self
     }
 
     /// 产出 [`Harness`]。
-    pub async fn build(self) -> Harness {
+    ///
+    /// owner 引导 / user id 隔离必须在 Router 之后执行，因此本方法先取出并清空这两个
+    /// 标记，再调用 [`HarnessBuilder::build_state`]（后者拒绝携带这些标记）。
+    pub async fn build(mut self) -> Harness {
         let bootstrap_owner = self.bootstrap_owner;
         let isolate_ids = self.isolate_ids;
+        self.bootstrap_owner = false;
+        self.isolate_ids = false;
         let (state, database, key_directory, admin_token, binary_name) = self.build_state().await;
         let router = api::router(state.clone());
 
@@ -165,6 +197,10 @@ impl HarnessBuilder {
     ///
     /// 给少数需要在 `api::router` 之前异步改动 `state` 的用例（例如注册 legacy
     /// provider）使用；普通用例应直接调 [`HarnessBuilder::build`]。
+    ///
+    /// 携带 [`HarnessBuilder::bootstrap_owner`] / [`HarnessBuilder::isolate_user_ids`]
+    /// 时，会在读取任何 env 或建立任何 DB / Redis 连接之前 panic：这两步需要 Router，
+    /// 不可能在 `build_state` 里完成。
     pub async fn build_state(
         self,
     ) -> (
@@ -174,11 +210,21 @@ impl HarnessBuilder {
         String,
         String,
     ) {
+        assert!(
+            !self.bootstrap_owner,
+            "HarnessBuilder::build_state() must not be combined with bootstrap_owner(); call build() instead"
+        );
+        assert!(
+            !self.isolate_ids,
+            "HarnessBuilder::build_state() must not be combined with isolate_user_ids(); call build() instead"
+        );
+
         let Self {
             binary_name,
             admin_token,
             max_connections,
             redis_keyspace,
+            qps_window_override,
             configure,
             ..
         } = self;
@@ -194,7 +240,7 @@ impl HarnessBuilder {
             max_connections,
         )
         .await;
-        let key_directory = key_directory::isolated_key_directory(&binary_name);
+        let key_directory = super::key_directory::isolated_key_directory(&binary_name);
         let mut config = Config::from_values_with_issuer(
             "127.0.0.1".to_owned(),
             3000,
@@ -211,11 +257,14 @@ impl HarnessBuilder {
         if let Some(configure) = configure {
             configure(&mut config);
         }
+        // configure 可以改写 admin_token，回读真实生效值，避免 Harness 暴露陈旧字段。
+        let admin_token = config.admin_token.clone();
         let mut state = AppState::new_with_pool(config, database.clone())
             .await
             .expect("test state");
-        // QPS 窗口放大到 60s，限流断言不再依赖请求跑得够快（见 `qps_window`）。
-        qps_window::override_qps_window(&mut state);
+        if qps_window_override {
+            super::oauth_flow::qps_window::override_qps_window(&mut state);
+        }
         (state, database, key_directory, admin_token, binary_name)
     }
 }
@@ -231,3 +280,7 @@ impl Harness {
 pub fn suffix() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
+
+#[cfg(test)]
+#[path = "harness_tests.rs"]
+mod harness_tests;

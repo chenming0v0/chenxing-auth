@@ -4,12 +4,9 @@
 //! Rejection happens before CAS, so the unused code is not burned. A newly
 //! issued B-era code still redeems. Legacy payloads without generation fail closed.
 
-use crate::oauth_flow as support;
-
 use std::sync::Arc;
 
 use chenxing_auth::{
-    api,
     clients::{domain::ClientAuthMethod, service::AuthenticatedClient},
     oauth::{
         authorization::ValidatedAuthorizationRequest,
@@ -23,7 +20,8 @@ use chenxing_auth::{
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use support::{create_test_client, ensure_owner_bootstrapped, register_test_user, test_state};
+use crate::harness::HarnessBuilder;
+use crate::oauth_flow::{create_test_client, ensure_owner_bootstrapped, register_test_user};
 
 const REDIRECT_URI: &str = "https://disabled.example/callback";
 const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -39,16 +37,24 @@ struct Harness {
 }
 
 async fn setup() -> Harness {
-    let (state, database, key_directory) = test_state("authorization_code_issuer").await;
-    let router = api::router(state.clone());
+    let harness = HarnessBuilder::new("authorization_code_issuer")
+        .qps_window_override()
+        .build()
+        .await;
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&router, &database, "authorization_code_issuer", &suffix).await;
-    let (user_id, _, _, _) = register_test_user(&router, &suffix).await;
-    let (client_id, client_secret) = create_test_client(&router, "flow-admin-token").await;
+    ensure_owner_bootstrapped(
+        &harness.router,
+        &harness.database,
+        "authorization_code_issuer",
+        &suffix,
+    )
+    .await;
+    let (user_id, _, _, _) = register_test_user(&harness.router, &suffix).await;
+    let (client_id, client_secret) = create_test_client(&harness.router, "flow-admin-token").await;
     Harness {
-        state,
-        database,
-        key_directory,
+        state: harness.state,
+        database: harness.database,
+        key_directory: harness.key_directory,
         user_id,
         client_id,
         client_secret,

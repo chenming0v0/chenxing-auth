@@ -5,7 +5,6 @@ use axum::{
     response::Redirect,
     routing::get,
 };
-use chenxing_auth::{api, config::Config, state::AppState};
 use redis::AsyncCommands;
 use serde::Deserialize;
 use serde_json::Value;
@@ -16,7 +15,7 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::db_isolation;
+use crate::http;
 use crate::oauth_flow;
 
 #[derive(Clone, Default)]
@@ -90,34 +89,17 @@ async fn setup(
     std::path::PathBuf,
     String,
 ) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("oauth_provider_pending_flow", &database_url).await;
-    let key_directory =
-        std::env::temp_dir().join(format!("chenxing-provider-pending-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.admin_token = "provider-pending-admin".to_owned();
-    config.cookie_secure = false;
-    // Issue #343：本用例的 provider 端点是本机 mock 服务器（127.0.0.1 回环），
-    // 必须显式开启开发期回环例外；生产边界由 oauth_provider_endpoint_policy.rs
-    // 的「默认拒绝回环」用例单独覆盖。
-    config.oauth_provider_loopback_enabled = true;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let router = api::router(
-        AppState::new_with_pool(config, database.clone())
-            .await
-            .expect("state"),
-    );
+    let harness = crate::harness::HarnessBuilder::new("oauth_provider_pending_flow")
+        .admin_token("provider-pending-admin")
+        // Issue #343：本用例的 provider 端点是本机 mock 服务器（127.0.0.1 回环），
+        // 必须显式开启开发期回环例外；生产边界由 oauth_provider_endpoint_policy.rs
+        // 的「默认拒绝回环」用例单独覆盖。
+        .configure(|config| config.oauth_provider_loopback_enabled = true)
+        .build()
+        .await;
+    let router = harness.router;
+    let database = harness.database;
+    let key_directory = harness.key_directory;
     let slug = format!("mock-pending-{}", Uuid::new_v4().simple());
     let input = serde_json::json!({
         "name":"Mock Provider", "slug":slug,
@@ -175,15 +157,6 @@ async fn setup(
     )
     .await;
     (router, database, key_directory, slug)
-}
-
-fn location(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get("location")
-        .and_then(|value| value.to_str().ok())
-        .expect("location")
-        .to_owned()
 }
 
 fn set_cookie(response: &axum::response::Response, name: &str) -> String {
@@ -244,7 +217,7 @@ async fn create_pending_request(router: &Router) -> (String, String, String) {
     // `/oauth/authorize` 在这里签发 authorization holder cookie（src/oauth/handlers.rs:149）。
     // Issue #135 之后，认领 pending 请求必须出示它，所以测试要一路带到外部回调。
     let holder_cookie = set_cookie(&response, "chenxing_authz_holder");
-    let login_location = location(&response);
+    let login_location = http::location(&response);
     let request_id = url::Url::parse(&format!("http://localhost{login_location}"))
         .expect("login URL")
         .query_pairs()
@@ -272,7 +245,7 @@ async fn begin_external_login(router: &Router, slug: &str, request_id: &str) -> 
         .no_proxy()
         .build()
         .expect("mock client")
-        .get(location(&response))
+        .get(http::location(&response))
         .send()
         .await
         .expect("mock authorize");
@@ -452,7 +425,7 @@ async fn external_callback_binds_pending_request_to_created_session() {
         complete_external_callback(&router, &slug, &state_cookie, &state, &holder_cookie).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(
-        location(&response),
+        http::location(&response),
         format!("/oauth/consent?request_id={client_request_id}")
     );
     let session_cookie = set_cookie(&response, "chenxing_session=");
@@ -499,7 +472,7 @@ async fn external_callback_does_not_redirect_to_consent_when_pending_request_exp
     let response =
         complete_external_callback(&router, &slug, &state_cookie, &state, &holder_cookie).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    let redirect = location(&response);
+    let redirect = http::location(&response);
     assert!(redirect.starts_with(&format!("/login?request_id={request_id}")));
     assert!(redirect.contains("external_error=oauth_request_expired"));
     assert!(!redirect.contains("/oauth/consent"));
@@ -529,7 +502,7 @@ async fn external_callback_revokes_session_when_request_binding_is_invalid() {
     // 只带 state cookie，不带 holder cookie：holder 校验失败 -> Invalid。
     let response = callback_with_cookies(&router, &slug, &state, &state_cookie).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    let redirect = location(&response);
+    let redirect = http::location(&response);
     assert!(redirect.starts_with(&format!("/login?request_id={request_id}")));
     assert!(redirect.contains("external_error=oauth_request_binding_failed"));
     assert!(!redirect.contains("/oauth/consent"));

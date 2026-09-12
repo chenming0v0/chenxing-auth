@@ -2,9 +2,9 @@
 
 //! 共享 HTTP 请求 / 响应助手，纯内存调用，不触碰数据库。
 //!
-//! 这些助手在 49 个测试文件里被反复手抄，签名逐渐漂移。这里收敛成一组统一的
-//! 纯函数：请求经 `tower::ServiceExt::oneshot` 直接打进 Router，响应按需要提取
-//! JSON、Set-Cookie、`Location`。
+//! 请求经 `tower::ServiceExt::oneshot` 直接打进 Router，响应按需要提取 JSON、
+//! Set-Cookie、`Location`。助手只做机械提取：遇到不符合预期的响应结构直接 panic，
+//! 不静默降级，让测试在错误位置早失败。
 //!
 //! 调用方须在目标的 `mod.rs` 声明：
 //!
@@ -35,14 +35,19 @@ pub async fn json_body(response: Response) -> Value {
 
 /// 把每个 `Set-Cookie` 头的首个 `name=value` 段拼成可直接回填的 Cookie 请求头。
 ///
-/// 与 `oauth_flow::cookie_header` 保持一致：忽略不可转成 UTF-8 的头值。
+/// 头值必须能转成可见 ASCII 文本：测试响应里出现不可打印的 `Set-Cookie` 属于
+/// 被测代码的问题，这里直接 panic，而不是把该 cookie 静默过滤掉。
 pub fn set_cookies(response: &Response) -> String {
     response
         .headers()
         .get_all(SET_COOKIE)
         .iter()
-        .filter_map(|value| value.to_str().ok())
-        .map(|value| value.split(';').next().expect("cookie pair"))
+        .map(|value| {
+            let value = value
+                .to_str()
+                .expect("Set-Cookie header must be valid visible-ASCII text");
+            value.split(';').next().expect("cookie pair")
+        })
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -112,4 +117,60 @@ pub async fn get(router: &Router, uri: &str, headers: &[(&str, &str)]) -> Respon
 /// 发送任意已构建的请求。
 pub async fn send(router: &Router, request: Request<Body>) -> Response {
     router.clone().oneshot(request).await.expect("response")
+}
+
+/// Cookie / 响应头提取的纯内存回归：不启动 Router，也不触碰数据库。
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn response_with_set_cookies(values: &[&str]) -> Response {
+        let mut builder = Response::builder();
+        for value in values {
+            builder = builder.header(SET_COOKIE, *value);
+        }
+        builder.body(Body::empty()).expect("response")
+    }
+
+    #[test]
+    fn set_cookies_extracts_each_cookie_pair_in_header_order() {
+        let response = response_with_set_cookies(&[
+            "chenxing_session=token-abc; Path=/; HttpOnly; SameSite=Lax",
+            "chenxing_csrf=csrf-def; Path=/; SameSite=Lax",
+        ]);
+
+        assert_eq!(
+            set_cookies(&response),
+            "chenxing_session=token-abc; chenxing_csrf=csrf-def"
+        );
+    }
+
+    #[test]
+    fn cookie_value_matches_the_exact_cookie_name_only() {
+        let header = "chenxing_session_extra=wrong; chenxing_csrf=csrf-def";
+
+        assert_eq!(cookie_value(header, "chenxing_csrf"), "csrf-def");
+        assert_eq!(cookie_value(header, "chenxing_session_extra"), "wrong");
+    }
+
+    #[test]
+    #[should_panic(expected = "cookie present")]
+    fn cookie_value_does_not_accept_a_longer_cookie_name() {
+        let _ = cookie_value("chenxing_session_extra=wrong", "chenxing_session");
+    }
+
+    #[test]
+    #[should_panic(expected = "Set-Cookie")]
+    fn set_cookies_panics_on_non_text_header_value() {
+        // 合法但不可见 ASCII 的头字节（obs-text）：`to_str()` 必须让它失败，而不是
+        // 被 `filter_map` 静默丢弃。
+        let opaque = HeaderValue::from_bytes(b"\xff\xfe").expect("opaque header value");
+        let response = Response::builder()
+            .header(SET_COOKIE, opaque)
+            .body(Body::empty())
+            .expect("response");
+
+        let _ = set_cookies(&response);
+    }
 }

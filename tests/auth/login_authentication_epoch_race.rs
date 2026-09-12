@@ -12,13 +12,12 @@
 //! 2. **真并发**：多路登录与改密同时起跑，断言不变量而不是具体胜负——
 //!    任何拿到的凭据都必须仍然可兑换，任何被拒的路径都不得留下有效凭据。
 
-use crate::{db_isolation, oauth_flow as key_directory};
+use crate::harness;
 
 use std::{sync::Arc, time::Duration};
 
 use chenxing_auth::{
     auth_factors::{domain::FactorMethod, service::AuthFactorServiceError},
-    config::Config,
     sessions::{domain::Session, store::SessionStoreError},
     state::AppState,
     users::{
@@ -52,39 +51,13 @@ struct Harness {
     identifier: String,
 }
 
-/// 并发用例每一路都要独立占用连接，而改密事务会持有该用户的 advisory 锁。
-/// 默认的 2 个连接会让等待锁的事务与等待连接的任务互相排队，把要测的窗口
-/// 变成一条串行队列。
-async fn isolated_database(database_url: &str) -> chenxing_auth::sqlx::PgPool {
-    db_isolation::isolated_pool_with_max_connections(
-        "login_authentication_epoch_race",
-        database_url,
-        16,
-    )
-    .await
-}
-
 async fn setup() -> Harness {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = isolated_database(&database_url).await;
-    let key_directory = key_directory::isolated_key_directory("epoch-race");
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("test configuration");
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("test state");
+    let (state, database, key_directory, _admin_token, _binary_name) =
+        harness::HarnessBuilder::new("login_authentication_epoch_race")
+            .admin_token("")
+            .max_connections(16)
+            .build_state()
+            .await;
 
     let suffix = Uuid::new_v4().simple().to_string();
     let identifier = format!("epoch-race-{suffix}");

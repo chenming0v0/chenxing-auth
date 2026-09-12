@@ -8,9 +8,7 @@ use axum::{
 };
 
 use chenxing_auth::{
-    api,
     audit::{AuditAction, AuditEvent},
-    config::Config,
     oauth::providers::domain::{ClientAuthMethod, ProviderInput},
     state::AppState,
     users::ManagementActorCredential,
@@ -20,9 +18,8 @@ use serde_json::Value;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tower::ServiceExt;
-use uuid::Uuid;
 
-use crate::db_isolation;
+use crate::{harness, oauth_flow};
 
 #[derive(Debug, Deserialize)]
 struct AuthorizeQuery {
@@ -76,30 +73,20 @@ async fn setup(
     chenxing_auth::sqlx::PgPool,
     std::path::PathBuf,
 ) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("external_identity_repository", &database_url).await;
-    let key_directory =
-        std::env::temp_dir().join(format!("chenxing-external-identity-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.cookie_secure = false;
-    config.oauth_provider_loopback_enabled = true;
-    config.oauth_provider_loopback_enabled = true;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("state");
-    let router = api::router(state.clone());
+    let harness::Harness {
+        router,
+        state,
+        database,
+        key_directory,
+        ..
+    } = harness::HarnessBuilder::new("external_identity_repository")
+        // 原 raw Config 未设置 admin token，保持禁用管理 bearer。
+        .admin_token("")
+        .configure(|config| {
+            config.oauth_provider_loopback_enabled = true;
+        })
+        .build()
+        .await;
     (router, state, database, key_directory)
 }
 
@@ -229,19 +216,14 @@ async fn binding_fixture(
         .save(&mut session, std::time::Duration::from_secs(3600))
         .await
         .expect("save session");
+    let session_cookie = oauth_flow::session_cookie(&session);
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(format!("/api/v1/auth/external-identities/{slug}/bind"))
-                .header(
-                    "cookie",
-                    format!(
-                        "chenxing_session={}; chenxing_csrf={}",
-                        session.token, session.csrf_token
-                    ),
-                )
+                .header("cookie", &session_cookie)
                 .header("x-csrf-token", &session.csrf_token)
                 .body(Body::empty())
                 .expect("start request"),
@@ -269,16 +251,7 @@ async fn binding_fixture(
         .find(|(key, _)| key == "state")
         .map(|(_, value)| value.into_owned())
         .expect("state");
-    (
-        slug,
-        state_cookie,
-        state_value,
-        format!(
-            "chenxing_session={}; chenxing_csrf={}",
-            session.token, session.csrf_token
-        ),
-        provider_id,
-    )
+    (slug, state_cookie, state_value, session_cookie, provider_id)
 }
 fn external(subject: &str, email: &str) -> chenxing_auth::oauth::providers::claims::ExternalUser {
     chenxing_auth::oauth::providers::claims::ExternalUser {

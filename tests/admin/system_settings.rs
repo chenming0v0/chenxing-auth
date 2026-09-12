@@ -1,58 +1,20 @@
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
-use chenxing_auth::{
-    api,
-    config::Config,
-    sessions::{cookies, domain::Session, store::SessionStore},
-    state::AppState,
-};
-use serde_json::Value;
+use chenxing_auth::sessions::{cookies, domain::Session, store::SessionStore};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::db_isolation;
+use crate::http;
 
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("admin_system_settings", &database_url).await;
-    let key_directory =
-        std::env::temp_dir().join(format!("chenxing-admin-system-settings-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.admin_token = "admin-system-settings-token".to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(
-            AppState::new_with_pool(config, database.clone())
-                .await
-                .expect("state"),
-        ),
-        database,
-        key_directory,
-    )
-}
-
-async fn json(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body"),
-    )
-    .expect("JSON")
+    let harness = crate::harness::HarnessBuilder::new("admin_system_settings")
+        .admin_token("admin-system-settings-token")
+        .build()
+        .await;
+    (harness.router, harness.database, harness.key_directory)
 }
 
 async fn browser_session(
@@ -94,7 +56,7 @@ async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
         .await
         .expect("passkey get response");
     assert_eq!(response.status(), StatusCode::OK);
-    let current = json(response).await;
+    let current = http::json_body(response).await;
     assert_eq!(current["enabled"], true);
 
     let response = router
@@ -122,7 +84,7 @@ async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
         .await
         .expect("passkey put response");
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(json(response).await["rp_id"], "localhost");
+    assert_eq!(http::json_body(response).await["rp_id"], "localhost");
 
     let response = router
         .clone()
@@ -136,7 +98,7 @@ async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
         .await
         .expect("email policy get response");
     assert_eq!(response.status(), StatusCode::OK);
-    let current_policy = json(response).await;
+    let current_policy = http::json_body(response).await;
     let expected_generation = current_policy["generation"]
         .as_i64()
         .expect("email policy generation");
@@ -163,7 +125,7 @@ async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
         .await
         .expect("email policy put response");
     assert_eq!(response.status(), StatusCode::OK);
-    let policy = json(response).await;
+    let policy = http::json_body(response).await;
     let expected_generation = policy["generation"]
         .as_i64()
         .expect("email policy generation after update");
@@ -197,7 +159,7 @@ async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
         .await
         .expect("smtp put response");
     assert_eq!(response.status(), StatusCode::OK);
-    let smtp = json(response).await;
+    let smtp = http::json_body(response).await;
     assert_eq!(smtp["password_configured"], true);
     assert!(smtp.get("password").is_none());
     assert!(smtp.get("password_ciphertext").is_none());
@@ -214,7 +176,7 @@ async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
         .await
         .expect("smtp get response");
     assert_eq!(response.status(), StatusCode::OK);
-    let smtp = json(response).await;
+    let smtp = http::json_body(response).await;
     assert_eq!(smtp["host"], "smtp.example.com");
     assert_eq!(smtp["password_configured"], true);
     assert!(smtp.get("password").is_none());
@@ -260,7 +222,7 @@ async fn owner_can_manage_security_limits_with_validation() {
         .await
         .expect("security limits get response");
     assert_eq!(response.status(), StatusCode::OK);
-    let defaults = json(response).await;
+    let defaults = http::json_body(response).await;
     assert_eq!(defaults["unauthenticated_source_qps"], 30);
     assert_eq!(defaults["authorization_code_ttl_seconds"], 300);
     assert_eq!(defaults["ip_failure_limit"], 30);
@@ -297,7 +259,7 @@ async fn owner_can_manage_security_limits_with_validation() {
         .await
         .expect("security limits put response");
     assert_eq!(response.status(), StatusCode::OK);
-    let updated = json(response).await;
+    let updated = http::json_body(response).await;
     assert_eq!(updated["unauthenticated_source_qps"], 10);
     assert_eq!(updated["authorization_code_ttl_seconds"], 120);
     assert_eq!(updated["ip_failure_limit"], 20);
@@ -314,7 +276,7 @@ async fn owner_can_manage_security_limits_with_validation() {
         .await
         .expect("security limits get after update response");
     assert_eq!(response.status(), StatusCode::OK);
-    let refetched = json(response).await;
+    let refetched = http::json_body(response).await;
     assert_eq!(refetched["unauthenticated_source_qps"], 10);
     assert_eq!(refetched["ip_failure_limit"], 20);
 
@@ -350,7 +312,7 @@ async fn owner_can_manage_security_limits_with_validation() {
         .await
         .expect("security limits zero qps response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let error = json(response).await;
+    let error = http::json_body(response).await;
     assert_eq!(error["code"], "invalid_security_limits");
 
     // 4. 非法值（负数）返回 400
@@ -418,7 +380,7 @@ async fn owner_can_manage_security_limits_with_validation() {
         .await
         .expect("security limits saturated limit response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let error = json(response).await;
+    let error = http::json_body(response).await;
     assert_eq!(error["code"], "invalid_security_limits");
 
     // 6. 授权码 TTL 超过 RFC 6749 §4.1.2 的 10 分钟建议返回 400（#260 起改为硬上界）
@@ -551,7 +513,9 @@ async fn admin_is_denied_owner_only_system_plan_identity_and_authentication_poli
         .await
         .expect("create admin response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    let admin_id = json(response).await["id"].as_i64().expect("admin id");
+    let admin_id = http::json_body(response).await["id"]
+        .as_i64()
+        .expect("admin id");
     let (cookie, csrf) = browser_session(&database, &redis_url, admin_id).await;
 
     for path in [

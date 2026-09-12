@@ -11,15 +11,12 @@
 
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
 use chenxing_auth::{
-    api,
     audit::{AuditEvent, AuditService},
-    config::Config,
     sessions::{cookies, domain::Session, store::SessionStore},
-    state::AppState,
 };
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -28,43 +25,18 @@ const DENIED_ACTION: &str = "admin_authorization_denied";
 /// Issue #304：领域守卫拒绝的 action，与权限拒绝分开检索。
 const GUARD_DENIED_ACTION: &str = "admin_owner_guard_denied";
 
-use crate::db_isolation;
-
-fn database_url() -> String {
-    std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned())
-}
+use crate::http;
 
 fn redis_url() -> String {
     std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned())
 }
 
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let database_url = database_url();
-    let redis_url = redis_url();
-    let database = db_isolation::isolated_pool("authorization_audit", &database_url).await;
-    let key_directory = std::env::temp_dir().join(format!("chenxing-authz-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.admin_token = "authz-audit-token".to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(
-            AppState::new_with_pool(config, database.clone())
-                .await
-                .expect("state"),
-        ),
-        database,
-        key_directory,
-    )
+    let harness = crate::harness::HarnessBuilder::new("authorization_audit")
+        .admin_token("authz-audit-token")
+        .build()
+        .await;
+    (harness.router, harness.database, harness.key_directory)
 }
 
 /// 直接在 Redis/PG 里种一个已认证会话，跳过登录流程。
@@ -104,13 +76,6 @@ async fn seed_user(database: &chenxing_auth::sqlx::PgPool, name: &str, role: &st
     .fetch_one(database)
     .await
     .expect("seed user")
-}
-
-async fn json(response: axum::response::Response) -> serde_json::Value {
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("response body");
-    serde_json::from_slice(&body).expect("JSON response")
 }
 
 async fn denial_events(database: &chenxing_auth::sqlx::PgPool) -> Vec<AuditEvent> {
@@ -235,7 +200,7 @@ async fn low_privilege_status_probe_cannot_enumerate_owners_or_missing_users() {
             StatusCode::FORBIDDEN,
             "target {target} must be indistinguishable"
         );
-        assert_eq!(json(response).await["code"], "admin_forbidden");
+        assert_eq!(http::json_body(response).await["code"], "admin_forbidden");
     }
 
     let events = denial_events(&database).await;
@@ -279,7 +244,7 @@ async fn invalid_status_and_missing_user_are_separate_structured_errors() {
         .await
         .expect("invalid status response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json(response).await["code"], "invalid_status");
+    assert_eq!(http::json_body(response).await["code"], "invalid_status");
 
     // 不存在的用户 + 非法状态串 → 仍是 400：状态串是与资源无关的语法输入，
     // 在查询目标之前就被拒，因此不会退化成 404。
@@ -287,14 +252,14 @@ async fn invalid_status_and_missing_user_are_separate_structured_errors() {
         .await
         .expect("invalid status for missing user response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json(response).await["code"], "invalid_status");
+    assert_eq!(http::json_body(response).await["code"], "invalid_status");
 
     // 不存在的用户 + 合法状态串 → 404 user_not_found
     let response = post(format!("/api/v1/admin/users/{missing_id}/disabled"))
         .await
         .expect("missing user response");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert_eq!(json(response).await["code"], "user_not_found");
+    assert_eq!(http::json_body(response).await["code"], "user_not_found");
 
     // 合法状态串 + 存在的用户 → 204，确认上面三条不是把整条路径都拒掉了
     let response = post(format!("/api/v1/admin/users/{target_id}/disabled"))
@@ -337,12 +302,12 @@ async fn assigning_a_plan_to_an_owner_requires_manage_roles() {
 
     let response = assign(owner_id).await.expect("owner assign response");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(json(response).await["code"], "admin_forbidden");
+    assert_eq!(http::json_body(response).await["code"], "admin_forbidden");
 
     // 普通用户不抬档：同一个 Admin 走到套餐查询，因此拿到 404 plan_not_found。
     let response = assign(plain_id).await.expect("plain assign response");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert_eq!(json(response).await["code"], "plan_not_found");
+    assert_eq!(http::json_body(response).await["code"], "plan_not_found");
 
     let events = denial_events(&database).await;
     assert_eq!(events.len(), 1, "只有 Owner 目标那一次留下拒绝记录");
@@ -379,7 +344,10 @@ async fn last_owner_guard_denials_are_recorded_with_actor_target_and_operation()
         .await
         .expect("disable last owner response");
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(json(response).await["code"], "last_owner_required");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "last_owner_required"
+    );
 
     let events = guard_denial_events(&database).await;
     assert_eq!(events.len(), 1, "禁用最后一个 Owner 必须留下一条审计事件");
@@ -413,7 +381,10 @@ async fn last_owner_guard_denials_are_recorded_with_actor_target_and_operation()
         .await
         .expect("demote last owner response");
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(json(response).await["code"], "last_owner_required");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "last_owner_required"
+    );
 
     let events = guard_denial_events(&database).await;
     assert_eq!(events.len(), 2, "降级最后一个 Owner 同样必须留痕");

@@ -1,46 +1,20 @@
 use axum::{
     Router,
     body::{Body, to_bytes},
-    http::{
-        Request, StatusCode,
-        header::{LOCATION, SET_COOKIE, WWW_AUTHENTICATE},
-    },
+    http::{Request, StatusCode, header::WWW_AUTHENTICATE},
 };
-use chenxing_auth::{api, config::Config, state::AppState};
 use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
 
-use crate::db_isolation;
+use crate::{db_isolation, harness, http};
 
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("browser_flow", &database_url).await;
-    let key_directory = std::env::temp_dir().join(format!("chenxing-browser-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("test configuration");
-    config.admin_token = "browser-admin-token".to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(
-            AppState::new_with_pool(config, database.clone())
-                .await
-                .expect("test state"),
-        ),
-        database,
-        key_directory,
-    )
+    let harness = harness::HarnessBuilder::new("browser_flow")
+        .admin_token("browser-admin-token")
+        .build()
+        .await;
+    (harness.router, harness.database, harness.key_directory)
 }
 
 async fn body(response: axum::response::Response) -> String {
@@ -51,41 +25,6 @@ async fn body(response: axum::response::Response) -> String {
             .to_vec(),
     )
     .expect("UTF-8 response")
-}
-
-/// Joins the first pair of every Set-Cookie header into a Cookie request value.
-fn cookies(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get_all(SET_COOKIE)
-        .iter()
-        .map(|value| {
-            value
-                .to_str()
-                .expect("cookie header")
-                .split(';')
-                .next()
-                .expect("cookie pair")
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn location(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get(LOCATION)
-        .and_then(|value| value.to_str().ok())
-        .expect("redirect location")
-        .to_owned()
-}
-
-fn cookie_value(cookie_header: &str, name: &str) -> String {
-    cookie_header
-        .split(';')
-        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
-        .expect("cookie present")
-        .to_owned()
 }
 
 fn request_id_from(location: &str) -> String {
@@ -247,14 +186,14 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
         .await
         .expect("authorize response");
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    let login_location = location(&response);
+    let login_location = http::location(&response);
     assert!(
         login_location.starts_with("/login?request_id="),
         "expected SPA login redirect, got {login_location}"
     );
     let request_id = request_id_from(&login_location);
     // 授权持有者 Cookie 下发于 authorize 响应，必须随 bind 请求一起送回（#115）。
-    let authz_holder_cookie = cookies(&response);
+    let authz_holder_cookie = http::set_cookies(&response);
     assert!(
         authz_holder_cookie.starts_with("chenxing_authz_holder="),
         "authorize must issue the authorization holder cookie, got {authz_holder_cookie}"
@@ -276,11 +215,11 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
         .await
         .expect("login response");
     assert_eq!(response.status(), StatusCode::OK);
-    let session_cookies = cookies(&response);
+    let session_cookies = http::set_cookies(&response);
     let login_body: serde_json::Value =
         serde_json::from_str(&body(response).await).expect("login JSON");
     assert!(login_body["expires_at"].as_str().is_some());
-    let csrf = cookie_value(&session_cookies, "chenxing_csrf");
+    let csrf = http::cookie_value(&session_cookies, "chenxing_csrf");
 
     // 回归（#115）：无持有者 Cookie 的绑定请求必须被拒绝（403）。
     let response = router
@@ -428,7 +367,7 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
         .await
         .expect("repeat authorize response");
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    let repeat_location = location(&response);
+    let repeat_location = http::location(&response);
     assert!(
         repeat_location.contains("code="),
         "expected direct code redirect, got {repeat_location}"

@@ -7,15 +7,14 @@
 
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Method, Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, sqlx, state::AppState};
+use chenxing_auth::{api, sqlx};
 use serde_json::{Value, json};
-use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow as key_directory};
+use crate::{db_isolation, http};
 
 const ADMIN_TOKEN: &str = "registration-settings-token";
 const SETTINGS_PATH: &str = "/api/v1/admin/settings/registration";
@@ -23,47 +22,18 @@ const STATUS_PATH: &str = "/api/v1/auth/registration-status";
 const USERS_PATH: &str = "/api/v1/users";
 
 async fn setup(configure_issuer: bool) -> (Router, sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("registration_settings", &database_url).await;
-    let key_directory = key_directory::isolated_key_directory("registration-settings");
-    let mut config = if configure_issuer {
-        Config::from_values_with_issuer(
-            "127.0.0.1".to_owned(),
-            3000,
-            "http://127.0.0.1:3000".to_owned(),
-            database_url,
-            redis_url,
-            3600,
-        )
-        .expect("config")
-    } else {
-        let mut config =
-            Config::from_values("127.0.0.1".to_owned(), 3000, database_url, redis_url, 3600)
-                .expect("config");
-        config.issuer = None;
-        config
-    };
-    config.admin_token = ADMIN_TOKEN.to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("state");
+    let (state, database, key_directory, _admin_token, _binary_name) =
+        crate::harness::HarnessBuilder::new("registration_settings")
+            .admin_token(ADMIN_TOKEN)
+            .configure(move |config| {
+                if !configure_issuer {
+                    config.issuer = None;
+                }
+            })
+            .build_state()
+            .await;
     state.worker_health.assume_ready_for_test();
-    let router = api::router(state);
-    (router, database, key_directory)
-}
-
-async fn json_body(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body"),
-    )
-    .expect("JSON body")
+    (api::router(state), database, key_directory)
 }
 
 async fn send(
@@ -84,11 +54,7 @@ async fn send(
         }
         None => Body::empty(),
     };
-    router
-        .clone()
-        .oneshot(request.body(body).expect("request"))
-        .await
-        .expect("response")
+    http::send(router, request.body(body).expect("request")).await
 }
 
 async fn put_setting(router: &Router, body: Value) -> (StatusCode, Value) {
@@ -101,13 +67,13 @@ async fn put_setting(router: &Router, body: Value) -> (StatusCode, Value) {
     )
     .await;
     let status = response.status();
-    (status, json_body(response).await)
+    (status, http::json_body(response).await)
 }
 
 async fn registration_status(router: &Router) -> Value {
     let response = send(router, Method::GET, STATUS_PATH, None, None).await;
     assert_eq!(response.status(), StatusCode::OK);
-    json_body(response).await
+    http::json_body(response).await
 }
 
 /// 匿名引导首个 Owner；随后的用户 ID 偏移必须重新施加（与
@@ -151,7 +117,7 @@ async fn registration_is_closed_by_default_and_reports_disabled() {
     // 管理读取：默认双 false。
     let response = send(&router, Method::GET, SETTINGS_PATH, Some(ADMIN_TOKEN), None).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let body = json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(body["enabled"], false);
     assert_eq!(body["email_verification_required"], false);
 
@@ -163,7 +129,10 @@ async fn registration_is_closed_by_default_and_reports_disabled() {
     // 公开注册被开关闸门拒绝，先于任何输入校验与创建。
     let response = register_user(&router, &Uuid::new_v4().simple().to_string()).await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(json_body(response).await["code"], "registration_disabled");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "registration_disabled"
+    );
 
     let _ = std::fs::remove_dir_all(key_directory);
 }
@@ -263,7 +232,7 @@ async fn enabled_registration_creates_active_user_who_can_login() {
     // 管理读取回显已保存设置；匿名状态端点报告有效值（Issuer 就绪 → 开）。
     let response = send(&router, Method::GET, SETTINGS_PATH, Some(ADMIN_TOKEN), None).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(json_body(response).await["enabled"], true);
+    assert_eq!(http::json_body(response).await["enabled"], true);
     let status_body = registration_status(&router).await;
     assert_eq!(status_body["enabled"], true);
     assert_eq!(status_body["email_verification_required"], false);
@@ -271,7 +240,7 @@ async fn enabled_registration_creates_active_user_who_can_login() {
     // 公开注册创建最低权限的 active 用户。
     let response = register_user(&router, &suffix).await;
     assert_eq!(response.status(), StatusCode::CREATED);
-    let body = json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(body["user"]["username"], format!("reg-user-{suffix}"));
     assert_eq!(body["user"]["role"], "user");
     assert_eq!(body["user"]["status"], "active");
@@ -323,7 +292,7 @@ async fn email_verification_required_keeps_registration_fail_closed() {
     let response = register_user(&router, &suffix).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
-        json_body(response).await["code"],
+        http::json_body(response).await["code"],
         "email_verification_unavailable"
     );
 

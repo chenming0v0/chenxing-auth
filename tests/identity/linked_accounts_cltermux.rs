@@ -23,7 +23,7 @@ use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::oauth_flow;
+use crate::{harness, http, oauth_flow};
 
 use std::time::Duration;
 
@@ -145,7 +145,12 @@ struct Env {
 }
 
 async fn setup(binary_name: &str, mock: std::net::SocketAddr) -> Env {
-    let (mut state, database, key_directory) = oauth_flow::test_state(binary_name).await;
+    let (mut state, database, key_directory, _admin_token, _suffix) =
+        harness::HarnessBuilder::new(binary_name)
+            // 原 `oauth_flow::test_state` 会放大 QPS 窗口，保持一致。
+            .qps_window_override()
+            .build_state()
+            .await;
     state.config.cltermux = Some(cltermux_config(&format!("http://{mock}/")));
     let integration = match chenxing_auth::integrations::cltermux::adapter::CltermuxIntegration::new(
         state.config.cltermux.as_ref().expect("cltermux config"),
@@ -278,7 +283,7 @@ async fn create_or_get_binding(env: &Env, user_id: i64, cookie: &str, csrf: &str
         status
     );
     if status == StatusCode::CONFLICT {
-        let code = oauth_flow::json_body(created).await["code"]
+        let code = http::json_body(created).await["code"]
             .as_str()
             .unwrap_or("unknown")
             .to_owned();
@@ -292,7 +297,7 @@ async fn create_or_get_binding(env: &Env, user_id: i64, cookie: &str, csrf: &str
             panic!("409 with code {} is not account_already_linked", code);
         }
     } else {
-        oauth_flow::json_body(created).await["id"]
+        http::json_body(created).await["id"]
             .as_str()
             .expect("binding id")
             .to_owned()
@@ -330,7 +335,7 @@ async fn bind_success_persists_row_snapshot_and_audit() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED, "bind must succeed");
-    let body = oauth_flow::json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(body["provider"]["id"], "cltermux");
     assert_eq!(body["uid"], "cltermux:101");
     assert_eq!(body["account_status"], "active");

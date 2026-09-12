@@ -8,6 +8,8 @@ mod db_isolation;
 mod harness;
 #[path = "../support/http.rs"]
 mod http;
+#[path = "../support/key_directory.rs"]
+mod key_directory;
 #[path = "../support/oauth_flow.rs"]
 mod oauth_flow;
 
@@ -21,6 +23,8 @@ mod cltermux_resolve;
 mod cltermux_exchange;
 mod email_change_attempt_budget;
 mod email_change_outbox;
+mod email_change_outbox_alerts;
+mod email_change_outbox_support;
 mod external_identity_binding;
 mod linked_accounts_cltermux;
 mod security_events_api;

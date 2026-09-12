@@ -1,86 +1,27 @@
 use axum::{
     Router,
-    body::{Body, to_bytes},
-    http::{Request, StatusCode, header::SET_COOKIE},
+    body::Body,
+    http::{Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, state::AppState};
-use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow};
+use crate::{harness, http};
 
 const ADMIN_TOKEN: &str = "user-sessions-admin-token";
 
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("user_sessions_api", &database_url).await;
-    let key_directory =
-        std::env::temp_dir().join(format!("chenxing-session-ui-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.admin_token = ADMIN_TOKEN.to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let router = api::router(
-        AppState::new_with_pool(config, database.clone())
-            .await
-            .expect("state"),
-    );
-    oauth_flow::ensure_owner_bootstrapped(
-        &router,
-        &database,
-        "user_sessions_api",
-        "user_sessions_api",
-    )
-    .await;
-    db_isolation::isolate_user_ids(&database, "user_sessions_api").await;
+    let harness::Harness {
+        router,
+        database,
+        key_directory,
+        ..
+    } = harness::HarnessBuilder::new("user_sessions_api")
+        .admin_token(ADMIN_TOKEN)
+        .bootstrap_owner()
+        .build()
+        .await;
     (router, database, key_directory)
-}
-
-async fn json(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body"),
-    )
-    .expect("JSON")
-}
-
-fn cookies(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get_all(SET_COOKIE)
-        .iter()
-        .map(|value| {
-            value
-                .to_str()
-                .expect("cookie")
-                .split(';')
-                .next()
-                .unwrap()
-                .to_owned()
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn csrf(cookies: &str) -> String {
-    cookies
-        .split(';')
-        .find_map(|part| part.trim().strip_prefix("chenxing_csrf="))
-        .expect("csrf cookie")
-        .to_owned()
 }
 
 async fn register(router: &Router, username: &str, email: &str, password: &str) {
@@ -125,12 +66,12 @@ async fn login(
         .await
         .expect("login response");
     if response.status() == StatusCode::ACCEPTED {
-        let pending = json(response).await;
+        let pending = http::json_body(response).await;
         panic!("unexpected pending login response: {pending}");
     }
     assert_eq!(response.status(), StatusCode::OK);
-    let cookie_header = cookies(&response);
-    let csrf_token = csrf(&cookie_header);
+    let cookie_header = http::set_cookies(&response);
+    let csrf_token = http::cookie_value(&cookie_header, "chenxing_csrf");
     (cookie_header, csrf_token)
 }
 
@@ -162,7 +103,7 @@ async fn user_can_update_profile_list_sessions_and_rotate_password() {
         .await
         .expect("profile update response");
     assert_eq!(response.status(), StatusCode::OK);
-    let profile = json(response).await;
+    let profile = http::json_body(response).await;
     assert_eq!(profile["username"], username);
     assert_eq!(profile["display_name"], "Session User");
 
@@ -178,7 +119,7 @@ async fn user_can_update_profile_list_sessions_and_rotate_password() {
         .await
         .expect("session list response");
     assert_eq!(response.status(), StatusCode::OK);
-    let sessions = json(response).await;
+    let sessions = http::json_body(response).await;
     assert!(sessions["items"].as_array().expect("sessions").len() >= 2);
     assert_eq!(
         sessions["items"]

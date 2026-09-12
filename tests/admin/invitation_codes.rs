@@ -8,15 +8,14 @@
 
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Method, Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, sqlx, state::AppState};
+use chenxing_auth::sqlx;
 use serde_json::{Value, json};
-use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow as key_directory};
+use crate::{db_isolation, http};
 
 const ADMIN_TOKEN: &str = "invitation-codes-token";
 const CODES_PATH: &str = "/api/v1/admin/registration-invitation-codes";
@@ -24,39 +23,13 @@ const SETTINGS_PATH: &str = "/api/v1/admin/settings/registration";
 const USERS_PATH: &str = "/api/v1/users";
 
 async fn setup() -> (Router, sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("invitation_codes", &database_url).await;
-    let key_directory = key_directory::isolated_key_directory("invitation-codes");
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.admin_token = ADMIN_TOKEN.to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("state");
+    let (state, database, key_directory, _admin_token, _binary_name) =
+        crate::harness::HarnessBuilder::new("invitation_codes")
+            .admin_token(ADMIN_TOKEN)
+            .build_state()
+            .await;
     state.worker_health.assume_ready_for_test();
-    let router = api::router(state);
-    (router, database, key_directory)
-}
-
-async fn json_body(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body"),
-    )
-    .expect("JSON body")
+    (chenxing_auth::api::router(state), database, key_directory)
 }
 
 async fn send(
@@ -77,11 +50,7 @@ async fn send(
         }
         None => Body::empty(),
     };
-    router
-        .clone()
-        .oneshot(request.body(body).expect("request"))
-        .await
-        .expect("response")
+    http::send(router, request.body(body).expect("request")).await
 }
 
 fn detail_path(id: i64) -> String {
@@ -130,7 +99,7 @@ async fn create_batch(router: &Router, label: &str) -> (StatusCode, Value) {
         })),
     )
     .await;
-    (response.status(), json_body(response).await)
+    (response.status(), http::json_body(response).await)
 }
 
 #[tokio::test]
@@ -157,7 +126,7 @@ async fn invitation_code_detail_lists_uses_without_exposing_secrets() {
 
     let response = send(&router, Method::GET, CODES_PATH, Some(ADMIN_TOKEN), None).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let listed = json_body(response).await;
+    let listed = http::json_body(response).await;
     let listed = listed.as_array().expect("list");
     assert_eq!(listed.len(), 2);
     for item in listed {
@@ -175,7 +144,7 @@ async fn invitation_code_detail_lists_uses_without_exposing_secrets() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let unused = json_body(response).await;
+    let unused = http::json_body(response).await;
     assert_no_secret_material(&unused);
     assert_eq!(unused["id"], first_id);
     assert_eq!(unused["label"], "batch-a");
@@ -240,7 +209,7 @@ async fn invitation_code_detail_lists_uses_without_exposing_secrets() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let used = json_body(response).await;
+    let used = http::json_body(response).await;
     assert_no_secret_material(&used);
     assert_eq!(used["use_count"], 2);
     let uses = used["uses"].as_array().expect("uses");
@@ -265,7 +234,7 @@ async fn invitation_code_detail_lists_uses_without_exposing_secrets() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let still_unused = json_body(response).await;
+    let still_unused = http::json_body(response).await;
     assert_eq!(still_unused["use_count"], 0);
     assert_eq!(still_unused["uses"], json!([]));
 
@@ -278,7 +247,7 @@ async fn invitation_code_detail_lists_uses_without_exposing_secrets() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let disabled = json_body(response).await;
+    let disabled = http::json_body(response).await;
     assert_no_secret_material(&disabled);
     assert_eq!(disabled["id"], first_id);
     assert!(disabled["disabled_at"].as_str().is_some());
@@ -300,7 +269,7 @@ async fn invitation_code_detail_returns_not_found_for_unknown_id() {
     .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(
-        json_body(response).await["code"],
+        http::json_body(response).await["code"],
         "invitation_code_not_found"
     );
 

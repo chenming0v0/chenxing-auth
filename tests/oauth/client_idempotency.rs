@@ -1,15 +1,14 @@
 use axum::{
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, oauth::refresh::RefreshToken, state::AppState};
-use serde_json::Value;
+use chenxing_auth::{oauth::refresh::RefreshToken, state::AppState};
 use time::{Duration, OffsetDateTime};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::db_isolation;
-use crate::oauth_flow as key_directory;
+use crate::harness::HarnessBuilder;
+use crate::http;
 
 async fn setup() -> (
     AppState,
@@ -17,27 +16,18 @@ async fn setup() -> (
     chenxing_auth::sqlx::PgPool,
     std::path::PathBuf,
 ) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("client_idempotency", &database_url).await;
-    let key_directory = key_directory::isolated_key_directory("client-idempotency");
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
+    let harness = HarnessBuilder::new("client_idempotency")
+        .admin_token("idempotency-admin-token")
+        // 原 setup 沿用 `from_values_with_issuer` 的 secure-cookie 默认值。
+        .configure(|config| config.cookie_secure = true)
+        .build()
+        .await;
+    (
+        harness.state,
+        harness.router,
+        harness.database,
+        harness.key_directory,
     )
-    .expect("config");
-    config.admin_token = "idempotency-admin-token".to_owned();
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("state");
-    (state.clone(), api::router(state), database, key_directory)
 }
 
 fn client_body(name: &str) -> String {
@@ -70,15 +60,6 @@ fn rotate_request(client_id: &str, key: &str) -> Request<Body> {
         .expect("rotate client secret request")
 }
 
-async fn json(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body"),
-    )
-    .expect("JSON response")
-}
-
 #[tokio::test]
 async fn create_retry_replays_the_same_secret_without_duplicate_mutation_or_audit() {
     let (_state, router, database, key_directory) = setup().await;
@@ -91,7 +72,7 @@ async fn create_retry_replays_the_same_secret_without_duplicate_mutation_or_audi
         .await
         .expect("first response");
     assert_eq!(first.status(), StatusCode::CREATED);
-    let first = json(first).await;
+    let first = http::json_body(first).await;
 
     let retry = router
         .clone()
@@ -99,7 +80,7 @@ async fn create_retry_replays_the_same_secret_without_duplicate_mutation_or_audi
         .await
         .expect("retry response");
     assert_eq!(retry.status(), StatusCode::CREATED);
-    let retry = json(retry).await;
+    let retry = http::json_body(retry).await;
 
     assert_eq!(retry["id"], first["id"]);
     assert_eq!(retry["client_id"], first["client_id"]);
@@ -134,8 +115,8 @@ async fn concurrent_create_requests_with_the_same_key_serialize_to_one_result() 
     let first = router.clone().oneshot(create_request(&key, body.clone()));
     let second = router.clone().oneshot(create_request(&key, body));
     let (first, second) = tokio::join!(first, second);
-    let first = json(first.expect("first response")).await;
-    let second = json(second.expect("second response")).await;
+    let first = http::json_body(first.expect("first response")).await;
+    let second = http::json_body(second.expect("second response")).await;
 
     assert_eq!(first["client_id"], second["client_id"]);
     assert_eq!(first["client_secret"], second["client_secret"]);
@@ -169,7 +150,10 @@ async fn changed_create_request_with_the_same_key_conflicts() {
         .await
         .expect("conflict response");
     assert_eq!(conflict.status(), StatusCode::CONFLICT);
-    assert_eq!(json(conflict).await["code"], "idempotency_conflict");
+    assert_eq!(
+        http::json_body(conflict).await["code"],
+        "idempotency_conflict"
+    );
 
     let client_count: i64 = chenxing_auth::sqlx::query_scalar("SELECT COUNT(*) FROM oauth_clients")
         .fetch_one(&database)
@@ -192,7 +176,7 @@ async fn rotation_retry_replays_the_same_secret_and_rotates_once() {
         .await
         .expect("create response");
     assert_eq!(create.status(), StatusCode::CREATED);
-    let created = json(create).await;
+    let created = http::json_body(create).await;
     let client_id = created["client_id"].as_str().expect("client id");
     let original_secret = created["client_secret"].as_str().expect("original secret");
     let key = format!("rotate-{}", Uuid::new_v4().simple());
@@ -203,7 +187,7 @@ async fn rotation_retry_replays_the_same_secret_and_rotates_once() {
         .await
         .expect("first rotation response");
     assert_eq!(first.status(), StatusCode::OK);
-    let first = json(first).await;
+    let first = http::json_body(first).await;
 
     // A retry must replay the committed response without repeating lifecycle
     // side effects. Leave a token behind after the first rotation so a replay
@@ -237,7 +221,7 @@ async fn rotation_retry_replays_the_same_secret_and_rotates_once() {
         .await
         .expect("retry rotation response");
     assert_eq!(retry.status(), StatusCode::OK);
-    let retry = json(retry).await;
+    let retry = http::json_body(retry).await;
     assert_eq!(retry["client_secret"], first["client_secret"]);
     assert_ne!(retry["client_secret"], original_secret);
     assert!(
@@ -307,7 +291,7 @@ async fn audit_failure_rolls_back_the_client_and_idempotency_result() {
         .await
         .expect("failed create response");
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(json(response).await["code"], "audit_unavailable");
+    assert_eq!(http::json_body(response).await["code"], "audit_unavailable");
 
     let client_count: i64 = chenxing_auth::sqlx::query_scalar("SELECT COUNT(*) FROM oauth_clients")
         .fetch_one(&database)

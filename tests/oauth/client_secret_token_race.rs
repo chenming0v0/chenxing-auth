@@ -6,12 +6,9 @@
 //! it, then a final mixed concurrency test checks the same invariant without
 //! assuming whether issuance or rotation wins.
 
-use crate::oauth_flow as support;
-
 use std::sync::Arc;
 
 use chenxing_auth::{
-    api,
     clients::{domain::ClientAuthMethod, service::AuthenticatedClient},
     oauth::{
         code::AuthorizationCode,
@@ -25,7 +22,8 @@ use time::OffsetDateTime;
 use tokio::sync::Barrier;
 use uuid::Uuid;
 
-use support::{create_test_client, ensure_owner_bootstrapped, register_test_user, test_state};
+use crate::harness::HarnessBuilder;
+use crate::oauth_flow::{create_test_client, ensure_owner_bootstrapped, register_test_user};
 
 const REDIRECT_URI: &str = "https://disabled.example/callback";
 const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -41,16 +39,25 @@ struct Harness {
 }
 
 async fn setup() -> Harness {
-    let (state, database, key_directory) = test_state("client_secret_token_race").await;
-    let router = api::router(state.clone());
+    let harness = HarnessBuilder::new("client_secret_token_race")
+        .qps_window_override()
+        .build()
+        .await;
+    let router = harness.router;
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&router, &database, "client_secret_token_race", &suffix).await;
+    ensure_owner_bootstrapped(
+        &router,
+        &harness.database,
+        "client_secret_token_race",
+        &suffix,
+    )
+    .await;
     let (user_id, _, _, _) = register_test_user(&router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&router, "flow-admin-token").await;
     Harness {
-        state,
-        database,
-        key_directory,
+        state: harness.state,
+        database: harness.database,
+        key_directory: harness.key_directory,
         user_id,
         client_id,
         client_secret,

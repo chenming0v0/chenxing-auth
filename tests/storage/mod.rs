@@ -8,6 +8,8 @@ mod db_isolation;
 mod harness;
 #[path = "../support/http.rs"]
 mod http;
+#[path = "../support/key_directory.rs"]
+mod key_directory;
 #[path = "../support/oauth_flow.rs"]
 mod oauth_flow;
 #[path = "../support/plans.rs"]

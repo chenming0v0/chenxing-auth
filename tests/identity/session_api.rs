@@ -1,17 +1,18 @@
+use std::time::Duration;
+
 use axum::{
     Router,
     body::Body,
     http::{Request, StatusCode},
 };
 use chenxing_auth::{
-    api,
-    config::Config,
     sessions::{cookies, domain::Session, store::SessionStore},
-    state::AppState,
     users::{domain::ValidatedRegistration, email::EmailAddress, repository as user_repository},
 };
 use tower::ServiceExt;
 use uuid::Uuid;
+
+use crate::harness;
 
 /// 测试夹具的邮箱构造。
 ///
@@ -22,34 +23,17 @@ fn email_address(raw: impl AsRef<str>) -> EmailAddress {
     EmailAddress::parse(raw).unwrap_or_else(|error| panic!("fixture email {raw:?}: {error}"))
 }
 
-use crate::db_isolation;
-
 async fn test_router() -> (Router, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("session_api", &database_url).await;
-    let key_directory = std::env::temp_dir().join(format!("chenxing-session-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(
-            AppState::new_with_pool(config, database)
-                .await
-                .expect("state"),
-        ),
+    let harness::Harness {
+        router,
         key_directory,
-    )
+        ..
+    } = harness::HarnessBuilder::new("session_api")
+        // 原 raw Config 未设置 admin token，保持禁用管理 bearer。
+        .admin_token("")
+        .build()
+        .await;
+    (router, key_directory)
 }
 
 struct RevokeFixture {
@@ -62,11 +46,16 @@ struct RevokeFixture {
 
 /// 建立一个持久化用户和一个已保存的活跃 Session，用于会话撤销端点的集成测试。
 async fn revoke_fixture(label: &str) -> RevokeFixture {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("session_api", &database_url).await;
+    let harness::Harness {
+        router,
+        database,
+        key_directory,
+        ..
+    } = harness::HarnessBuilder::new("session_api")
+        // 原 raw Config 未设置 admin token，保持禁用管理 bearer。
+        .admin_token("")
+        .build()
+        .await;
 
     let suffix = Uuid::new_v4().simple().to_string();
     let user = user_repository::insert_user(
@@ -82,34 +71,21 @@ async fn revoke_fixture(label: &str) -> RevokeFixture {
     .await
     .expect("insert session test user");
 
+    // 原夹具直接构造裸 `SessionStore`：默认 keyspace、`[0; 32]` keyring、默认策略，
+    // 与应用 `state.sessions` 的运行时策略 / keyspace / outbox policy 解耦，
+    // 保持原有会话种子语义。Redis 连接来源仍为 `REDIS_URL`，TTL 仍为 60 秒。
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
     let redis = redis::Client::open(redis_url.as_str()).expect("Redis");
     let sessions = SessionStore::with_metadata_and_key(redis, database.clone(), [0; 32]);
-    let mut session =
-        Session::new(user.id.to_string(), std::time::Duration::from_secs(60)).expect("session");
+    let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
     sessions
-        .save(&mut session, std::time::Duration::from_secs(60))
+        .save(&mut session, Duration::from_secs(60))
         .await
         .expect("save session");
 
-    let key_directory = std::env::temp_dir().join(format!("chenxing-{label}-{suffix}"));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-
     RevokeFixture {
-        router: api::router(
-            AppState::new_with_pool(config, database.clone())
-                .await
-                .expect("state"),
-        ),
+        router,
         database,
         user_id: user.id,
         session,

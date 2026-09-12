@@ -7,59 +7,25 @@
 use std::time::Duration;
 
 use axum::{
-    Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
-use chenxing_auth::{
-    api,
-    config::Config,
-    sessions::{cookies, domain::Session, store::SessionStore},
-    state::AppState,
-};
+use chenxing_auth::sessions::{cookies, domain::Session, store::SessionStore};
 use tokio::time::{sleep, timeout};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::db_isolation;
+use crate::http;
 
-struct TestEnv {
-    router: Router,
-    database: chenxing_auth::sqlx::PgPool,
-    key_directory: std::path::PathBuf,
-}
+type TestEnv = crate::harness::Harness;
 
 async fn setup() -> TestEnv {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
     // 晋升事务、被测请求和锁等待探针必须能同时持有连接。
-    let database =
-        db_isolation::isolated_pool_with_max_connections("owner_write_race", &database_url, 6)
-            .await;
-    let key_directory =
-        std::env::temp_dir().join(format!("chenxing-owner-write-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("test configuration");
-    config.admin_token = "issue-323-system-token".to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new_with_pool(config, database.clone())
+    crate::harness::HarnessBuilder::new("owner_write_race")
+        .admin_token("issue-323-system-token")
+        .max_connections(6)
+        .build()
         .await
-        .expect("test state");
-    TestEnv {
-        router: api::router(state),
-        database,
-        key_directory,
-    }
 }
 
 async fn seed_user(database: &chenxing_auth::sqlx::PgPool, name: &str, role: &str) -> i64 {
@@ -122,13 +88,6 @@ async fn wait_for_blocked_request(database: &chenxing_auth::sqlx::PgPool, blocke
     .expect("admin write never reached the promoted target row lock");
 }
 
-async fn response_json(response: axum::response::Response) -> serde_json::Value {
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("response body");
-    serde_json::from_slice(&body).expect("JSON response")
-}
-
 async fn manage_roles_denial_count(database: &chenxing_auth::sqlx::PgPool, admin_id: i64) -> i64 {
     chenxing_auth::sqlx::query_scalar(
         "SELECT COUNT(*)
@@ -187,7 +146,7 @@ async fn status_write_uses_the_owner_role_locked_by_its_write_transaction() {
     promotion.commit().await.expect("commit owner promotion");
     let response = request.await.expect("status request task");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(response_json(response).await["code"], "admin_forbidden");
+    assert_eq!(http::json_body(response).await["code"], "admin_forbidden");
 
     let state: (String, String) =
         chenxing_auth::sqlx::query_as("SELECT role, status FROM users WHERE id = $1")
@@ -251,7 +210,7 @@ async fn plan_assignment_uses_the_owner_role_locked_by_its_write_transaction() {
     promotion.commit().await.expect("commit owner promotion");
     let response = request.await.expect("plan assignment task");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(response_json(response).await["code"], "admin_forbidden");
+    assert_eq!(http::json_body(response).await["code"], "admin_forbidden");
 
     let state: (String, Option<i64>) =
         chenxing_auth::sqlx::query_as("SELECT role, plan_id FROM users WHERE id = $1")
