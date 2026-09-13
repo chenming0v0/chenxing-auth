@@ -80,6 +80,9 @@ jobs:
           cp .env.example .env
           sed -i 's/^REDIS_NAMESPACE=$/REDIS_NAMESPACE=ci-validation/' .env
           APP_PORT=8080 docker compose --env-file .env -f docker-compose.prod.yml config --quiet
+      - name: Validate DB timing report contract
+        shell: bash
+        run: python3 -m unittest discover -s test_sh -p 'test_db_timing*.py'
       - name: Verify Redis credential state survives a crash
         shell: bash
         timeout-minutes: 5
@@ -119,7 +122,32 @@ jobs:
           tool: nextest@0.9.143
           fallback: none
       - name: Run Rust tests in parallel
+        id: rust_tests
+        env:
+          CHENXING_TEST_DB_TIMING_FILE: ${{ runner.temp }}/db-timing.jsonl
         run: cargo nextest run --all-features
+      - name: Report database timing baseline
+        if: ${{ always() && steps.rust_tests.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/db-timing-report.txt"
+          python3 test_sh/db_timing_report.py "$RUNNER_TEMP/db-timing.jsonl" | tee "$report"
+          {
+            printf '## DB timing baseline (issue #710 STAGE 0)\n\n'
+            printf '```\n'
+            cat "$report"
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload database timing diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: db-timing-diagnostics
+          path: |
+            ${{ runner.temp }}/db-timing-report.txt
+            ${{ runner.temp }}/db-timing.jsonl
+          if-no-files-found: warn
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Install cargo-audit
         uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2

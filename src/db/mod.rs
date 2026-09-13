@@ -14,6 +14,8 @@ mod migration_preflight;
 mod migration_state;
 mod pool;
 mod roles;
+#[doc(hidden)]
+pub mod test_timing;
 
 pub use audit_boundary::{
     AuditBoundaryError, AuditPrivileges, AuditRoleSeparation, verify_audit_append_only_boundary,

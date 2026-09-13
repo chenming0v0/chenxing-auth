@@ -18,6 +18,7 @@ mod build_logic;
 mod config;
 mod config_examples;
 mod config_startup_warnings;
+mod db_timing_contract;
 mod deployment;
 mod extensions;
 mod http_error_contract;

@@ -1,6 +1,9 @@
 use crate::sqlx::Connection;
 use crate::sqlx::migrate::{Migrate, MigrateError, Migrator};
 
+use super::test_timing::{
+    MigrationTiming, Outcome, PHASE_MIGRATION_APPLY, PHASE_MIGRATION_LOCK_WAIT,
+};
 use super::{
     Database, migration_compat_description::repair_oauth_client_description, migration_preflight,
     roles,
@@ -21,8 +24,34 @@ struct LedgerRow {
 }
 
 pub(super) async fn run(database: &Database, mut migrator: Migrator) -> Result<(), MigrateError> {
-    let mut connection = database.acquire().await?;
-    Migrate::lock(&mut *connection).await?;
+    let mut timing = MigrationTiming::from_env();
+    let mut connection = match database.acquire().await {
+        Ok(connection) => connection,
+        Err(error) => {
+            // No connection, so no lock and no phases were measured; still
+            // report exactly one error event for this migration run.
+            timing.emit(Outcome::Error).await;
+            return Err(error.into());
+        }
+    };
+
+    let lock_start = timing.phase_start();
+    let lock_acquired = async {
+        Migrate::lock(&mut *connection).await?;
+        Ok::<(), MigrateError>(())
+    }
+    .await;
+    // A failed lock attempt still consumed wait time, so the wait sample is
+    // recorded before the result is inspected. Only a failed acquire of the pool
+    // connection leaves every phase unmeasured.
+    timing.record(PHASE_MIGRATION_LOCK_WAIT, lock_start);
+    if let Err(error) = lock_acquired {
+        // Release the pooled connection before the best-effort diagnostic await
+        // so no migration resource is held during the file write.
+        drop(connection);
+        timing.emit(Outcome::Error).await;
+        return Err(error);
+    }
 
     let result = async {
         // The pg_trgm placement check, role provisioning, flattened-ledger repair,
@@ -50,7 +79,10 @@ pub(super) async fn run(database: &Database, mut migrator: Migrator) -> Result<(
         // The compatibility repair and normal migration run share SQLx's PostgreSQL
         // advisory lock, so no second process can observe the temporary ledger rewrite.
         migrator.set_locking(false);
-        migrator.run_direct(&mut *connection).await
+        let apply_start = timing.phase_start();
+        let run_result = migrator.run_direct(&mut *connection).await;
+        timing.record(PHASE_MIGRATION_APPLY, apply_start);
+        run_result
     }
     .await;
 
@@ -58,6 +90,18 @@ pub(super) async fn run(database: &Database, mut migrator: Migrator) -> Result<(
     if unlock_result.is_err() {
         connection.close_on_drop();
     }
+    // Release the pooled connection — running its close_on_drop destructor when
+    // the unlock failed — before the diagnostic await. The event is written only
+    // after the unlock attempt and connection release; it does not claim the
+    // unlock succeeded, and no migration resource is held during the file write.
+    drop(connection);
+
+    let outcome = if result.is_ok() && unlock_result.is_ok() {
+        Outcome::Ok
+    } else {
+        Outcome::Error
+    };
+    timing.emit(outcome).await;
 
     match result {
         Err(error) => Err(error),
