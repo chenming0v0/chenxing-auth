@@ -49,8 +49,13 @@ async fn database() -> chenxing_auth::sqlx::PgPool {
     // The first-factor race must have enough connections for both writes to
     // reach PostgreSQL at the same time; the default two-connection pool is
     // also shared by setup/cleanup work and can serialize the contenders.
-    db_isolation::isolated_pool_with_max_connections("auth_factors_repository", &database_url, 8)
-        .await
+    // #710：显式选择模板克隆隔离，要求已准备模板命名空间。
+    db_isolation::isolated_pool_from_template_with_max_connections(
+        "auth_factors_repository",
+        &database_url,
+        8,
+    )
+    .await
 }
 
 #[tokio::test]

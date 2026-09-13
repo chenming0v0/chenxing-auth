@@ -59,7 +59,9 @@ fn counter_of(passkey: &Passkey) -> u32 {
 async fn database() -> chenxing_auth::sqlx::PgPool {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    db_isolation::isolated_pool_with_max_connections("passkey_cas", &database_url, 8).await
+    // #710：显式选择模板克隆隔离，要求已准备模板命名空间。
+    db_isolation::isolated_pool_from_template_with_max_connections("passkey_cas", &database_url, 8)
+        .await
 }
 
 async fn insert_user(pool: &chenxing_auth::sqlx::PgPool, label: &str) -> i64 {

@@ -17,6 +17,7 @@ JUnit）与 job 日志。相位之和、`fixture_total_ms`、候选对比都由
 | STAGE 2 失败尝试 | `e4b7bc7` | [34741173462](https://github.com/chenming0v0/chenxing-auth/actions/runs/34741173462) |
 | STAGE 2 成功（试点切换） | `3ba5fba` | [34742275829](https://github.com/chenming0v0/chenxing-auth/actions/runs/34742275829) |
 | STAGE 3 第一批（23 个 plans；coverage 失败） | `13be5e7` | [34748274304](https://github.com/chenming0v0/chenxing-auth/actions/runs/34748274304) |
+| STAGE 3 第一批修复后（全绿，已验证） | `1c83587` | [34750664243](https://github.com/chenming0v0/chenxing-auth/actions/runs/34750664243) |
 
 ## 总览（全部单次 CI 运行）
 
@@ -95,11 +96,11 @@ v2 `fixture_total_ms`（真实包裹计时）。两者**口径不同**，差值�
 STAGE 2 `3ba5fba` 两个 job 的 cleanup 都成功：
 `clones_dropped=2 templates_dropped=1 already_absent=0`（两个试点克隆 + 一个模板）。
 
-## Phase 3 第一批（23 个 plans 用例）：基线 vs 本次实测
+## Phase 3 第一批（23 个 plans 用例）：基线 vs v2 实测
 
 23 个用例的 identity 集合、逐文件计数（`authorization_quota`3、`default_plan`5、
 `entitlements`3、`plan_admin`5、`plan_boundaries`2、`plan_quota`3、`qps_limit`2）在
-两次 run 中一致。基线用 schema/v1，本次用 template/v2，**口径不同**，不能当同口径对比。
+各 run 中一致。基线用 schema/v1，v2 用 template/v2，**口径不同**，不能当同口径对比。
 
 **基线（`3ba5fba` / run 34742275829，schema/v1，严格 JSONL×JUnit join）**：逐用例表与
 JSON 见 `/tmp/opencode/issue710-stage3-plans-baseline/plans23_baseline.{md,json}`。
@@ -119,9 +120,9 @@ JSON 见 `/tmp/opencode/issue710-stage3-plans-baseline/plans23_baseline.{md,json
 fixture identity 集合完全一致、各 1 行、全 ok，不强行 join）：`migration_lock_wait_ms`
 n=23 / 累计 **9145.127 ms**，`migration_apply_ms` n=23 / 累计 **13638.559 ms**。
 
-**本次（`13be5e7` / run 34748274304，template/v2）**：
+**先前失败 run（`13be5e7` / run 34748274304，template/v2）**：
 
-| 指标 | 基线（v1） | 本次（v2） | 备注 |
+| 指标 | 基线（v1） | `13be5e7`（v2） | 备注 |
 | --- | ---: | ---: | --- |
 | 23 用例 elapsed 合计 | 109330.000 ms | **135146.000 ms** | +25816 ms（+23.6%） |
 | 23 用例 fixture 指标 | v1 phase-sum 27121.193 | v2 `fixture_total` 7563.464 | 口径不同 |
@@ -137,9 +138,22 @@ n=23 / 累计 **9145.127 ms**，`migration_apply_ms` n=23 / 累计 **13638.559 m
   不是并行墙钟；不能据此声称整套测试或净收益改善。
 - 质量墙钟（nextest 纯运行）453.629s → 588.631s，同样是单次噪声，无收益声明。
 
-## 本次 run 实测：quality 通过 / coverage 失败
+**修复后 green（`1c83587` / run 34750664243，template/v2；23 用例原始数据
+`plans23_1c83587.json`）**：elapsed 合计 **79253.000 ms**（median 3677）、
+`fixture_total` **4483.971**（median 189.326）、`elapsed − fixture_total`
+**74769.029 ms**；四相位 `bootstrap` 1046.349 / `clone` 1068.189 / `pool` 1262.120 /
+`seq` 45.792，raw 合计 **3422.449**（各相位显示值独立四舍五入后相加会得 3422.450，
+差 0.001 ms 是舍入）；`template_prepare_ms` 409.737。相对 `13be5e7` 明显更低，
+但仍是**单次 run 采样**，受 live-backend/调度波动影响，不能声称因果性或稳定的整套
+加速。
 
-**实测诊断计数（quality job 工件，非预期值）**：总记录 **959**；
+- **完整成本（采样，非并行墙钟）**：`template_prepare`(409.737) + 23 用例
+  elapsed(79253.000) = **79662.737 ms**；克隆已含在 elapsed 内，**不重复相加**。
+- 基线 `3ba5fba` 的 v1 elapsed 为 109330.000 ms（口径不同），仅作对照。
+
+## 先前失败 run（`13be5e7`）：quality 通过 / coverage 失败
+
+保留此失败记录与口径区分。**实测诊断计数**（quality job 工件）：总记录 **959**；
 `template_fixture` v2 **25**（`integration_storage` 2 + `plans` 23，都 ok）、
 `schema_fixture` v1 **456**、`schema_migration` v1 **477**、`template_prepare` **1**
 （ok，`template_prepare_ms=532.625`）。报告重跑与工件逐字节一致，sha256
@@ -167,7 +181,26 @@ n=23 / 累计 **9145.127 ms**，`migration_apply_ms` n=23 / 累计 **13638.559 m
   其因果关系仍属推断；这是**测试隔离**缺陷，不能据此声称生产 quota bug，也不能断言
   它就是历史失败的确切根因。
 
-## Phase 3 第一批修复（本地聚焦运行时已通过，全量 CI 待跑）
+## 修复后 green run（`1c83587` / run 34750664243，三个 job 全绿）
+
+**实测诊断计数**：959 记录= `template_fixture` 25（`integration_storage` 2 + `plans` 23，
+都 ok）、`schema_fixture` 456（含 `wallet` 15 仍在 schema）、`schema_migration` 477、
+`template_prepare` 1 ok（`template_prepare_ms=409.737`）；**v2 migration 事件 = 0**
+（模板内迁移被 suppress）。报告带 `--junit` 重跑与工件逐字节一致，sha256
+`f6365062…`。
+
+| job | 结论 | 用例 | 墙钟 |
+| --- | --- | --- | --- |
+| quality | **success** | **1909 / 1909 passed, 0 failed, 0 skipped** | nextest 396.906s；test STEP 430s；31 + 430 + 3 = 464s |
+| coverage | **success** | **1909 / 1909 passed, 0 failed, 0 skipped** | nextest 637.499s；test STEP 714s；56 + 714 + 46 = 816s |
+
+- 覆盖率 **81.76% ≥ 75%**（LF 47191、LH 38585；此前 81.73%）。
+- 两个 job 都 `clones_dropped=25 templates_dropped=1 already_absent=0`；无 `sessions
+  remained`。
+- 两个受影响 quota 用例、新 `refund_namespace` 回归、lifecycle 4 个在两个 job 都 PASS。
+- 测试证明的是命名空间边界这一机制，**不是**历史的精确交织；也不声称生产 quota bug。
+
+## Phase 3 第一批修复（已由 `1c83587` 全量 CI 验证）
 
 - `tests/support/plans.rs`：`test_state_from_template` 为本测试签发新的
   `plans-<uuid>` `RedisKeyspace`，`finish_plan_env` 在 `AppState` 之前写入
@@ -181,20 +214,8 @@ n=23 / 累计 **9145.127 ms**，`migration_apply_ms` n=23 / 累计 **13638.559 m
   共享私有命名空间下 B 的 worker drain A+B 共 3 条、A 之后可再消费；隔离命名空间下
   B 只 drain 1 条、A 保持 2/2 且第三次 `DailyExceeded`、随后 A 自己退回 2 条。不触碰
   真实 legacy 队列，无 sleep、无并发。
-- 本地聚焦运行时已通过（见下），但新全量 CI 尚未跑；预期新增后测试总数 **1909**，
-  DB 计时 fixture 计数预计不变（template 25、schema 456、migration 477）——**预期，
-  非观测**。
-
-### 本地运行时证明（parent，已通过）
-
-- `cargo check --all-targets --all-features` + clippy 通过。
-- 临时 PG16/Redis 上，聚焦过滤
-  `binary(storage)&(test(/^plans::/)|test(/^redis::refund_namespace::/))`：**24/24 passed**，
-  nextest **4.092s**，155 skipped（日志 `target/test-logs/20260913-174659`）。回归的
-  control 与 isolation 断言都实际执行。
-- 清理：23 clones + 1 template；残留 namespace DB 0、source public tables 0。
-- 这是**本地聚焦**证据：**新全量 CI 仍未跑**，也没有历史交织的证明；不因此宣称 batch
-  完成或 gate 通过。
+- 现已由 `1c83587` 全量 CI 验证（1909/1909、81.76%、cleanup 无残留）。本地聚焦运行时
+  （parent，`24/24 passed`，日志 `target/test-logs/20260913-174659`）作为补充保留。
 
 ## Phase 3 第一批回滚
 
@@ -234,11 +255,15 @@ n=23 / 累计 **9145.127 ms**，`migration_apply_ms` n=23 / 累计 **13638.559 m
 
 - **Phase 2 门槛已通过**：两个具名 repository 用例在 CI 中切到模板克隆并稳定通过，其余
   用例仍走 schema 路径。
-- **Phase 3 第一批（已实现；gate 未通过；扩大暂停）**：23 用例审计通过，初始实现见
-  `13be5e7`，run 34748274304。quality job 全绿（1908 通过、计数达预期），但 coverage
-  job 有 1 个用例失败并中止，阶段 gate **未通过**；oracle 定位到确定的共享 Redis 退款
-  队列测试隔离缺陷，修复的本地聚焦运行时已通过（24/24）、新全量 CI 尚未跑，
-  因此**暂停**进一步扩大，本批不得宣称完成。实测数字见上一节。
+- **Phase 3 第一批（gate 已通过、已验证）**：23 用例审计通过，初始实现 `13be5e7`
+  当期 coverage 失败（见“先前失败 run”）。Redis 隔离修复后 `1c83587` 三个 job 全绿，
+  两个 job 都 1909/1909、覆盖率 81.76%、cleanup 无残留；实测数字见对应小节。
+- **Phase 3 第二批（实现已完成，CI 待跑）**：候选审计 SAFE，只改 `factors_repository`8 +
+  `passkey_cas`3 的私有 `database()` callee 为显式 template API，测试体不变、保留 max8、
+  无 Redis/AppState/DDL。本地聚焦运行时已通过（`11/11 passed`，日志
+  `target/test-logs/20260913-184019`），但**全量 CI 未跑**，不得与第一批已验证状态混为
+  一谈。预期（非观测）计数 template 36 / schema 445 / migration 466 / prepare 1 /
+  记录 948 / 测试 1909。
 - 阶段历史保持：stage 2 的两个 repository 用例结论仍然有效且未被改写；phase 3 第一批
   是在其之上新增的 23 个 `plans::` 用例。
 - 回滚方式见上一节：stage 2 改回 `tests/storage/integration/repository.rs` 的两个

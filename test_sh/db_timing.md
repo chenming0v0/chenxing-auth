@@ -21,14 +21,22 @@
   [34742275829](https://github.com/chenming0v0/chenxing-auth/actions/runs/34742275829)
   （SHA `3ba5fba`）全绿：1908 用例通过、覆盖率 81.73%、两个 job prepare/cleanup
   成功、`template_fixture=2`。失败尝试与修正见结果页。
-- **Phase 3 第一批（已实现；CI 部分通过，gate 未通过，扩大暂停）**：23 用例审计通过，
-  初始实现见 `13be5e7`，run
-  [34748274304](https://github.com/chenming0v0/chenxing-auth/actions/runs/34748274304)：
-  quality job 全绿（1908 通过），但 coverage job 有 1 个用例失败并中止。oracle 随后
-  定位到一个确定的共享 Redis 退款队列测试隔离缺陷；修复的本地聚焦
-  运行时（check/clippy + 临时 PG16/Redis 过滤，24/24 passed）已通过，但新全量 CI 尚未
-  跑，也没有历史交织证明。阶段 gate **仍未通过**，本轮**暂停**任何进一步扩大，不得
-  宣称完成。
+- **Phase 3 第一批（gate 已通过、已验证）**：23 用例审计通过，初始实现见 `13be5e7`
+  （run [34748274304](https://github.com/chenming0v0/chenxing-auth/actions/runs/34748274304)，
+  quality 全绿但 coverage 1 用例失败并中止，gate 当时未过）。oracle 随后定位到确定的
+  共享 Redis 退款队列测试隔离缺陷；修复后 CI run
+  [34750664243](https://github.com/chenming0v0/chenxing-auth/actions/runs/34750664243)
+  （SHA `1c83587`）**三个 job 全绿**：两个 job 都 **1909/1909 passed, 0 failed,
+  0 skipped**、覆盖率 **81.76%**、prepare/cleanup 都成功（各 25 clones + 1 template）。
+  失败的 `13be5e7` 历史保留在结果页。
+- **Phase 3 第二批（实现已完成，CI 待跑）**：候选审计 SAFE——`factors_repository`8 +
+  `passkey_cas`3 共 11 个纯 PG 用例，无 Redis/AppState/全局 worker/DDL，保留 max8。
+  实现只把这两个私有 `database()` 的 callee 换成显式 template API，测试体不变。
+  本地聚焦运行时已通过（`11/11 passed`，日志 `target/test-logs/20260913-184019`），
+  但**全量 CI 未跑，无实测 CI 证据**，不得宣称已验证。注意：这 11 个 opt-in 让 `auth`
+  目标也需要先 prepare 模板（或在过滤掉它们时跳过）。预期（非观测）计数：template
+  **36**、schema **445**、migration **466**、prepare **1**、总记录 **948**、测试总数
+  **1909**。
 
 ## 模板试点范围（stage 2）
 
@@ -53,7 +61,8 @@
   不做全局默认切换，也没有自动回退。`wallet` 的 15 个 fixture 保持 schema，不动。
 - **初始切换（`13be5e7`）**：只把 fixture 获取方式换成 `test_state_from_template()`，
   测试断言体不变，原有 quota 断言与 limit 全部保留。
-- **后续 Redis 修复（待完整 CI 验证）**：代码排查定位到一个确定的共享 Redis 退款队列测试
+- **后续 Redis 修复（已由 `1c83587` 全量 CI 验证）**：代码排查定位到一个确定的共享 Redis
+  退款队列测试
   隔离缺陷——worker 会扫描 keyspace 级队列，可能退还其它测试的 reservation，即使
   Client ID 唯一。修复不是原样回退调用点，而是有意改动测试注入 wiring：
   `test_state_from_template` 为本次测试签发新的 `plans-<uuid>` `RedisKeyspace`，
@@ -63,10 +72,9 @@
   同一时钟，并把健康的 `AuthorizationCodeStore` 保存后恢复，另加两个早期断言要求
   模板 fixture 配置非 legacy。新增确定性回归
   `tests/storage/redis/refund_namespace.rs::refund_queue_is_shared_across_client_ids_within_a_keyspace`。
-  **未削弱任何 quota 断言/limit**。本地聚焦运行时已通过（check/clippy + 临时 PG16/Redis
-  过滤，24/24 passed，含回归 control/isolation 断言），但**全量 CI 尚未跑**。
-- 已跑一次 CI（见结果页），因 coverage 失败 gate 未通过，暂停扩大；上面的修复尚未
-  跑过新 CI。
+  **未削弱任何 quota 断言/limit**。测试证明的是命名空间边界这一机制，不是历史的精确
+  交织；也不声称生产 quota bug。
+- 该修复已在 `1c83587` 全量 CI 通过（1909/1909、81.76%、cleanup 无残留）。
 
 ## 候选用例基线
 
@@ -110,9 +118,11 @@ CI 两个 job 用各自独立的命名空间（job 级 env），互不覆盖：
 ## 用法
 
 前置：本机已有可用的 PostgreSQL / Redis 服务，以及对应的 owner 连接（见
-`docker-compose.yml` 与 `.env.example`，这里不写任何口令）。**`storage` 目标现在
-包含显式 opt-in 模板克隆用例**，所以必须先建好模板再跑它，不能直接单跑。模板相关
-变量只在命令内联提供，不 `export`、不写进仓库。
+`docker-compose.yml` 与 `.env.example`，这里不写任何口令）。**`storage` 与 `auth`
+两个测试目标都包含显式 opt-in 模板克隆用例**（storage 的 plans 用例 + auth 的
+`factors_repository`/`passkey_cas` 11 个），所以跑这两个目标前都必须先建好模板，
+不能直接单跑；若只想跑非模板用例，需要显式过滤掉它们。模板相关变量只在命令内联
+提供，不 `export`、不写进仓库。
 
 一次性冒烟（这段只演示顺序，不在这里执行）：先 prepare，再跑 storage，最后用
 `EXIT` trap 保证 cleanup 一定会跑；trap 保留原命令的退出码，cleanup 失败也把整条
@@ -246,15 +256,18 @@ NaN/Infinity、负时长、未知事件/相位、缺失必需相位、多余字�
 - STAGE 0/1：已满足（见阶段小节与结果页）。
 - STAGE 2：已满足。CI run `34742275829` 中两个具名 repository 用例切到模板克隆并
   通过，其余用例保持旧 schema 路径；prepare/test/cleanup 全绿，JUnit 关联对比可用。
-- Phase 3 第一批：**gate 未通过**。quality job 全绿（1908 通过、计数达预期），但
-  coverage job 有 1 个用例失败并中止，覆盖率未产出；oracle 已定位确定的共享 Redis
-  退款队列测试隔离缺陷，修复的本地聚焦运行时已通过（24/24），但新全量 CI
-  尚未跑，因此不得宣称完成，扩大暂停。实测诊断计数见结果页。
-- 后续计数属**预期**而非观测：新增 1 个 Redis-only 回归后，测试总数预计 **1909**；
-  若跑全量，DB 计时 fixture 计数预计不变（template 25、schema 456、migration 477）。
-  这些以实际运行为准。
-- 阶段状态要保持：stage 2 历史结论仍然有效且未被本批改写；phase 3 第一批是新增，
-  未通过 gate 之前不得合并进任何“已完成”叙述。
+- Phase 3 第一批：**gate 已通过、已验证**。`1c83587`（run 34750664243）三个 job 全绿，
+  两个 job 都 **1909/1909 passed、0 failed、0 skipped**、覆盖率 **81.76%**、prepare/
+  cleanup 成功无残留。此前 `13be5e7` 的失败保留在结果页。实测诊断计数见结果页。
+- Phase 3 第二批：**实现已完成，CI 待跑**。候选审计 SAFE（`factors_repository`8 +
+  `passkey_cas`3，纯 PG，无 Redis/AppState/全局 worker/DDL，保留 max8），实现只把这两个
+  私有 `database()` callee 换成显式 template API；`auth` 目标因此也需先 prepare 模板
+  （或在过滤掉这些用例时跳过）。本地聚焦运行时已通过（`11/11 passed`，日志
+  `target/test-logs/20260913-184019`），但全量 CI 未跑。预期（非观测）计数 template
+  36 / schema 445 / migration 466 / prepare 1 / 记录 948 / 测试 1909。CI 未跑前不得与
+  第一批已验证状态混为一谈。
+- 阶段状态要保持：stage 2 历史结论仍然有效且未被本批改写；第一批已验证，第二批实现
+  已完成、CI 待跑。
 
 不要用两个用例或单次运行声称整套测试的收益或提速；`fixture_ms` 的 v1 估计与 v2 实际
 口径不同，不能直接当同口径对比。缺配置仍硬失败。
