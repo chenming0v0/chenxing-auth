@@ -407,6 +407,27 @@ fn admin_owner_connection_pins_pg_catalog_before_identity_checks() {
 }
 
 #[test]
+fn template_prepare_freezes_with_bounded_confirmation() {
+    // Not one instant count: grace-poll, terminate only this template's
+    // backends, then poll again; fail closed if sessions still remain.
+    let alter = DB_LIFECYCLE
+        .find("ALLOW_CONNECTIONS false")
+        .expect("freeze statement");
+    let terminate = DB_LIFECYCLE
+        .find("pg_terminate_backend(pid)")
+        .expect("termination step");
+    let grace = DB_LIFECYCLE
+        .find("wait_for_zero_template_sessions(&mut connection, template, 20)")
+        .expect("grace poll");
+    let after = DB_LIFECYCLE
+        .find("wait_for_zero_template_sessions(&mut connection, template, 50)")
+        .expect("post-termination poll");
+    assert!(alter < grace && grace < terminate && terminate < after);
+    assert!(DB_LIFECYCLE.contains("WHERE datname = $1 AND pid <> pg_backend_pid()"));
+    assert!(DB_LIFECYCLE.contains("SessionsRemain(\"template\")"));
+}
+
+#[test]
 fn finalizer_never_runs_broad_namespace_cleanup() {
     // The finalizer must depend only on successful-create records and must
     // never call `own.cleanup()`, which would delete pre-existing databases even

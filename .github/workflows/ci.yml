@@ -146,17 +146,30 @@ jobs:
       - name: Report database timing baseline
         if: ${{ always() && (steps.template_prepare.outcome != 'skipped' || steps.rust_tests.outcome != 'skipped') }}
         shell: bash
+        env:
+          TESTS_RAN: ${{ steps.rust_tests.outcome != 'skipped' }}
         run: |
           set -euo pipefail
           report="$RUNNER_TEMP/db-timing-report.txt"
-          python3 test_sh/db_timing_report.py "$RUNNER_TEMP/db-timing.jsonl" \
-            --junit target/nextest/default/junit.xml | tee "$report"
-          {
-            printf '## DB timing baseline (issue #710)\n\n'
-            printf '```\n'
-            cat "$report"
-            printf '```\n'
-          } >> "$GITHUB_STEP_SUMMARY"
+          args=("$RUNNER_TEMP/db-timing.jsonl")
+          # Only require JUnit when the test step actually ran. If tests were
+          # skipped (e.g. prepare failed) the file does not exist, and demanding
+          # it would turn one prepare failure into a second, less informative red
+          # step. When tests ran, --junit stays mandatory so a missing or partial
+          # JUnit still fails closed.
+          if [ "$TESTS_RAN" = "true" ]; then
+            args+=(--junit target/nextest/default/junit.xml)
+          fi
+          python3 test_sh/db_timing_report.py ${args[@]+"${args[@]}"} | tee "$report"
+          # Append the real report, but never an empty code block to the summary.
+          if [ -s "$report" ]; then
+            {
+              printf '## DB timing baseline (issue #710)\n\n'
+              printf '```\n'
+              cat "$report"
+              printf '```\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Upload database timing diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -158,16 +158,49 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("bash test_sh/test_database.sh cleanup", "\n".join(cleanup_block))
 
     # ------------------------------------------------------------- report
-    def test_report_uses_prepare_or_test_and_junit(self) -> None:
+    def test_report_runs_when_prepare_or_tests_reached(self) -> None:
         report = self.step_index_by_name(REPORT_STEP)
         self.assertLess(self.step_index_by_name(CLEANUP_STEP), report)
         report_text = "\n".join(self.block(report))
+        # Still runs whenever prepare or tests were reached; a prepare-only
+        # failure must render the JSONL (it holds the error template_prepare row).
         self.assertIn("always()", report_text)
         self.assertIn("steps.template_prepare.outcome", report_text)
         self.assertIn("steps.rust_tests.outcome", report_text)
+        self.assertIn("||", report_text)
+        self.assertNotIn("steps.rust_tests.outcome == 'success'", report_text)
         self.assertIn("db_timing_report.py", report_text)
-        self.assertIn(f"--junit {JUNIT_PATH}", report_text)
-        # The step summary heading is phase-neutral.
+
+    def test_junit_argument_is_conditional_on_tests_having_run(self) -> None:
+        report_text = "\n".join(self.block(self.step_index_by_name(REPORT_STEP)))
+        # The --junit flag is added only when the test step was not skipped.
+        self.assertIn(
+            "TESTS_RAN: ${{ steps.rust_tests.outcome != 'skipped' }}", report_text
+        )
+        self.assertRegex(
+            report_text, r"\[ \"\$TESTS_RAN\" = \"true\" \]"
+        )
+        self.assertIn(f"args+=(--junit {JUNIT_PATH})", report_text)
+        # The report always runs against the JSONL even without JUnit.
+        self.assertIn('args=("$RUNNER_TEMP/db-timing.jsonl")', report_text)
+
+    def test_missing_junit_still_fails_closed_when_tests_ran(self) -> None:
+        report_text = "\n".join(self.block(self.step_index_by_name(REPORT_STEP)))
+        # --junit is passed through the array verbatim, so the reporter still
+        # fails closed on a missing/partial JUnit when tests ran.
+        self.assertIn(
+            'python3 test_sh/db_timing_report.py ${args[@]+"${args[@]}"}'
+            ' | tee "$report"',
+            report_text,
+        )
+        self.assertNotIn('test -f', report_text)
+
+    def test_step_summary_never_appends_an_empty_block(self) -> None:
+        report_text = "\n".join(self.block(self.step_index_by_name(REPORT_STEP)))
+        # The append is guarded on the report file being non-empty.
+        self.assertIn('if [ -s "$report" ]; then', report_text)
+        self.assertIn(">> \"$GITHUB_STEP_SUMMARY\"", report_text)
+        # Heading is phase-neutral.
         self.assertIn("## DB timing baseline (issue #710)", report_text)
         self.assertNotIn("STAGE", report_text)
 

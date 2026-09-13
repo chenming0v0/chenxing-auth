@@ -123,11 +123,15 @@ fixture 行、固定 binary 标签 `integration_storage`、`outcome=ok`。缺失
 
 quality job：工具装好后先 `Prepare template database`（也写 timing JSONL），再
 `Run Rust tests in parallel`（同一 JSONL），随后无条件 `Cleanup template database`
-（失败即让 job 失败），再跑报告（prepare 或 test 任一到达就执行，用 `--junit`
-读 `target/nextest/default/junit.xml`），最后无条件上传
-`db-timing-diagnostics`（报告文本 + 原始 JSONL + JUnit）。`coverage` job 同样
-prepare/cleanup，但**不注入 timing 变量**、不产计时数据，覆盖率门槛
-`--fail-under-lines 75` 与 `rust-coverage` 工件不变。
+（失败即让 job 失败），再跑报告（prepare 或 test 任一到达就执行）。报告只在
+test 步骤**未跳过**时才追加 `--junit target/nextest/default/junit.xml`：tests 被
+跳过时（例如 prepare 失败）省略该参数，让 JSONL 里的 error `template_prepare`
+行照常渲染，而不是把一次 prepare 失败级联成第二个更含糊的红步；tests 真跑过时
+`--junit` 仍是强制项，缺失或截断的 JUnit 依旧 fail-closed。报告为空时不写
+step summary 的空代码块。最后无条件上传 `db-timing-diagnostics`（报告文本 +
+原始 JSONL + JUnit）。`coverage` job 同样 prepare/cleanup，但**不注入 timing
+变量**、不产计时数据，覆盖率门槛 `--fail-under-lines 75` 与 `rust-coverage`
+工件不变。
 
 nextest 只在现有 default profile 增加 JUnit 输出（`[profile.default.junit]`），
 不新建 profile、不改并发/override/retry。

@@ -83,8 +83,10 @@ impl TemplateConfig {
     ///
     /// The template is created from `template0` with a plain `CREATE DATABASE`
     /// (no `IF NOT EXISTS`), migrated exactly once with a `public` search path,
-    /// and finally frozen with `ALLOW_CONNECTIONS false` after confirming that
-    /// no sessions remain.
+    /// and finally frozen with `ALLOW_CONNECTIONS false`. The freeze step is a
+    /// bounded confirmation, not a single instant: it grace-polls for the
+    /// pool's server-side backends to be reaped, then terminates any that
+    /// remain, before declaring the template sealed.
     pub async fn prepare(&self) -> Result<(), DbTestError> {
         let mut connection = self.owner_connection().await?;
         let template_name = self.namespace().template_name();
@@ -141,15 +143,26 @@ impl TemplateConfig {
             .await
             .map_err(|error| database_error("freeze template", &error))?;
 
-        let remaining: i64 = query_scalar(
-            "SELECT count(*)::bigint FROM pg_catalog.pg_stat_activity WHERE datname = $1",
-        )
-        .bind(template)
-        .fetch_one(&mut connection)
-        .await
-        .map_err(|error| database_error("confirm template frozen", &error))?;
-        if remaining != 0 {
-            return Err(DbTestError::SessionsRemain("template"));
+        // `pool.close().await` returns once sqlx has closed the client sockets,
+        // but the server can briefly keep the backend in pg_stat_activity while
+        // it finishes its own bookkeeping, so a single instant count races.
+        // Grace-poll first. Only if a backend still lingers do we terminate it:
+        // the template is ours and connections were just disallowed, so every
+        // remaining backend bound to this exact datname is a leftover from the
+        // pool teardown and is safe to terminate.
+        if !wait_for_zero_template_sessions(&mut connection, template, 20).await? {
+            query(
+                "SELECT pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity \
+                 WHERE datname = $1 AND pid <> pg_backend_pid()",
+            )
+            .bind(template)
+            .execute(&mut connection)
+            .await
+            .map_err(|error| database_error("terminate template sessions", &error))?;
+
+            if !wait_for_zero_template_sessions(&mut connection, template, 50).await? {
+                return Err(DbTestError::SessionsRemain("template"));
+            }
         }
         Ok(())
     }
@@ -290,4 +303,29 @@ impl TemplateConfig {
         }
         Ok(())
     }
+}
+
+/// Poll the exact template's session count until it reaches zero.
+///
+/// Returns `Ok(true)` as soon as no backend is bound to `template`, or
+/// `Ok(false)` once the bounded budget of `attempts` 100ms polls is spent.
+async fn wait_for_zero_template_sessions(
+    connection: &mut PgConnection,
+    template: &str,
+    attempts: u32,
+) -> Result<bool, DbTestError> {
+    for _ in 0..attempts {
+        let remaining: i64 = query_scalar(
+            "SELECT count(*)::bigint FROM pg_catalog.pg_stat_activity WHERE datname = $1",
+        )
+        .bind(template)
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|error| database_error("confirm template frozen", &error))?;
+        if remaining == 0 {
+            return Ok(true);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(false)
 }
