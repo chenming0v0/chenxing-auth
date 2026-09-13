@@ -5,6 +5,10 @@ use super::*;
 #[tokio::test]
 async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
     let env = test_state_from_template().await;
+    assert!(
+        !env.state.config.redis_keyspace.is_legacy(),
+        "template fixture must wire an explicit Redis namespace"
+    );
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -56,6 +60,10 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
 #[tokio::test]
 async fn authorization_code_save_failure_refunds_consumed_quota() {
     let mut env = test_state_from_template().await;
+    assert!(
+        !env.state.config.redis_keyspace.is_legacy(),
+        "template fixture must wire an explicit Redis namespace"
+    );
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -87,9 +95,14 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
         .await
         .expect("quota before failed authorization");
 
-    env.state.authorization_codes = AuthorizationCodeStore::new(
+    // 用共享 keyspace、同一时钟的不可用存储替换，只故障注入授权码落盘；健康
+    // 副本留待恢复，避免回退到 legacy keyspace。
+    let healthy_authorization_codes = env.state.authorization_codes.clone();
+    env.state.authorization_codes = AuthorizationCodeStore::with_keyspace(
         redis::Client::open("redis://127.0.0.1:1").expect("unavailable Redis URL"),
-    );
+        env.state.config.redis_keyspace.clone(),
+    )
+    .with_clock(env.state.clock.clone());
     let failed = issue_authorization_code_result(
         &env.state,
         test_issuer(&env.state).as_ref(),
@@ -127,7 +140,7 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
     assert_eq!(after_refund.daily_used, before.daily_used);
     assert_eq!(after_refund.monthly_used, before.monthly_used);
 
-    env.state.authorization_codes = AuthorizationCodeStore::new(env.state.redis.clone());
+    env.state.authorization_codes = healthy_authorization_codes;
     let retry = issue_authorization_code_result(
         &env.state,
         test_issuer(&env.state).as_ref(),

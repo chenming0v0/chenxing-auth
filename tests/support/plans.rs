@@ -14,7 +14,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD, engine::general_purpose::URL_SAFE_NO_PAD};
 use chenxing_auth::{
     api, config::Config, oauth::authorization::ValidatedAuthorizationRequest,
-    sessions::domain::Session, state::AppState,
+    redis_keyspace::RedisKeyspace, sessions::domain::Session, state::AppState,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -52,6 +52,10 @@ pub const REDIRECT_URI: &str = "https://plan.example/callback";
 /// 的数据库克隆。两种方式下 [`clear_all_plans`] 都只影响自己，不需要跨二进制锁。
 /// `default_plan_id` 是 [`test_state`] 播种的默认套餐 id，不把 identity 序列值当作
 /// 测试契约。
+///
+/// 数据库隔离不足以隔离 Redis：退款 worker 会扫描全局队列，把仍在等待的
+/// reservation 退款给其它测试。因此模板路径还额外为本测试签发一个独立的
+/// [`RedisKeyspace`]，让所有 Redis 存储（含退款队列）互不可见。
 pub struct PlanTestEnv {
     pub state: AppState,
     pub database: chenxing_auth::sqlx::PgPool,
@@ -82,8 +86,9 @@ pub async fn test_state() -> PlanTestEnv {
 /// 构造测试状态，使用已迁移的模板数据库克隆而不是 schema 隔离（issue #710）。
 ///
 /// 与 [`test_state`] 相同的 URL 读取与默认值，但 pool 来自
-/// `isolated_pool_from_template_with_max_connections`，固定 2 个连接。模板命名
-/// 空间缺失时 fail-closed，不回退到 schema 路径。
+/// `isolated_pool_from_template_with_max_connections`，固定 2 个连接，并为本测试
+/// 签发一个新的 [`RedisKeyspace`]，避免退款 worker 扫描到其它测试的 pending
+/// reservation。模板命名空间缺失时 fail-closed，不回退到 schema 路径。
 pub async fn test_state_from_template() -> PlanTestEnv {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
@@ -95,11 +100,15 @@ pub async fn test_state_from_template() -> PlanTestEnv {
         2,
     )
     .await;
-    finish_plan_env(database, database_url, redis_url).await
+    let redis_keyspace = RedisKeyspace::new(&format!("plans-{}", uuid::Uuid::new_v4().simple()))
+        .expect("test Redis namespace");
+    finish_plan_env(database, database_url, redis_url, redis_keyspace).await
 }
 
 /// Construct a plan test environment with an explicit pool size for tests that
 /// need a blocker, a blocked request, and an independent mutator at once.
+///
+/// 保持既有 schema 路径行为：沿用默认（legacy）Redis key 空间。
 pub async fn test_state_with_max_connections(max_connections: u32) -> PlanTestEnv {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
@@ -111,15 +120,19 @@ pub async fn test_state_with_max_connections(max_connections: u32) -> PlanTestEn
         max_connections,
     )
     .await;
-    finish_plan_env(database, database_url, redis_url).await
+    finish_plan_env(database, database_url, redis_url, RedisKeyspace::default()).await
 }
 
 /// 从已建立的 pool 完成公共初始化：清空并播种默认套餐、密钥目录、配置、
 /// AppState 注入和 QPS 覆盖。两种 pool 来源（schema / 模板克隆）共用。
+///
+/// `redis_keyspace` 在 `AppState::new_with_pool` 之前写入 config，因此所有 Redis
+/// 存储都继承它；schema 路径传 [`RedisKeyspace::default`]，行为与改动前一致。
 async fn finish_plan_env(
     database: chenxing_auth::sqlx::PgPool,
     database_url: String,
     redis_url: String,
+    redis_keyspace: RedisKeyspace,
 ) -> PlanTestEnv {
     clear_all_plans(&database).await;
     let default_plan_id = seed_default_plan(&database).await;
@@ -136,6 +149,7 @@ async fn finish_plan_env(
     config.admin_token = ADMIN_TOKEN.to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
+    config.redis_keyspace = redis_keyspace;
     let mut state = AppState::new_with_pool(config, database.clone())
         .await
         .expect("test state");

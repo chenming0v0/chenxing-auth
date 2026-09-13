@@ -21,9 +21,14 @@
   [34742275829](https://github.com/chenming0v0/chenxing-auth/actions/runs/34742275829)
   （SHA `3ba5fba`）全绿：1908 用例通过、覆盖率 81.73%、两个 job prepare/cleanup
   成功、`template_fixture=2`。失败尝试与修正见结果页。
-- **Phase 3 第一批（23 用例审计通过；实现进行中，CI 待跑）**：候选审计通过，共
-  7 个文件 / 23 个 `plans::` 用例符合条件（`binary_name` 仍为 `plans`）。实现正在
-  进行，尚未有 CI 证据，不得宣称已完成或已绿。
+- **Phase 3 第一批（已实现；CI 部分通过，gate 未通过，扩大暂停）**：23 用例审计通过，
+  初始实现见 `13be5e7`，run
+  [34748274304](https://github.com/chenming0v0/chenxing-auth/actions/runs/34748274304)：
+  quality job 全绿（1908 通过），但 coverage job 有 1 个用例失败并中止。oracle 随后
+  定位到一个确定的共享 Redis 退款队列测试隔离缺陷；修复的本地聚焦
+  运行时（check/clippy + 临时 PG16/Redis 过滤，24/24 passed）已通过，但新全量 CI 尚未
+  跑，也没有历史交织证明。阶段 gate **仍未通过**，本轮**暂停**任何进一步扩大，不得
+  宣称完成。
 
 ## 模板试点范围（stage 2）
 
@@ -35,7 +40,7 @@
 其余用例一律走旧 schema 路径。`--junit` 关联的就是这两个 identity，用于在切换
 前后对比同一用例。
 
-## 模板试点范围（phase 3 第一批，进行中）
+## 模板试点范围（phase 3 第一批，已实现）
 
 历史事实要分清：**stage 2 只切了上面那两个** repository 用例；phase 3 第一批是
 在此基础上**再新增 23 个** `plans::` 用例，不是替换或改写 stage 2 的结论。
@@ -45,10 +50,23 @@
   `default_plan`5、`entitlements`3、`plan_admin`5、`plan_boundaries`2、
   `plan_quota`3、`qps_limit`2。`binary_name`/label 仍是 `plans`。
 - 根 `db_isolation` 默认不变：仍是 schema 路径；模板是**按文件显式 helper 调用**，
-  不做全局默认切换。`wallet` 的 15 个 fixture 保持 schema，不动。
-- 回滚（第一批）：删掉这 23 处 helper 调用并恢复对应 import 即可；原有 helper 保留，
-  因此回滚不需要重写底层实现。
-- 未跑之前不做任何提速声明。
+  不做全局默认切换，也没有自动回退。`wallet` 的 15 个 fixture 保持 schema，不动。
+- **初始切换（`13be5e7`）**：只把 fixture 获取方式换成 `test_state_from_template()`，
+  测试断言体不变，原有 quota 断言与 limit 全部保留。
+- **后续 Redis 修复（待完整 CI 验证）**：代码排查定位到一个确定的共享 Redis 退款队列测试
+  隔离缺陷——worker 会扫描 keyspace 级队列，可能退还其它测试的 reservation，即使
+  Client ID 唯一。修复不是原样回退调用点，而是有意改动测试注入 wiring：
+  `test_state_from_template` 为本次测试签发新的 `plans-<uuid>` `RedisKeyspace`，
+  `finish_plan_env` 在 `AppState` 之前写入 `config.redis_keyspace`；schema 路径的
+  `test_state`/`test_state_with_max_connections` 仍传 `RedisKeyspace::default`（legacy）
+  不变，`wallet` 15 个保持不动。`authorization_quota.rs` 的故障注入用同一 keyspace、
+  同一时钟，并把健康的 `AuthorizationCodeStore` 保存后恢复，另加两个早期断言要求
+  模板 fixture 配置非 legacy。新增确定性回归
+  `tests/storage/redis/refund_namespace.rs::refund_queue_is_shared_across_client_ids_within_a_keyspace`。
+  **未削弱任何 quota 断言/limit**。本地聚焦运行时已通过（check/clippy + 临时 PG16/Redis
+  过滤，24/24 passed，含回归 control/isolation 断言），但**全量 CI 尚未跑**。
+- 已跑一次 CI（见结果页），因 coverage 失败 gate 未通过，暂停扩大；上面的修复尚未
+  跑过新 CI。
 
 ## 候选用例基线
 
@@ -228,8 +246,28 @@ NaN/Infinity、负时长、未知事件/相位、缺失必需相位、多余字�
 - STAGE 0/1：已满足（见阶段小节与结果页）。
 - STAGE 2：已满足。CI run `34742275829` 中两个具名 repository 用例切到模板克隆并
   通过，其余用例保持旧 schema 路径；prepare/test/cleanup 全绿，JUnit 关联对比可用。
-- Phase 3 第一批：23 用例审计通过；实现进行中，CI 待跑。预期诊断计数见结果页
-  （EXPECTED，非实测）；在 CI 出数前不得声称完成或绿。
+- Phase 3 第一批：**gate 未通过**。quality job 全绿（1908 通过、计数达预期），但
+  coverage job 有 1 个用例失败并中止，覆盖率未产出；oracle 已定位确定的共享 Redis
+  退款队列测试隔离缺陷，修复的本地聚焦运行时已通过（24/24），但新全量 CI
+  尚未跑，因此不得宣称完成，扩大暂停。实测诊断计数见结果页。
+- 后续计数属**预期**而非观测：新增 1 个 Redis-only 回归后，测试总数预计 **1909**；
+  若跑全量，DB 计时 fixture 计数预计不变（template 25、schema 456、migration 477）。
+  这些以实际运行为准。
+- 阶段状态要保持：stage 2 历史结论仍然有效且未被本批改写；phase 3 第一批是新增，
+  未通过 gate 之前不得合并进任何“已完成”叙述。
 
 不要用两个用例或单次运行声称整套测试的收益或提速；`fixture_ms` 的 v1 估计与 v2 实际
-口径不同，不能直接当同口径对比。缺配置仍硬失败，回滚只需改回相应调用点。
+口径不同，不能直接当同口径对比。缺配置仍硬失败。
+
+**回滚要诚实分开两件事**：即使回退模板 DB 选择，也**应保留 Redis namespace 修复**——
+全局共享 Redis 是独立的旧缺陷，与数据库选择无关，回退它会让退款队列再次跨测试串扰。
+
+- 旧的默认 API 语义不变：`test_state`/`test_state_with_max_connections` 仍传
+  `RedisKeyspace::default`（legacy），`db_isolation` 默认仍是 schema 路径，没有全局
+  DB/Redis 模式开关。
+- 若只回退模板 DB 选择，需为本批显式提供 schema + 独立 Redis 的夹具，再替换调用点
+  和 import；该组合入口目前未提供。不能直接换回使用 legacy Redis 的 `test_state()`，
+  否则会丢失隔离并触发新增断言。故障注入的 keyspace/时钟及健康 store 恢复逻辑应保留。
+- 若只回退 Redis 修复：把非 legacy keyspace 换回 `RedisKeyspace::default`，并撤销新增
+  的两个非 legacy 早期断言；这会让退款队列回到跨测试串扰的旧行为，只在明确接受该
+  缺陷时使用。
