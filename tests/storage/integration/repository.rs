@@ -4,7 +4,7 @@ use super::*;
 
 #[tokio::test]
 async fn postgres_repositories_round_trip_users_and_clients() {
-    let pool = database().await;
+    let pool = template_database().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let email = format!("storage-{suffix}@example.com");
     let user = user_repository::insert_user(
@@ -137,7 +137,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
 
 #[tokio::test]
 async fn postgres_transaction_user_insert_and_missing_client_paths_work() {
-    let pool = database().await;
+    let pool = template_database().await;
     let user = NewUser {
         id: 0,
         username: format!("transaction-user-{}", Uuid::new_v4().simple()),
@@ -168,4 +168,15 @@ async fn postgres_transaction_user_insert_and_missing_client_paths_work() {
         .execute(&pool)
         .await
         .expect("cleanup transaction user");
+}
+
+async fn template_database() -> chenxing_auth::sqlx::PgPool {
+    let database_url = env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    db_isolation::isolated_pool_from_template_with_max_connections(
+        "integration_storage",
+        &database_url,
+        4,
+    )
+    .await
 }

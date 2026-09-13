@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """JUnit correlation for the issue #710 database timing report.
 
-Stage 1 only compares the two schema-path candidates that the template refactor
-will eventually migrate first. Each candidate must resolve to exactly one JUnit
-``testcase`` and exactly one ``fixture`` timing row; anything missing or
-ambiguous is an error, never a guess. There is no general PID/identity join.
+This companion compares the two fixed candidates that the template pilot selected
+to migrate first. Each candidate must resolve to exactly one JUnit ``testcase``
+and exactly one ``fixture`` timing row; anything missing or ambiguous is an
+error, never a guess. There is no general PID/identity join.
+
+The fixture basis is printed per row, so a candidate still on the schema path
+reports the v1 stage-sum estimate while one already on the template path reports
+``fixture_total_ms``; the mode is inferred from the timing row, not assumed from
+configuration.
 
 ``body_residual_ms`` is ``test_elapsed_ms - fixture_ms`` and is labeled as a
 body **and runtime overhead** estimate: the JUnit elapsed time also contains the
@@ -38,7 +43,7 @@ STORAGE_JUNIT_CLASSNAME = "chenxing-auth::storage"
 # binary or a caught setup error is not trial evidence.
 EXPECTED_FIXTURE_BINARY = "integration_storage"
 
-# The exact two schema-path candidates. The identity is globally unique, so it is
+# The exact two fixed pilot candidates. The identity is globally unique, so it is
 # the sole correlation key on both the JUnit and timing sides.
 CANDIDATES = (
     "integration::repository::postgres_repositories_round_trip_users_and_clients",
@@ -143,7 +148,7 @@ def compare(records: list[dict], junit_path: Path) -> list[str]:
 
     lines = [
         "",
-        "JUnit comparison (stage 1 schema path; exactly two candidates)",
+        "JUnit comparison (two fixed candidates; basis per row)",
         "fixture_ms basis: v1 = sum of schema stages (estimate); v2 = fixture_total_ms",
         "",
     ]
@@ -206,6 +211,10 @@ def compare(records: list[dict], junit_path: Path) -> list[str]:
         lines.append(f"    basis: {basis}")
 
     lines.append("")
+    lines.append(
+        "Each row's basis line identifies whether that candidate still emits v1 "
+        "schema timing (stage-sum estimate) or already emits v2 template timing."
+    )
     lines.append(
         "body_residual_ms = test_elapsed_ms - fixture_ms; it includes the test body, "
         "runtime overhead, and the diagnostic write, so it is not pure body time."

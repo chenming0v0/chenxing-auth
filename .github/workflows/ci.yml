@@ -152,7 +152,7 @@ jobs:
           python3 test_sh/db_timing_report.py "$RUNNER_TEMP/db-timing.jsonl" \
             --junit target/nextest/default/junit.xml | tee "$report"
           {
-            printf '## DB timing baseline (issue #710 STAGE 1)\n\n'
+            printf '## DB timing baseline (issue #710)\n\n'
             printf '```\n'
             cat "$report"
             printf '```\n'

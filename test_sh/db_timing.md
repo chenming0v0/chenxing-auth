@@ -1,20 +1,49 @@
 # DB 计时基线与模板生命周期（issue #710）
 
-目标：在把 schema 夹具切换成模板克隆之前，先量出真实成本并逐步落地。这里记录
-已完成的 stage、当前配置、JSONL 契约和限制。
+目标：在把 schema 夹具切换成模板克隆时，先量出真实成本再逐步落地。这里记录
+各阶段、当前配置、JSONL 契约和限制。
 
 ## 阶段
 
-- **STAGE 0（已完成）**：测量 schema 夹具基线。CI run
+- **STAGE 0（schema 基线）**：测量 schema 夹具成本。CI run
   [34734563113](https://github.com/chenming0v0/chenxing-auth/actions/runs/34734563113)
-  （SHA `ff63326`）全绿：1876 个用例通过；干净 JSONL 共 983 行（481 fixture +
-  502 migration）；五个 fixture 相位里 `fixture.migrate` 占 87.56%，迁移
-  lock wait + apply 是夹具成本主体。这是模板重构的数值门槛。
-- **STAGE 1（本阶段）**：落地模板生命周期基础设施和 JUnit 关联证据，但**不切换
-  调用方**。schema 路径的测试调用保持不变；模板只在 `test_database` 示例里被
-  prepare/cleanup。真正的 caller switch 留到 phase 1 CI 之后再评估。
-- **STAGE 2（未来）**：在 phase 1 证据确认收益后，才把具体测试调用方切到模板
-  克隆。`--junit` 关联出的这两个 schema 基线用例就是切换时的对照。
+  （SHA `ff63326`）全绿：1876 用例通过；JSONL 983 行（481 fixture + 502
+  migration）；五个 fixture 相位里 `fixture.migrate` 占 87.56%。
+- **STAGE 1（模板基础设施，已完成）**：模板生命周期 + JUnit 关联落地。CI run
+  [34739022956](https://github.com/chenming0v0/chenxing-auth/actions/runs/34739022956)
+  （SHA `8914118`）全绿：1907 用例通过、覆盖率 81.70%、两个 job 的
+  prepare/cleanup 都成功；wrapper 层 `template_fixture=0`、
+  `template_prepare_ms=1250.329`。该 run 也提供了下面两个候选用例的 schema 基线。
+- **STAGE 2（试点切换，本阶段）**：只把两个具名 repository 用例切到模板克隆，
+  **其余所有用例保持旧 schema 路径**。切换后的重复运行、执行顺序、缺配置降级等
+  稳健性测试与 CI 对比仍在进行；在拿到稳定证据前，不宣称任何测得的加速。
+- **扩大试点（未批准）**：只有在重复运行与 CI 对比稳定显示收益后，才评估扩大
+  范围。第一批尚未 approved，issue 也尚未完成。
+
+## 模板试点范围（stage 2）
+
+`tests/storage/integration/repository.rs` 中只有这两个用例显式 opt-in 模板克隆：
+
+- `integration::repository::postgres_repositories_round_trip_users_and_clients`
+- `integration::repository::postgres_transaction_user_insert_and_missing_client_paths_work`
+
+其余用例一律走旧 schema 路径。`--junit` 关联的就是这两个 identity，用于在切换
+前后对比同一用例。
+
+## 候选用例 schema 基线
+
+来自 STAGE 1 run
+[34739022956](https://github.com/chenming0v0/chenxing-auth/actions/runs/34739022956)
+（切换前，旧 schema 路径）：
+
+| identity | test_elapsed_ms | fixture_ms | body_residual_ms |
+| --- | --- | --- | --- |
+| `integration::repository::postgres_repositories_round_trip_users_and_clients` | 2490.000 | 1550.225 | 939.775 |
+| `integration::repository::postgres_transaction_user_insert_and_missing_client_paths_work` | 1725.000 | 1692.841 | 32.159 |
+
+`fixture_ms` 是 v1 五阶段之和的估计（缺相位间开销），`body_residual_ms` 含测试体、
+运行时开销和诊断写入，不是纯 body。这两个数字是切换前的对照，**不代表任何已测得
+的加速**；两张单用例的耗时也不预测整套测试的加速比。
 
 ## 模板命名空间（shell / CI / 示例）
 
@@ -77,16 +106,18 @@ export CHENXING_TEST_DATABASE_PREFIX=ctest_local_
 python3 test_sh/db_timing_report.py PATH [--junit target/nextest/default/junit.xml]
 ```
 
-`--junit` 只关联两个 schema 路径候选用例（`integration::repository::
+`--junit` 只关联两个固定候选用例（模板试点选定，见上）：`integration::repository::
 postgres_repositories_round_trip_users_and_clients` 和 `integration::
-repository::postgres_transaction_user_insert_and_missing_client_paths_work`）。
+repository::postgres_transaction_user_insert_and_missing_client_paths_work`。
 JUnit 侧只认 nextest 0.9.143 的精确 classname `chenxing-auth::storage`（没有
 裸 `storage` 别名），testcase `name` 必须精确等于 identity；timing 侧要求唯一
 fixture 行、固定 binary 标签 `integration_storage`、`outcome=ok`。缺失、重复、
 错误 binary、error fixture、失败/skip/flaky/rerun 都让对比失败；`time` 换算成
-毫秒后必须仍是有限值。`body_residual_ms = test_elapsed_ms - fixture_ms` 含测试体、
-运行时开销和诊断写入，不是纯 body；对 JUnit 3 位小数的四舍五入容忍 0.5 ms，更负
-则失败。
+毫秒后必须仍是有限值。报告标题与分组保持 phase-neutral：模式由发出的行
+（`version`/`event`/`database_mode`）推断，不按配置假设；每行打印的 basis 标明
+该用例当前是 v1 schema 估计还是 v2 `fixture_total_ms`。
+`body_residual_ms = test_elapsed_ms - fixture_ms` 含测试体、运行时开销和诊断写入，
+不是纯 body；对 JUnit 3 位小数的四舍五入容忍 0.5 ms，更负则失败。
 
 ## CI 接线
 
@@ -147,8 +178,13 @@ NaN/Infinity、负时长、未知事件/相位、缺失必需相位、多余字�
 
 ## 验收门槛
 
-STAGE 0 门槛已由 run 34734563113 满足（1876 通过、migration 占夹具成本 87.56%）。
-STAGE 1 的门槛是基础设施证据：prepare/cleanup 在 CI 中稳定跑通、v2 事件可解析、
-JUnit 关联能给出两个 schema 对照用例的 `test_elapsed_ms` / `fixture_ms`。在 phase 1
-CI 用这些证据确认收益前，不进行任何 caller switch，也不要把 fixture 计数当成
-测试总数或声称模板重构已有收益。
+STAGE 0/1 门槛均已满足（见阶段小节）。STAGE 2 的门槛尚未满足：切到模板克隆后
+还需要
+
+- 重复运行确认模板克隆结果稳定（含执行顺序变化）；
+- 缺配置（无 `CHENXING_TEST_*`）时旧 schema 路径可用；
+- CI 对比切换前后同一对候选用例的 `test_elapsed_ms` / `fixture_ms`；
+- 证据稳定后，才讨论扩大试点。
+
+不要把 fixture 计数当成测试总数，也不要在拿到稳定对比前声称模板重构已有收益或
+提速。第一批尚未 approved，issue 尚未完成。

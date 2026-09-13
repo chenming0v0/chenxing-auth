@@ -1,4 +1,4 @@
-"""issue #710 STAGE 0: contract tests for test_sh/db_timing_report.py.
+"""issue #710: contract tests for test_sh/db_timing_report.py.
 
 These tests pin the shared JSONL emitter contract and the report CLI behavior.
 They are stdlib-only and invoke the CLI as a subprocess, so they never import
@@ -460,6 +460,16 @@ class ReportStatisticsTest(ReportCliTest):
         self.assertIn("Schema fixture (v1) — 2 record(s), ok=1, error=1", result.stdout)
         self.assertIn("Schema migration (v1) — 2 record(s), ok=1, error=1", result.stdout)
 
+    def test_labels_are_phase_neutral_and_mode_is_inferred(self) -> None:
+        result = self.run_report(self.jsonl(fixture_record(), template_fixture_record()))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("DB timing report (issue #710)", result.stdout)
+        self.assertNotIn("STAGE", result.stdout)
+        self.assertIn("inferred from the emitted rows", result.stdout)
+        # Per-group labels stay mode/version based, not phase based.
+        self.assertIn("Schema fixture (v1)", result.stdout)
+        self.assertIn("Template fixture (v2)", result.stdout)
+
     def test_report_states_nesting_and_wall_clock_caveats(self) -> None:
         result = self.run_report(self.jsonl(fixture_record(), migration_record()))
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -641,7 +651,9 @@ class JunitComparisonTest(ReportCliTest):
         )
         result = self.run_report_junit(records, xml)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("JUnit comparison", result.stdout)
+        self.assertIn("JUnit comparison (two fixed candidates; basis per row)", result.stdout)
+        self.assertNotIn("STAGE", result.stdout)
+        self.assertIn("identifies whether that candidate still emits v1", result.stdout)
         row = self.phase_row(result, CANDIDATE_A)
         # fixture estimate = 10+5+2+40+0 = 57 ms; JUnit 0.120s = 120 ms.
         self.assertEqual(row[1], "120.000")

@@ -1,7 +1,7 @@
-"""issue #710 STAGE 1: static contract assertions for .github/workflows/ci.yml.
+"""issue #710: static contract assertions for .github/workflows/ci.yml.
 
 Stdlib-only, indentation-aware step-block checks (no YAML dependency). Guards the
-STAGE 1 wiring so a later refactor cannot silently:
+template lifecycle CI wiring so a later refactor cannot silently:
 
 - move CHENXING_TEST_DB_TIMING_FILE off the prepare/test steps or into coverage,
 - drop the template prepare/cleanup steps or run cleanup non-always,
@@ -167,6 +167,9 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("steps.rust_tests.outcome", report_text)
         self.assertIn("db_timing_report.py", report_text)
         self.assertIn(f"--junit {JUNIT_PATH}", report_text)
+        # The step summary heading is phase-neutral.
+        self.assertIn("## DB timing baseline (issue #710)", report_text)
+        self.assertNotIn("STAGE", report_text)
 
     def test_raw_diagnostics_uploaded_always_with_junit(self) -> None:
         report = self.step_index_by_name(REPORT_STEP)

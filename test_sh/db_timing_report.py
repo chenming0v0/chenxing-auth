@@ -34,7 +34,7 @@ fixture、template prepare。`fixture_total_ms` 是模板克隆的包裹计时�
 suppress，因此 migration 计数不代表每一次 migrate 调用。跨事件、跨并发的耗时
 相加都不等于墙钟加速比。这里统计的是写出计时行的调用数，不是测试总数。
 
-`--junit PATH` 时额外做 stage 1 的两个候选用例关联对比，详见
+`--junit PATH` 时额外做两个固定候选用例（模板试点选定）的关联对比，详见
 `db_timing_junit.py`。
 
 仅使用标准库。
@@ -481,7 +481,7 @@ _CAVEATS = (
 
 def render(records: list[dict]) -> str:
     lines: list[str] = []
-    lines.append("DB timing report (issue #710 STAGE 1)")
+    lines.append("DB timing report (issue #710)")
     counts = {}
     for _title, version, event, _order in _GROUPS:
         counts[(version, event)] = sum(
@@ -493,6 +493,10 @@ def render(records: list[dict]) -> str:
         f"schema_migration={counts[(1, 'migration')]}, "
         f"template_fixture={counts[(2, 'fixture')]}, "
         f"template_prepare={counts[(2, 'template_prepare')]})"
+    )
+    lines.append(
+        "Mode is inferred from the emitted rows (version/event/database_mode), not "
+        "from configuration; each row's fixture basis is printed with its comparison."
     )
     lines.append("")
 
@@ -524,7 +528,7 @@ def main(argv: list[str]) -> int:
         "--junit",
         type=Path,
         default=None,
-        help="optional nextest JUnit XML for the two stage 1 candidate comparisons",
+        help="optional nextest JUnit XML for the two fixed candidate comparisons",
     )
     args = parser.parse_args(argv)
 
