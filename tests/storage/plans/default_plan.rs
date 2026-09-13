@@ -6,7 +6,7 @@ use super::*;
 /// 但**既有 Client 的授权路径必须继续可用** —— 闸门只关新增，不打死既有集成。
 #[tokio::test]
 async fn unsetting_the_last_default_plan_closes_self_service() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -69,7 +69,7 @@ async fn unsetting_the_last_default_plan_closes_self_service() {
 /// 没有任何套餐 → 自助接入闸门关闭。
 #[tokio::test]
 async fn no_default_plan_refuses_new_client_creation() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -89,7 +89,7 @@ async fn no_default_plan_refuses_new_client_creation() {
 /// 闸门只关新增：套餐清空后，既有用户 Client 的 authorize 和 token 兑换都要成功。
 #[tokio::test]
 async fn no_default_plan_keeps_existing_user_clients_working() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -155,7 +155,7 @@ async fn no_default_plan_keeps_existing_user_clients_working() {
 /// 缺少默认套餐时 authorize / token 全程正常。
 #[tokio::test]
 async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -231,7 +231,7 @@ async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
 /// 回归：`ensure_active_default` 曾让整个分配事务回滚。
 #[tokio::test]
 async fn assigning_a_plan_works_without_a_default_plan() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;

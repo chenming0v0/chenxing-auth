@@ -23,7 +23,7 @@ async fn owned_client_count(database: &chenxing_auth::sqlx::PgPool, user_id: i64
 
 #[tokio::test]
 async fn assigned_plan_controls_client_quota_and_entitlements() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -98,7 +98,7 @@ async fn assigned_plan_controls_client_quota_and_entitlements() {
 /// 在 repository 事务内重读低配套餐，不能拿旧数字越过配额。
 #[tokio::test]
 async fn client_creation_rechecks_quota_after_plan_downgrade_commits() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -171,7 +171,7 @@ async fn client_creation_rechecks_quota_after_plan_downgrade_commits() {
 /// 限额为 1 时只能有一个成功，不能各自在空快照中都看到 0。
 #[tokio::test]
 async fn concurrent_client_creations_remain_serialized_by_user_lock() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;

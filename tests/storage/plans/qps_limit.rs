@@ -4,7 +4,7 @@ use super::*;
 
 #[tokio::test]
 async fn qps_limiter_rejects_requests_over_the_plan_limit() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -90,7 +90,7 @@ async fn qps_limiter_rejects_requests_over_the_plan_limit() {
 /// 这条测试会抓到。
 #[tokio::test]
 async fn no_plan_skips_plan_qps_limiting_for_existing_clients() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;

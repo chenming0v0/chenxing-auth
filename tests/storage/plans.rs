@@ -30,7 +30,7 @@ use support::{
     code_challenge_for, create_admin_client, create_owned_client, create_plan,
     exchange_authorization_code, get_entitlements, json, list_owned_clients, list_plans,
     plan_limits, plan_status_and_default, post_owned_client, register_user, restore_plan,
-    submit_plan, test_state, update_plan, user_session, validated_request,
+    submit_plan, test_state_from_template, update_plan, user_session, validated_request,
     validated_request_with_challenge,
 };
 

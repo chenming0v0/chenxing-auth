@@ -7,7 +7,7 @@ use super::*;
 /// 会被违反。
 #[tokio::test]
 async fn admin_plan_archive_restore_and_default_clearing() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -76,7 +76,7 @@ async fn admin_plan_archive_restore_and_default_clearing() {
 
 #[tokio::test]
 async fn archived_plan_cannot_become_default() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -97,7 +97,7 @@ async fn archived_plan_cannot_become_default() {
 
 #[tokio::test]
 async fn updating_plan_code_conflict_returns_409_business_error() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -128,7 +128,7 @@ async fn updating_plan_code_conflict_returns_409_business_error() {
 /// 最终 active 默认套餐**至多一个**（新语义下 0 也合法，两个才是 bug）。
 #[tokio::test]
 async fn concurrent_default_updates_leave_at_most_one_active_default() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -181,7 +181,7 @@ async fn concurrent_default_updates_leave_at_most_one_active_default() {
 /// 这里守放行一侧：抬档不能把「Owner 的套餐永远改不动」当成修复结果。
 #[tokio::test]
 async fn assigning_a_plan_to_an_owner_succeeds_with_role_management_permission() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;

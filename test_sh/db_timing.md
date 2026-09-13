@@ -1,7 +1,8 @@
 # DB 计时基线与模板生命周期（issue #710）
 
 目标：在把 schema 夹具切换成模板克隆时，先量出真实成本再逐步落地。这里记录
-各阶段、当前配置、JSONL 契约和限制。
+各阶段、当前配置、JSONL 契约和限制。**CI 证据与数字见
+[`test_sh/db_timing_results.md`](./db_timing_results.md)**，本页不复述具体数值。
 
 ## 阶段
 
@@ -13,12 +14,16 @@
   [34739022956](https://github.com/chenming0v0/chenxing-auth/actions/runs/34739022956)
   （SHA `8914118`）全绿：1907 用例通过、覆盖率 81.70%、两个 job 的
   prepare/cleanup 都成功；wrapper 层 `template_fixture=0`、
-  `template_prepare_ms=1250.329`。该 run 也提供了下面两个候选用例的 schema 基线。
-- **STAGE 2（试点切换，本阶段）**：只把两个具名 repository 用例切到模板克隆，
-  **其余所有用例保持旧 schema 路径**。切换后的重复运行、执行顺序、缺配置降级等
-  稳健性测试与 CI 对比仍在进行；在拿到稳定证据前，不宣称任何测得的加速。
-- **扩大试点（未批准）**：只有在重复运行与 CI 对比稳定显示收益后，才评估扩大
-  范围。第一批尚未 approved，issue 也尚未完成。
+  `template_prepare_ms=1250.329`。该 run 也提供了两个候选用例的 schema 基线（见
+  结果页）。
+- **STAGE 2（试点切换，已完成）**：只把两个具名 repository 用例切到模板克隆，
+  **其余所有用例保持旧 schema 路径**。CI run
+  [34742275829](https://github.com/chenming0v0/chenxing-auth/actions/runs/34742275829)
+  （SHA `3ba5fba`）全绿：1908 用例通过、覆盖率 81.73%、两个 job prepare/cleanup
+  成功、`template_fixture=2`。失败尝试与修正见结果页。
+- **Phase 3 第一批（23 用例审计通过；实现进行中，CI 待跑）**：候选审计通过，共
+  7 个文件 / 23 个 `plans::` 用例符合条件（`binary_name` 仍为 `plans`）。实现正在
+  进行，尚未有 CI 证据，不得宣称已完成或已绿。
 
 ## 模板试点范围（stage 2）
 
@@ -30,20 +35,27 @@
 其余用例一律走旧 schema 路径。`--junit` 关联的就是这两个 identity，用于在切换
 前后对比同一用例。
 
-## 候选用例 schema 基线
+## 模板试点范围（phase 3 第一批，进行中）
 
-来自 STAGE 1 run
-[34739022956](https://github.com/chenming0v0/chenxing-auth/actions/runs/34739022956)
-（切换前，旧 schema 路径）：
+历史事实要分清：**stage 2 只切了上面那两个** repository 用例；phase 3 第一批是
+在此基础上**再新增 23 个** `plans::` 用例，不是替换或改写 stage 2 的结论。
 
-| identity | test_elapsed_ms | fixture_ms | body_residual_ms |
-| --- | --- | --- | --- |
-| `integration::repository::postgres_repositories_round_trip_users_and_clients` | 2490.000 | 1550.225 | 939.775 |
-| `integration::repository::postgres_transaction_user_insert_and_missing_client_paths_work` | 1725.000 | 1692.841 | 32.159 |
+- 来源：`tests/support/plans.rs` 新增显式 helper `test_state_from_template`，
+  由以下 7 个文件里的 23 个 fixture 调用（逐文件计数）：`authorization_quota`3、
+  `default_plan`5、`entitlements`3、`plan_admin`5、`plan_boundaries`2、
+  `plan_quota`3、`qps_limit`2。`binary_name`/label 仍是 `plans`。
+- 根 `db_isolation` 默认不变：仍是 schema 路径；模板是**按文件显式 helper 调用**，
+  不做全局默认切换。`wallet` 的 15 个 fixture 保持 schema，不动。
+- 回滚（第一批）：删掉这 23 处 helper 调用并恢复对应 import 即可；原有 helper 保留，
+  因此回滚不需要重写底层实现。
+- 未跑之前不做任何提速声明。
 
-`fixture_ms` 是 v1 五阶段之和的估计（缺相位间开销），`body_residual_ms` 含测试体、
-运行时开销和诊断写入，不是纯 body。这两个数字是切换前的对照，**不代表任何已测得
-的加速**；两张单用例的耗时也不预测整套测试的加速比。
+## 候选用例基线
+
+切换前（旧 schema 路径）与切换后（v2 包裹计时）的逐用例数字、口径差异和合计，
+见 [`test_sh/db_timing_results.md`](./db_timing_results.md)。要点：STAGE 1 的
+`fixture_ms` 是 v1 五阶段之和的估计，STAGE 2 是 v2 `fixture_total_ms`，
+两者口径不同，不能当同口径对比；也别用两个用例推断整套测试的加速比。
 
 ## 模板命名空间（shell / CI / 示例）
 
@@ -79,26 +91,57 @@ CI 两个 job 用各自独立的命名空间（job 级 env），互不覆盖：
 
 ## 用法
 
-测试进程通过 `CHENXING_TEST_DB_TIMING_FILE` 指定 JSONL 输出路径。**完整套件与
-覆盖率验证由 CI 负责**，本地命令只是冒烟诊断，不替代 CI：
+前置：本机已有可用的 PostgreSQL / Redis 服务，以及对应的 owner 连接（见
+`docker-compose.yml` 与 `.env.example`，这里不写任何口令）。**`storage` 目标现在
+包含显式 opt-in 模板克隆用例**，所以必须先建好模板再跑它，不能直接单跑。模板相关
+变量只在命令内联提供，不 `export`、不写进仓库。
+
+一次性冒烟（这段只演示顺序，不在这里执行）：先 prepare，再跑 storage，最后用
+`EXIT` trap 保证 cleanup 一定会跑；trap 保留原命令的退出码，cleanup 失败也把整条
+命令判为失败。前缀用进程唯一的 `${BASHPID}` 派生、模板名由前缀推导，避免本地并发
+运行时互相清理对方的命名空间；计时路径用一次性临时文件，避免多次运行混行。
 
 ```bash
-# 本地冒烟：只跑一个聚焦目标，唯一临时目录避免多次运行混行。
-tmp="$(mktemp -d)"
-CHENXING_TEST_DB_TIMING_FILE="$tmp/db-timing.jsonl" \
-  ./test_sh/test.sh --test storage
-python3 test_sh/db_timing_report.py "$tmp/db-timing.jsonl"
+#!/usr/bin/env bash
+set -euo pipefail
 
-# 模板生命周期：显式给出变量后 prepare / cleanup。
-export MIGRATION_DATABASE_URL=...   # owner 连接
-export CHENXING_TEST_TEMPLATE_DATABASE=ctest_local_template
-export CHENXING_TEST_DATABASE_PREFIX=ctest_local_
-./test_sh/test_database.sh prepare
-./test_sh/test_database.sh cleanup   # 失败也要跑
+# 前置：显式给出 owner 连接（占位符，绝不回退到 DATABASE_URL）。
+owner_url="postgres://owner:REPLACE_ME@127.0.0.1:5432/chenxing_auth"
+# 进程唯一前缀，避免并发本地运行共用同一命名空间；模板名必须等于 prefix + "template"。
+prefix="ctest_local_${BASHPID}_"     # ctest_<token>_，12..=36 字节
+template_db="${prefix}template"
+tmp="$(mktemp -d)"
+timing="$tmp/db-timing.jsonl"
+
+# EXIT trap：先保留退出码，再 cleanup；cleanup 失败则整条命令失败。
+trap 's=$?; \
+  MIGRATION_DATABASE_URL="$owner_url" \
+  CHENXING_TEST_TEMPLATE_DATABASE="$template_db" \
+  CHENXING_TEST_DATABASE_PREFIX="$prefix" \
+  ./test_sh/test_database.sh cleanup || s=1; \
+  exit "$s"' EXIT
+
+# 1) 先建模板（prepare 也写 prepare 计时行）。
+CHENXING_TEST_DB_TIMING_FILE="$timing" \
+MIGRATION_DATABASE_URL="$owner_url" \
+CHENXING_TEST_TEMPLATE_DATABASE="$template_db" \
+CHENXING_TEST_DATABASE_PREFIX="$prefix" \
+  ./test_sh/test_database.sh prepare
+
+# 2) 再跑 storage（含 opt-in 模板用例，消费上一步的模板）。
+CHENXING_TEST_DB_TIMING_FILE="$timing" \
+MIGRATION_DATABASE_URL="$owner_url" \
+CHENXING_TEST_TEMPLATE_DATABASE="$template_db" \
+CHENXING_TEST_DATABASE_PREFIX="$prefix" \
+  ./test_sh/test.sh --test storage
+
+# 3) 读同一份 JSONL；本地没有 nextest JUnit 时不加 --junit。
+python3 test_sh/db_timing_report.py "$timing"
 ```
 
 `--full`、`--gate`、`--coverage` 属编排者全量模式，默认只在 CI 失败需要本地
-复现时才经授权运行，不作为本地默认示例。
+复现时才经授权运行，不作为本地默认示例。这里也不提供任何自动回退：缺变量就是
+硬失败，`MIGRATION_DATABASE_URL` 不会回退到 `DATABASE_URL`。
 
 报告器只读文件、不连数据库、不编译任何东西：
 
@@ -182,13 +225,11 @@ NaN/Infinity、负时长、未知事件/相位、缺失必需相位、多余字�
 
 ## 验收门槛
 
-STAGE 0/1 门槛均已满足（见阶段小节）。STAGE 2 的门槛尚未满足：切到模板克隆后
-还需要
+- STAGE 0/1：已满足（见阶段小节与结果页）。
+- STAGE 2：已满足。CI run `34742275829` 中两个具名 repository 用例切到模板克隆并
+  通过，其余用例保持旧 schema 路径；prepare/test/cleanup 全绿，JUnit 关联对比可用。
+- Phase 3 第一批：23 用例审计通过；实现进行中，CI 待跑。预期诊断计数见结果页
+  （EXPECTED，非实测）；在 CI 出数前不得声称完成或绿。
 
-- 重复运行确认模板克隆结果稳定（含执行顺序变化）；
-- 缺配置（无 `CHENXING_TEST_*`）时旧 schema 路径可用；
-- CI 对比切换前后同一对候选用例的 `test_elapsed_ms` / `fixture_ms`；
-- 证据稳定后，才讨论扩大试点。
-
-不要把 fixture 计数当成测试总数，也不要在拿到稳定对比前声称模板重构已有收益或
-提速。第一批尚未 approved，issue 尚未完成。
+不要用两个用例或单次运行声称整套测试的收益或提速；`fixture_ms` 的 v1 估计与 v2 实际
+口径不同，不能直接当同口径对比。缺配置仍硬失败，回滚只需改回相应调用点。

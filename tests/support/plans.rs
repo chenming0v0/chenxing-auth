@@ -47,8 +47,9 @@ pub const REDIRECT_URI: &str = "https://plan.example/callback";
 
 /// 一个套餐测试的运行环境。
 ///
-/// 套餐前提由 schema 隔离保证（见 `support/db_isolation.rs`）：`plans` 表存在于
-/// 本二进制私有的 schema 中，`clear_all_plans` 只影响自己，不需要跨二进制锁。
+/// 套餐前提由隔离保证：默认走 schema 隔离（见 `support/db_isolation.rs`），
+/// `plans` 表存在于本二进制私有的 schema 中；显式选择模板路径时则是本测试私有
+/// 的数据库克隆。两种方式下 [`clear_all_plans`] 都只影响自己，不需要跨二进制锁。
 /// `default_plan_id` 是 [`test_state`] 播种的默认套餐 id，不把 identity 序列值当作
 /// 测试契约。
 pub struct PlanTestEnv {
@@ -73,9 +74,28 @@ impl PlanTestEnv {
 /// 构造测试状态，并把套餐前提重置为「只有一个原种子等价的 active 默认套餐」。
 ///
 /// 即使迁移提供了种子，这里仍显式清空后播种；需要「没有任何套餐」的测试在拿到
-/// 环境后自己调 [`clear_all_plans`]。
+/// 环境后自己调 [`clear_all_plans`]。默认走 schema 隔离：本二进制私有的 schema。
 pub async fn test_state() -> PlanTestEnv {
     test_state_with_max_connections(2).await
+}
+
+/// 构造测试状态，使用已迁移的模板数据库克隆而不是 schema 隔离（issue #710）。
+///
+/// 与 [`test_state`] 相同的 URL 读取与默认值，但 pool 来自
+/// `isolated_pool_from_template_with_max_connections`，固定 2 个连接。模板命名
+/// 空间缺失时 fail-closed，不回退到 schema 路径。
+pub async fn test_state_from_template() -> PlanTestEnv {
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let database = super::db_isolation::isolated_pool_from_template_with_max_connections(
+        "plans",
+        &database_url,
+        2,
+    )
+    .await;
+    finish_plan_env(database, database_url, redis_url).await
 }
 
 /// Construct a plan test environment with an explicit pool size for tests that
@@ -91,6 +111,16 @@ pub async fn test_state_with_max_connections(max_connections: u32) -> PlanTestEn
         max_connections,
     )
     .await;
+    finish_plan_env(database, database_url, redis_url).await
+}
+
+/// 从已建立的 pool 完成公共初始化：清空并播种默认套餐、密钥目录、配置、
+/// AppState 注入和 QPS 覆盖。两种 pool 来源（schema / 模板克隆）共用。
+async fn finish_plan_env(
+    database: chenxing_auth::sqlx::PgPool,
+    database_url: String,
+    redis_url: String,
+) -> PlanTestEnv {
     clear_all_plans(&database).await;
     let default_plan_id = seed_default_plan(&database).await;
     let key_directory = super::key_directory::isolated_key_directory("plans");

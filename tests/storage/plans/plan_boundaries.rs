@@ -32,7 +32,7 @@ async fn insert_plan_bypassing_service(
 
 #[tokio::test]
 async fn admin_api_accepts_quota_boundaries_and_rejects_values_outside_them() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -95,7 +95,7 @@ async fn admin_api_accepts_quota_boundaries_and_rejects_values_outside_them() {
 /// 负数伪装成「配额为 0」。
 #[tokio::test]
 async fn database_check_rejects_quota_writes_that_bypass_the_service() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let suffix = Uuid::new_v4().simple().to_string();
 
     let accepted = insert_plan_bypassing_service(

@@ -4,7 +4,7 @@ use super::*;
 
 #[tokio::test]
 async fn entitlements_aggregate_usage_across_multiple_clients() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -71,7 +71,7 @@ async fn entitlements_aggregate_usage_across_multiple_clients() {
 /// 权益端点描述状态，「没有生效套餐」是状态而不是错误：200 + `plan: null`。
 #[tokio::test]
 async fn entitlements_returns_empty_state_when_no_plan() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -94,7 +94,7 @@ async fn entitlements_returns_empty_state_when_no_plan() {
 /// 读路径不设闸门：没有套餐时照常列出既有 Client，配额上限留空、用量照报。
 #[tokio::test]
 async fn listing_clients_without_plan_reports_null_limits() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;

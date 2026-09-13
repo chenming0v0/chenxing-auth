@@ -4,7 +4,7 @@ use super::*;
 
 #[tokio::test]
 async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -55,7 +55,7 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
 
 #[tokio::test]
 async fn authorization_code_save_failure_refunds_consumed_quota() {
-    let mut env = test_state().await;
+    let mut env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
@@ -155,7 +155,7 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
 
 #[tokio::test]
 async fn unlimited_monthly_plan_never_rejects_authorizations() {
-    let env = test_state().await;
+    let env = test_state_from_template().await;
     let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
