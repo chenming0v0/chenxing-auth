@@ -18,6 +18,7 @@ JUnit）与 job 日志。相位之和、`fixture_total_ms`、候选对比都由
 | STAGE 2 成功（试点切换） | `3ba5fba` | [34742275829](https://github.com/chenming0v0/chenxing-auth/actions/runs/34742275829) |
 | STAGE 3 第一批（23 个 plans；coverage 失败） | `13be5e7` | [34748274304](https://github.com/chenming0v0/chenxing-auth/actions/runs/34748274304) |
 | STAGE 3 第一批修复后（全绿，已验证） | `1c83587` | [34750664243](https://github.com/chenming0v0/chenxing-auth/actions/runs/34750664243) |
+| STAGE 3 第二批（11 个 auth；全绿，已验证） | `0f3ad2a` | [34752963270](https://github.com/chenming0v0/chenxing-auth/actions/runs/34752963270) |
 
 ## 总览（全部单次 CI 运行）
 
@@ -174,7 +175,7 @@ n=23 / 累计 **9145.127 ms**，`migration_apply_ms` n=23 / 累计 **13638.559 m
   **同一个用例在同一次 run 的 quality job 通过**（5.943s）。原因未查清——不称其为既有
   flake，也不归因于插桩。4 个 lifecycle 用例在两个 job 都通过，两个 job 的 prepare 都
   成功且日志里 `sessions remained` 计数为 0。
-- **oracle 结论（确定的测试隔离缺陷）**：refund worker 会扫描 keyspace 级的退款队列，
+- **根因定位结论（确定的测试隔离缺陷）**：refund worker 会扫描 keyspace 级的退款队列，
   可能退还**其它测试**的 reservation，即使各测试的 Client ID 唯一；退款测试传
   `clock.now()+360` 给共用队列的 worker，这种测试安排会污染其它用例。
 - **边界（不要越界推断）**：`13be5e7` 那次 CI 的具体交织**没有 reservation trace**，
@@ -200,6 +201,54 @@ n=23 / 累计 **9145.127 ms**，`migration_apply_ms` n=23 / 累计 **13638.559 m
 - 两个受影响 quota 用例、新 `refund_namespace` 回归、lifecycle 4 个在两个 job 都 PASS。
 - 测试证明的是命名空间边界这一机制，**不是**历史的精确交织；也不声称生产 quota bug。
 
+## STAGE 3 第二批 green run（`0f3ad2a` / run 34752963270，三个 job 全绿）
+
+**实测诊断计数**：948 记录 = `template_fixture` **36**（`integration_storage` 2 +
+`plans` 23 + `auth_factors_repository` 8 + `passkey_cas` 3，都 ok）、`schema_fixture`
+**445**（含 `wallet` 15 仍在 schema）、`schema_migration` **466**、`template_prepare`
+**1** ok（`template_prepare_ms=1304.985`）；**v2 migration 事件 = 0**。报告带 `--junit`
+重跑与工件逐字节一致，sha256 `32570195…`。
+
+| job | 结论 | 用例 | 墙钟 |
+| --- | --- | --- | --- |
+| quality | **success** | **1909 / 1909 passed, 0 failed, 0 skipped** | nextest 544.034s；test STEP 575s；step sum 614s |
+| coverage | **success** | **1909 / 1909 passed, 0 failed, 0 skipped** | nextest 641.638s；step sum 823s |
+
+- 覆盖率 **81.75% ≥ 75%**（LF 47191、LH 38577）。
+- 两个 job 都 `clones_dropped=36 templates_dropped=1 already_absent=0`；无
+  `sessions remained`。
+- 11 个 auth 候选、两个 plans quota 用例、`refund_namespace` 回归、lifecycle 4 个在两个
+  job 都 PASS。
+
+### 11 个 auth 候选（`factors_repository`8 + `passkey_cas`3）
+
+- 基线 `1c83587`（schema/v1，从该 run 工件核实）elapsed **10327 ms**、v1 phase sum
+  **9349.585 ms**。
+- 本次 `0f3ad2a`（template/v2）elapsed **5666 ms**、`fixture_total` **4358.251 ms**
+  （median 366.832）；clone 相位 bootstrap 379.992 / `database_clone` 2540.287 /
+  pool_connect 779.198 / sequence_reset 289.223。
+- **口径不同**：v1 phase sum 含 per-test `migrate`+`drop_create_schema`，v2 换成
+  `database_clone_ms` 并把迁移并到 `template_prepare` 跑一次；`fixture_total` 才是旧
+  setup 区间最接近的对应量。
+
+### 当前 36 个 opt-in 的 cohort（单次 run，v2）
+
+| cohort | count | elapsed total ms | fixture_total total ms |
+| --- | ---: | ---: | ---: |
+| plans23 | 23 | 77047 | 11212.050 |
+| repo2（integration_storage） | 2 | 834 | 364.237 |
+| auth11 | 11 | 5666 | 4358.251 |
+| **all36** | **36** | **83547** | **15934.538** |
+
+- **完整当前成本（采样，非并行墙钟）**：`template_prepare`(1304.985) + all36
+  elapsed(83547) = **84851.985 ms**；克隆已含在 elapsed 内，**不重复相加**。
+- `elapsed − fixture_total` = 67612.462 ms，含 clone-less body + 调度等开销，非纯 body。
+- **不要**把某些聚合当成 `1c83587` 基线：`1c83587` 的实际 template25（2 repo + 23
+  plans，从该 run 工件核实）是 elapsed **80141 ms** / fixture_total **4769.410 ms** /
+  prepare 409.737，与本次 23+2 的 77881 / 11576.286 是不同 run、不能混标。本次 23 个
+  plans 的 `database_clone` 合计（6526 ms）明显高于 `1c83587`（1068 ms）而 elapsed 相近
+  （77047 vs 79253）。这里只记录观测差异，其原因未单独验证，不作因果推断。
+
 ## Phase 3 第一批修复（已由 `1c83587` 全量 CI 验证）
 
 - `tests/support/plans.rs`：`test_state_from_template` 为本测试签发新的
@@ -215,7 +264,7 @@ n=23 / 累计 **9145.127 ms**，`migration_apply_ms` n=23 / 累计 **13638.559 m
   B 只 drain 1 条、A 保持 2/2 且第三次 `DailyExceeded`、随后 A 自己退回 2 条。不触碰
   真实 legacy 队列，无 sleep、无并发。
 - 现已由 `1c83587` 全量 CI 验证（1909/1909、81.76%、cleanup 无残留）。本地聚焦运行时
-  （parent，`24/24 passed`，日志 `target/test-logs/20260913-174659`）作为补充保留。
+  （`24/24 passed`，日志 `target/test-logs/20260913-174659`）作为补充保留。
 
 ## Phase 3 第一批回滚
 
@@ -258,14 +307,15 @@ n=23 / 累计 **9145.127 ms**，`migration_apply_ms` n=23 / 累计 **13638.559 m
 - **Phase 3 第一批（gate 已通过、已验证）**：23 用例审计通过，初始实现 `13be5e7`
   当期 coverage 失败（见“先前失败 run”）。Redis 隔离修复后 `1c83587` 三个 job 全绿，
   两个 job 都 1909/1909、覆盖率 81.76%、cleanup 无残留；实测数字见对应小节。
-- **Phase 3 第二批（实现已完成，CI 待跑）**：候选审计 SAFE，只改 `factors_repository`8 +
-  `passkey_cas`3 的私有 `database()` callee 为显式 template API，测试体不变、保留 max8、
-  无 Redis/AppState/DDL。本地聚焦运行时已通过（`11/11 passed`，日志
-  `target/test-logs/20260913-184019`），但**全量 CI 未跑**，不得与第一批已验证状态混为
-  一谈。预期（非观测）计数 template 36 / schema 445 / migration 466 / prepare 1 /
-  记录 948 / 测试 1909。
-- 阶段历史保持：stage 2 的两个 repository 用例结论仍然有效且未被改写；phase 3 第一批
-  是在其之上新增的 23 个 `plans::` 用例。
+- **Phase 3 第二批（gate 已通过、已验证；planned scope 完成）**：11 个 auth 用例
+  （`factors_repository`8 + `passkey_cas`3）通过 `0f3ad2a`（run 34752963270）三个 job
+  全绿，1909/1909、覆盖率 81.75%、cleanup 36+1 无残留；实测计数 template 36 /
+  schema 445 / migration 466 / prepare 1 / 记录 948。实测数字见对应小节。
+- **范围验收**：计划内共 **36 个 opt-in**；默认 schema API 与路径保留；迁移/DDL/
+  roles/source-URL 类用例未改；phase 3 生产逻辑未动；actor pool 共享与 max8 保留；
+  plans 私有 Redis namespace 与 wallet legacy 不变；无 flush/truncate/并发改动。
+- 阶段历史保持：stage 2 的两个 repository 用例结论仍然有效且未被改写；phase 3 第一、
+  二批是在其之上新增的 23 + 11 个用例。失败 run（`e4b7bc7`、`13be5e7`）仅作历史保留。
 - 回滚方式见上一节：stage 2 改回 `tests/storage/integration/repository.rs` 的两个
   schema 调用点；phase 3 第一批需要显式的 schema + 独立 Redis 夹具，不能仅改回
   legacy `test_state()`；**保留 Redis namespace 修复**。
