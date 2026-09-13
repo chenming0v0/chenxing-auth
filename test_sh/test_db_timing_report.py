@@ -55,6 +55,71 @@ def migration_record() -> dict:
     }
 
 
+def template_fixture_record(identity: str = "integration::repository::case") -> dict:
+    return {
+        "version": 2,
+        "event": "fixture",
+        "binary_name": "integration_storage",
+        "test_identity": identity,
+        "pid": 4321,
+        "database_mode": "template",
+        "outcome": "ok",
+        "phases_ms": {
+            "bootstrap_connection": 10.0,
+            "database_clone_ms": 30.0,
+            "pool_connect": 2.0,
+            "sequence_reset": 0,
+        },
+        "fixture_total_ms": 55.0,
+    }
+
+
+def template_prepare_record() -> dict:
+    return {
+        "version": 2,
+        "event": "template_prepare",
+        "binary_name": "test_database",
+        "test_identity": "prepare",
+        "pid": 700,
+        "database_mode": "template",
+        "outcome": "ok",
+        "phases_ms": {"template_prepare_ms": 1200.0},
+    }
+
+
+CANDIDATE_A = "integration::repository::postgres_repositories_round_trip_users_and_clients"
+CANDIDATE_B = (
+    "integration::repository::postgres_transaction_user_insert_and_missing_client_paths_work"
+)
+
+
+def candidate_fixture_record(identity: str) -> dict:
+    return {
+        "version": 1,
+        "event": "fixture",
+        "binary_name": "integration_storage",
+        "test_identity": identity,
+        "pid": 5500,
+        "database_mode": "schema",
+        "outcome": "ok",
+        "phases_ms": {
+            "bootstrap_connection": 10.0,
+            "drop_create_schema": 5.0,
+            "pool_connect": 2.0,
+            "migrate": 40.0,
+            "sequence_reset": 0,
+        },
+    }
+
+
+def junit_xml(*cases) -> str:
+    body = "".join(
+        f'<testcase name="{name}" classname="{classname}" time="{time}"/>'
+        for name, classname, time in cases
+    )
+    return f'<?xml version="1.0"?><testsuites><testsuite name="storage">{body}</testsuite></testsuites>'
+
+
 class ReportCliTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -83,6 +148,20 @@ class ReportCliTest(unittest.TestCase):
             check=False,
         )
 
+    def run_report_junit(self, content, junit_xml) -> subprocess.CompletedProcess[str]:
+        if isinstance(content, bytes):
+            self.path.write_bytes(content)
+        else:
+            self.path.write_text(content, encoding="utf-8")
+        junit_path = Path(self._tmp.name) / "junit.xml"
+        junit_path.write_text(junit_xml, encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), str(self.path), "--junit", str(junit_path)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
     def jsonl(self, *records: dict) -> str:
         return "\n".join(json.dumps(record) for record in records) + "\n"
 
@@ -102,12 +181,12 @@ class EmitterContractTest(ReportCliTest):
     def test_fixture_sample_shape_is_accepted(self) -> None:
         result = self.run_report(self.jsonl(fixture_record()))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Fixture calls: 1 (ok=1, error=0)", result.stdout)
+        self.assertIn("Schema fixture (v1) — 1 record(s), ok=1, error=0", result.stdout)
 
     def test_migration_sample_shape_is_accepted(self) -> None:
         result = self.run_report(self.jsonl(migration_record()))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Migration calls: 1 (ok=1, error=0)", result.stdout)
+        self.assertIn("Schema migration (v1) — 1 record(s), ok=1, error=0", result.stdout)
         lock_row = self.phase_row(result, "migration_lock_wait_ms")
         self.assertEqual(lock_row[1], "1")
 
@@ -127,7 +206,7 @@ class EmitterContractTest(ReportCliTest):
         record["phases_ms"] = {"bootstrap_connection": 7.5}
         result = self.run_report(self.jsonl(record))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Fixture calls: 1 (ok=0, error=1)", result.stdout)
+        self.assertIn("Schema fixture (v1) — 1 record(s), ok=0, error=1", result.stdout)
         self.assertIn("bootstrap_connection", result.stdout)
         self.assertNotIn("pool_connect", result.stdout)
 
@@ -356,7 +435,7 @@ class ReportStatisticsTest(ReportCliTest):
         record = fixture_record()
         result = self.run_report(self.jsonl(record, dict(record)))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Fixture calls: 2 (ok=2, error=0)", result.stdout)
+        self.assertIn("Schema fixture (v1) — 2 record(s), ok=2, error=0", result.stdout)
         self.assertEqual(self.phase_row(result, "bootstrap_connection")[1], "2")
 
     def test_fixture_and_migration_outcomes_are_counted_separately(self) -> None:
@@ -373,9 +452,13 @@ class ReportStatisticsTest(ReportCliTest):
             self.jsonl(fixture_ok, fixture_err, migration_ok, migration_err)
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Records: 4 total (fixture=2, migration=2)", result.stdout)
-        self.assertIn("Fixture calls: 2 (ok=1, error=1)", result.stdout)
-        self.assertIn("Migration calls: 2 (ok=1, error=1)", result.stdout)
+        self.assertIn(
+            "Records: 4 total (schema_fixture=2, schema_migration=2, "
+            "template_fixture=0, template_prepare=0)",
+            result.stdout,
+        )
+        self.assertIn("Schema fixture (v1) — 2 record(s), ok=1, error=1", result.stdout)
+        self.assertIn("Schema migration (v1) — 2 record(s), ok=1, error=1", result.stdout)
 
     def test_report_states_nesting_and_wall_clock_caveats(self) -> None:
         result = self.run_report(self.jsonl(fixture_record(), migration_record()))
@@ -427,6 +510,350 @@ class ReportStatisticsTest(ReportCliTest):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("SECRET-IDENTITY-TOKEN", result.stdout)
         self.assertNotIn("SECRET-BINARY", result.stdout)
+
+
+class V2TemplateContractTest(ReportCliTest):
+    def test_template_fixture_shape_is_accepted(self) -> None:
+        result = self.run_report(self.jsonl(template_fixture_record()))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Template fixture (v2) — 1 record(s), ok=1, error=0", result.stdout)
+        row = self.phase_row(result, "database_clone_ms")
+        self.assertEqual(row[1], "1")
+        total = self.phase_row(result, "fixture_total_ms")
+        self.assertEqual(total[1], "1")
+
+    def test_template_prepare_shape_is_accepted(self) -> None:
+        result = self.run_report(self.jsonl(template_prepare_record()))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Template prepare (v2) — 1 record(s), ok=1, error=0", result.stdout)
+        row = self.phase_row(result, "template_prepare_ms")
+        self.assertEqual(row[2], "1200")
+
+    def test_mixed_versions_are_reported_per_group(self) -> None:
+        result = self.run_report(
+            self.jsonl(fixture_record(), template_fixture_record(), template_prepare_record())
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "Records: 3 total (schema_fixture=1, schema_migration=0, "
+            "template_fixture=1, template_prepare=1)",
+            result.stdout,
+        )
+
+    def test_mixed_v1_v2_are_independent(self) -> None:
+        # A v1 schema fixture must not borrow the v2 template phases and vice versa.
+        v1 = fixture_record()
+        v2 = template_fixture_record()
+        result = self.run_report(self.jsonl(v1, v2))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        schema_start = result.stdout.index("Schema fixture (v1)")
+        schema_end = result.stdout.index("Schema migration (v1)")
+        template_start = result.stdout.index("Template fixture (v2)")
+        template_end = result.stdout.index("Template prepare (v2)")
+        schema_block = result.stdout[schema_start:schema_end]
+        template_block = result.stdout[template_start:template_end]
+        self.assertIn("migrate", schema_block)
+        self.assertNotIn("database_clone_ms", schema_block)
+        self.assertNotIn("migrate ", template_block)
+        self.assertIn("database_clone_ms", template_block)
+
+    def test_template_fixture_requires_total(self) -> None:
+        record = template_fixture_record()
+        del record["fixture_total_ms"]
+        self.assert_fails_closed(self.run_report(self.jsonl(record)))
+
+    def test_template_prepare_rejects_total_field(self) -> None:
+        record = template_prepare_record()
+        record["fixture_total_ms"] = 5.0
+        self.assert_fails_closed(self.run_report(self.jsonl(record)))
+
+    def test_template_fixture_rejects_v1_phases(self) -> None:
+        record = template_fixture_record()
+        del record["phases_ms"]["database_clone_ms"]
+        record["phases_ms"]["migrate"] = 1.0
+        self.assert_fails_closed(self.run_report(self.jsonl(record)))
+
+    def test_template_fixture_requires_all_four_phases_on_ok(self) -> None:
+        record = template_fixture_record()
+        del record["phases_ms"]["sequence_reset"]
+        self.assert_fails_closed(self.run_report(self.jsonl(record)))
+
+    def test_template_fixture_error_keeps_only_reached(self) -> None:
+        record = template_fixture_record()
+        record["outcome"] = "error"
+        record["phases_ms"] = {"bootstrap_connection": 4.0}
+        result = self.run_report(self.jsonl(record))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Template fixture (v2) — 1 record(s), ok=0, error=1", result.stdout)
+
+    def test_template_fixture_negative_total_is_rejected(self) -> None:
+        record = template_fixture_record()
+        record["fixture_total_ms"] = -1.0
+        self.assert_fails_closed(self.run_report(self.jsonl(record)))
+
+    def test_template_fixture_nan_total_is_rejected(self) -> None:
+        raw = json.dumps(template_fixture_record()).replace('"fixture_total_ms": 55.0', '"fixture_total_ms": NaN')
+        self.assert_fails_closed(self.run_report(raw + "\n"))
+
+    def test_template_prepare_rejects_schema_phases(self) -> None:
+        record = template_prepare_record()
+        record["phases_ms"]["pool_connect"] = 1.0
+        self.assert_fails_closed(self.run_report(self.jsonl(record)))
+
+    def test_v2_floats_and_wrong_mode_rejected(self) -> None:
+        record = template_fixture_record()
+        record["version"] = 1
+        self.assert_fails_closed(self.run_report(self.jsonl(record)))
+        record = template_prepare_record()
+        record["database_mode"] = "schema"
+        self.assert_fails_closed(self.run_report(self.jsonl(record)))
+
+    def test_template_prepare_error_may_have_empty_phases(self) -> None:
+        record = template_prepare_record()
+        record["outcome"] = "error"
+        record["phases_ms"] = {}
+        result = self.run_report(self.jsonl(record))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Template prepare (v2) — 1 record(s), ok=0, error=1", result.stdout)
+        self.assertIn("(no reached phase)", result.stdout)
+
+    def test_template_costs_are_visible_and_separate(self) -> None:
+        result = self.run_report(
+            self.jsonl(template_fixture_record(), template_prepare_record())
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Template cost visibility", result.stdout)
+        self.assertIn("database_clone_ms", result.stdout)
+        self.assertIn("template_prepare_ms", result.stdout)
+        self.assertIn("fixture_total_ms", result.stdout)
+
+
+class JunitComparisonTest(ReportCliTest):
+    def test_two_candidates_comparison_uses_v1_estimate(self) -> None:
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+            migration_record(),
+        )
+        xml = junit_xml(
+            (CANDIDATE_A, "chenxing-auth::storage", "0.120"),
+            (CANDIDATE_B, "chenxing-auth::storage", "0.200"),
+        )
+        result = self.run_report_junit(records, xml)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("JUnit comparison", result.stdout)
+        row = self.phase_row(result, CANDIDATE_A)
+        # fixture estimate = 10+5+2+40+0 = 57 ms; JUnit 0.120s = 120 ms.
+        self.assertEqual(row[1], "120.000")
+        self.assertEqual(row[2], "57.000")
+        self.assertEqual(row[3], "63.000")
+        self.assertIn("sum of schema stages", result.stdout)
+
+    def test_v2_fixture_basis_is_total(self) -> None:
+        v2 = template_fixture_record(CANDIDATE_A)
+        records = self.jsonl(v2, candidate_fixture_record(CANDIDATE_B))
+        xml = junit_xml(
+            (CANDIDATE_A, "chenxing-auth::storage", "0.070"),
+            (CANDIDATE_B, "chenxing-auth::storage", "0.200"),
+        )
+        result = self.run_report_junit(records, xml)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        row = self.phase_row(result, CANDIDATE_A)
+        self.assertEqual(row[1], "70.000")
+        self.assertEqual(row[2], "55.000")
+        self.assertIn("fixture_total_ms (v2)", result.stdout)
+
+    def test_missing_candidate_testcase_fails(self) -> None:
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+        )
+        xml = junit_xml((CANDIDATE_A, "chenxing-auth::storage", "0.120"))
+        self.assert_fails_closed(self.run_report_junit(records, xml))
+
+    def test_missing_fixture_row_fails(self) -> None:
+        records = self.jsonl(candidate_fixture_record(CANDIDATE_A))
+        xml = junit_xml(
+            (CANDIDATE_A, "chenxing-auth::storage", "0.120"),
+            (CANDIDATE_B, "chenxing-auth::storage", "0.200"),
+        )
+        self.assert_fails_closed(self.run_report_junit(records, xml))
+
+    def test_duplicate_testcase_is_ambiguous_and_fails(self) -> None:
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+        )
+        xml = junit_xml(
+            (CANDIDATE_A, "chenxing-auth::storage", "0.120"),
+            (CANDIDATE_A, "chenxing-auth::storage", "0.130"),
+            (CANDIDATE_B, "chenxing-auth::storage", "0.200"),
+        )
+        self.assert_fails_closed(self.run_report_junit(records, xml))
+
+    def test_duplicate_fixture_row_is_ambiguous_and_fails(self) -> None:
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+        )
+        xml = junit_xml(
+            (CANDIDATE_A, "chenxing-auth::storage", "0.120"),
+            (CANDIDATE_B, "chenxing-auth::storage", "0.200"),
+        )
+        self.assert_fails_closed(self.run_report_junit(records, xml))
+
+    def test_wrong_classname_fails(self) -> None:
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+        )
+        xml = junit_xml(
+            (CANDIDATE_A, "chenxing-auth::admin", "0.120"),
+            (CANDIDATE_B, "chenxing-auth::storage", "0.200"),
+        )
+        self.assert_fails_closed(self.run_report_junit(records, xml))
+
+    def test_bare_storage_classname_is_rejected(self) -> None:
+        # nextest 0.9.143 uses `chenxing-auth::storage`; a bare `storage` alias
+        # must never be accepted.
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+        )
+        xml = junit_xml(
+            (CANDIDATE_A, "storage", "0.120"),
+            (CANDIDATE_B, "chenxing-auth::storage", "0.200"),
+        )
+        self.assert_fails_closed(self.run_report_junit(records, xml))
+
+    def test_wrong_fixture_binary_fails(self) -> None:
+        wrong = candidate_fixture_record(CANDIDATE_A)
+        wrong["binary_name"] = "some_other_binary"
+        records = self.jsonl(wrong, candidate_fixture_record(CANDIDATE_B))
+        xml = junit_xml(
+            (CANDIDATE_A, "chenxing-auth::storage", "0.120"),
+            (CANDIDATE_B, "chenxing-auth::storage", "0.200"),
+        )
+        self.assert_fails_closed(self.run_report_junit(records, xml))
+
+    def test_error_fixture_row_fails(self) -> None:
+        errored = candidate_fixture_record(CANDIDATE_A)
+        errored["outcome"] = "error"
+        errored["phases_ms"] = {"bootstrap_connection": 5.0}
+        records = self.jsonl(errored, candidate_fixture_record(CANDIDATE_B))
+        xml = junit_xml(
+            (CANDIDATE_A, "chenxing-auth::storage", "0.120"),
+            (CANDIDATE_B, "chenxing-auth::storage", "0.200"),
+        )
+        self.assert_fails_closed(self.run_report_junit(records, xml))
+
+    def test_nonfinite_millisecond_conversion_fails_closed(self) -> None:
+        # 1e308 seconds is finite but overflows to infinity once multiplied by 1000.
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+        )
+        xml = junit_xml(
+            (CANDIDATE_A, "chenxing-auth::storage", "1e308"),
+            (CANDIDATE_B, "chenxing-auth::storage", "0.200"),
+        )
+        self.assert_fails_closed(self.run_report_junit(records, xml))
+
+    def test_infinite_junit_time_attribute_fails_closed(self) -> None:
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+        )
+        xml = junit_xml(
+            (CANDIDATE_A, "chenxing-auth::storage", "Infinity"),
+            (CANDIDATE_B, "chenxing-auth::storage", "0.200"),
+        )
+        self.assert_fails_closed(self.run_report_junit(records, xml))
+
+    def test_failed_testcase_disqualifies(self) -> None:
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+        )
+        xml = (
+            '<?xml version="1.0"?><testsuites><testsuite name="chenxing-auth::storage">'
+            f'<testcase name="{CANDIDATE_A}" classname="chenxing-auth::storage" time="0.120">'
+            '<failure message="boom">stack</failure></testcase>'
+            f'<testcase name="{CANDIDATE_B}" classname="chenxing-auth::storage" time="0.200"/>'
+            "</testsuite></testsuites>"
+        )
+        self.assert_fails_closed(self.run_report_junit(records, xml))
+
+    def test_flaky_and_rerun_children_disqualify(self) -> None:
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+        )
+        for tag in ("flakyFailure", "flakyError", "rerunFailure", "rerunError"):
+            xml = (
+                '<?xml version="1.0"?><testsuites><testsuite name="chenxing-auth::storage">'
+                f'<testcase name="{CANDIDATE_A}" classname="chenxing-auth::storage" time="0.120">'
+                f'<{tag}/></testcase>'
+                f'<testcase name="{CANDIDATE_B}" classname="chenxing-auth::storage" time="0.200"/>'
+                "</testsuite></testsuites>"
+            )
+            with self.subTest(tag=tag):
+                self.assert_fails_closed(self.run_report_junit(records, xml))
+
+    def test_absent_junit_file_fails(self) -> None:
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+        )
+        self.path.write_text(records, encoding="utf-8")
+        missing = Path(self._tmp.name) / "nope.xml"
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), str(self.path), "--junit", str(missing)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assert_fails_closed(result)
+
+    def test_invalid_junit_xml_fails(self) -> None:
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+        )
+        self.assert_fails_closed(self.run_report_junit(records, "<testsuites>"))
+
+    def test_large_negative_residual_fails_beyond_tolerance(self) -> None:
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+        )
+        # fixture estimate is 57 ms; 0.010s = 10 ms -> residual -47 ms.
+        xml = junit_xml(
+            (CANDIDATE_A, "chenxing-auth::storage", "0.010"),
+            (CANDIDATE_B, "chenxing-auth::storage", "0.200"),
+        )
+        self.assert_fails_closed(self.run_report_junit(records, xml))
+
+    def test_small_negative_residual_within_rounding_is_clamped(self) -> None:
+        # fixture estimate 57 ms; 0.0567s = 56.7 ms -> residual -0.3 ms.
+        records = self.jsonl(
+            candidate_fixture_record(CANDIDATE_A),
+            candidate_fixture_record(CANDIDATE_B),
+        )
+        xml = junit_xml(
+            (CANDIDATE_A, "chenxing-auth::storage", "0.0567"),
+            (CANDIDATE_B, "chenxing-auth::storage", "0.200"),
+        )
+        result = self.run_report_junit(records, xml)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.phase_row(result, CANDIDATE_A)[3], "0.000")
+
+    def test_junit_without_candidates_does_not_affect_plain_report(self) -> None:
+        # Plain report (no --junit) must stay independent of candidate rows.
+        result = self.run_report(self.jsonl(fixture_record()))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("JUnit comparison", result.stdout)
 
 
 if __name__ == "__main__":

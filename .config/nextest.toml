@@ -10,3 +10,8 @@ quota-refund-serial = { max-threads = 1 }
 [[profile.default.overrides]]
 filter = 'test(oauth::quota::quota_refund::tests::)'
 test-group = 'quota-refund-serial'
+
+# issue #710 stage 1：给现有 default profile 增加 JUnit 输出，供计时报告关联
+# 两个 schema 路径候选用例的耗时。只增加输出，不新建 profile、不改调度。
+[profile.default.junit]
+path = "junit.xml"

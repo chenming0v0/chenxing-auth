@@ -55,6 +55,9 @@
 //! }
 //! ```
 
+#[path = "template_database/mod.rs"]
+pub mod template_database;
+
 use std::time::Instant;
 
 use chenxing_auth::db::test_timing::{self, Outcome, Timing};
@@ -191,6 +194,94 @@ pub async fn isolated_pool_with_max_connections(
         .emit_fixture(binary_name, &test_identity, Outcome::Ok)
         .await;
 
+    pool
+}
+
+/// 为测试用例创建隔离的 PgPool，直接克隆已冻结的模板数据库（issue #710 stage 1）。
+///
+/// 与 `isolated_pool` 不同，这条路径不建 schema、不跑迁移、不清理既有数据，而是
+/// 从 `CHENXING_TEST_TEMPLATE_DATABASE` 克隆一个全新数据库并连接。配置或权限缺失
+/// 时直接失败，绝不回退到 schema 隔离。
+pub async fn isolated_pool_from_template(binary_name: &str, database_url: &str) -> PgPool {
+    isolated_pool_from_template_with_max_connections(binary_name, database_url, 2).await
+}
+
+/// 为测试用例创建隔离的模板克隆 PgPool，并使用指定的最大连接数。
+///
+/// 模板替换件返回的 pool 会校验 `current_database` 与 `current_schema`，并沿用
+/// 与 schema 路径相同的用户序列重置算法和固定 ID 例外。
+pub async fn isolated_pool_from_template_with_max_connections(
+    binary_name: &str,
+    database_url: &str,
+    max_connections: u32,
+) -> PgPool {
+    let test_identity = current_test_identity();
+    let mut timing = Timing::from_env();
+    // 整体计时必须在读取配置之前开始，配置失败时记录零阶段。
+    let fixture_start = timing.phase_start();
+    let pid = std::process::id();
+
+    let config = match template_database::TemplateConfig::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            timing
+                .emit_template_fixture(binary_name, &test_identity, Outcome::Error, fixture_start)
+                .await;
+            panic!("db_isolation: template config: {error}");
+        }
+    };
+    if let Err(error) = config.validate_source_url(database_url) {
+        timing
+            .emit_template_fixture(binary_name, &test_identity, Outcome::Error, fixture_start)
+            .await;
+        panic!("db_isolation: template source: {error}");
+    }
+
+    let pool = match config
+        .clone_pool(
+            binary_name,
+            &test_identity,
+            pid,
+            max_connections,
+            &mut timing,
+        )
+        .await
+    {
+        Ok(pool) => pool,
+        Err(error) => {
+            timing
+                .emit_template_fixture(binary_name, &test_identity, Outcome::Error, fixture_start)
+                .await;
+            panic!("db_isolation: template clone: {error}");
+        }
+    };
+
+    // 用户序列重置沿用现有算法与固定 ID 例外。
+    let execution_identity = current_execution_identity(&test_identity);
+    if matches!(binary_name, "admin_api" | "bootstrap_invariant") {
+        timing.record_zero(test_timing::PHASE_SEQUENCE_RESET);
+    } else {
+        let user_id_start = user_id_sequence_start(binary_name, &execution_identity);
+        let phase = timing.phase_start();
+        let result = chenxing_auth::sqlx::query(
+            "SELECT setval(pg_get_serial_sequence('users', 'id'), $1, false)",
+        )
+        .bind(user_id_start)
+        .execute(&pool)
+        .await;
+        timing.record(test_timing::PHASE_SEQUENCE_RESET, phase);
+        if result.is_err() {
+            timing
+                .emit_template_fixture(binary_name, &test_identity, Outcome::Error, fixture_start)
+                .await;
+            panic!("db_isolation: template sequence reset failed");
+        }
+    }
+
+    // 查询耗时在诊断写入之前记录。
+    timing
+        .emit_template_fixture(binary_name, &test_identity, Outcome::Ok, fixture_start)
+        .await;
     pool
 }
 
@@ -332,7 +423,7 @@ pub(crate) fn schema_name(binary_name: &str, test_identity: &str) -> String {
     )
 }
 
-fn user_id_sequence_start(binary_name: &str, test_identity: &str) -> i64 {
+pub(crate) fn user_id_sequence_start(binary_name: &str, test_identity: &str) -> i64 {
     let digest = Sha256::digest(format!("{binary_name}\0{test_identity}").as_bytes());
     let mut bytes = [0_u8; 8];
     bytes.copy_from_slice(&digest[..8]);

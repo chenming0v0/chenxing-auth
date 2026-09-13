@@ -25,4 +25,6 @@ mod http_error_contract;
 mod http_shutdown;
 mod openapi_contract;
 mod protected_api;
+mod support_contract;
+mod template_lifecycle;
 mod web;

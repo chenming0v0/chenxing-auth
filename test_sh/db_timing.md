@@ -1,23 +1,71 @@
-# DB 计时基线（issue #710 STAGE 0）
+# DB 计时基线与模板生命周期（issue #710）
 
-STAGE 0 只做一件事：在动模板重构之前，先把数据库夹具和迁移的真实成本量出来。
-这里没有模板、没有 schema 复用，只有「计时 → JSONL → 报告」这条链。基线必须
-先证明迁移（migration）和迁移锁等待（lock wait）是主要成本，否则后面的模板
-重构就是拍脑袋。
+目标：在把 schema 夹具切换成模板克隆之前，先量出真实成本并逐步落地。这里记录
+已完成的 stage、当前配置、JSONL 契约和限制。
+
+## 阶段
+
+- **STAGE 0（已完成）**：测量 schema 夹具基线。CI run
+  [34734563113](https://github.com/chenming0v0/chenxing-auth/actions/runs/34734563113)
+  （SHA `ff63326`）全绿：1876 个用例通过；干净 JSONL 共 983 行（481 fixture +
+  502 migration）；五个 fixture 相位里 `fixture.migrate` 占 87.56%，迁移
+  lock wait + apply 是夹具成本主体。这是模板重构的数值门槛。
+- **STAGE 1（本阶段）**：落地模板生命周期基础设施和 JUnit 关联证据，但**不切换
+  调用方**。schema 路径的测试调用保持不变；模板只在 `test_database` 示例里被
+  prepare/cleanup。真正的 caller switch 留到 phase 1 CI 之后再评估。
+- **STAGE 2（未来）**：在 phase 1 证据确认收益后，才把具体测试调用方切到模板
+  克隆。`--junit` 关联出的这两个 schema 基线用例就是切换时的对照。
+
+## 模板命名空间（shell / CI / 示例）
+
+模板生命周期必须显式提供三个变量，**绝不回退到 `DATABASE_URL`**：
+
+- `MIGRATION_DATABASE_URL`：跑迁移的 owner 连接。
+- `CHENXING_TEST_TEMPLATE_DATABASE`：模板库全名。
+- `CHENXING_TEST_DATABASE_PREFIX`：克隆库前缀。
+
+命名规则（由示例/库校验，shell 只检查变量存在）：
+
+- `prefix = ctest_<token>_`，总长 12..=36 字节；token 以 `[a-z0-9]` 开头和结尾，
+  内部允许 `[a-z0-9_]`；不做任何归一化。
+- 模板库名 **精确等于** `prefix + "template"`。
+- 克隆库名格式为 `prefix + <16 位小写 hex> + "_" + <正数 canonical u32 PID>`。
+
+CI 两个 job 用各自独立的命名空间（job 级 env），互不覆盖：
+
+- quality：`ctest_${{ github.run_id }}_${{ github.run_attempt }}_quality_`
+- coverage：`ctest_${{ github.run_id }}_${{ github.run_attempt }}_coverage_`
+
+模板库与克隆库都是测试基础设施，只承载一次性测试 schema。它们**不是安全边界**：
+模板按当前数据库 owner 的权限运行，是“只读的运维便利”，不要把它当成提权隔离
+或超级用户防护。
+
+环境变量优先级（`test_sh/test_database.sh`）：
+
+- 调用方已导出的变量优先。只有**未设置**的变量才会用 `dev-env.sh` 的
+  `chenxing_env_value` 从 `.env` 读单个键（绝不 `source .env`）。
+- 显式设为**空串**仍算“已设置”，不会被 `.env` 覆盖，而是走到缺参失败。
+- `DATABASE_URL` 是**可选**变量：存在就一并加载，供示例的源库保护逻辑使用；
+  不存在也不要求，绝不作为三个必需变量的回退来源。
 
 ## 用法
 
-测试进程通过环境变量 `CHENXING_TEST_DB_TIMING_FILE` 指定 JSONL 输出路径。
-**完整套件与覆盖率验证由 CI 负责**（CI 的 `quality` job 跑全量并产出基线），
-本地命令只是冒烟诊断，不替代 CI。本地自测只跑一个聚焦目标，并用唯一临时目录
-输出，避免多次运行的行混进同一文件：
+测试进程通过 `CHENXING_TEST_DB_TIMING_FILE` 指定 JSONL 输出路径。**完整套件与
+覆盖率验证由 CI 负责**，本地命令只是冒烟诊断，不替代 CI：
 
 ```bash
-# 本地冒烟：单个聚焦目标即可验证计时链是否打通。
+# 本地冒烟：只跑一个聚焦目标，唯一临时目录避免多次运行混行。
 tmp="$(mktemp -d)"
 CHENXING_TEST_DB_TIMING_FILE="$tmp/db-timing.jsonl" \
   ./test_sh/test.sh --test storage
 python3 test_sh/db_timing_report.py "$tmp/db-timing.jsonl"
+
+# 模板生命周期：显式给出变量后 prepare / cleanup。
+export MIGRATION_DATABASE_URL=...   # owner 连接
+export CHENXING_TEST_TEMPLATE_DATABASE=ctest_local_template
+export CHENXING_TEST_DATABASE_PREFIX=ctest_local_
+./test_sh/test_database.sh prepare
+./test_sh/test_database.sh cleanup   # 失败也要跑
 ```
 
 `--full`、`--gate`、`--coverage` 属编排者全量模式，默认只在 CI 失败需要本地
@@ -26,45 +74,81 @@ python3 test_sh/db_timing_report.py "$tmp/db-timing.jsonl"
 报告器只读文件、不连数据库、不编译任何东西：
 
 ```
-python3 test_sh/db_timing_report.py PATH
+python3 test_sh/db_timing_report.py PATH [--junit target/nextest/default/junit.xml]
 ```
 
-CI 的 `quality` job 在 `Run Rust tests in parallel` 步骤设置该变量（仅此一处，
-步骤级作用域），测试结束后立即用同一个报告器出报告，写入 step summary，并把
-报告文本和原始 JSONL 作为 `db-timing-diagnostics` 工件上传。上传步骤无条件执行
-（`if: always()`）：测试失败、甚至测试步骤被跳过时都会尝试上传已存在的文件
-（文件不存在只警告，不失败）。报告步骤则在测试步骤未被跳过时执行；报告数据非法
-或缺失时报告步骤失败。`coverage` job 不注入该变量、不产出计时数据。
+`--junit` 只关联两个 schema 路径候选用例（`integration::repository::
+postgres_repositories_round_trip_users_and_clients` 和 `integration::
+repository::postgres_transaction_user_insert_and_missing_client_paths_work`）。
+JUnit 侧只认 nextest 0.9.143 的精确 classname `chenxing-auth::storage`（没有
+裸 `storage` 别名），testcase `name` 必须精确等于 identity；timing 侧要求唯一
+fixture 行、固定 binary 标签 `integration_storage`、`outcome=ok`。缺失、重复、
+错误 binary、error fixture、失败/skip/flaky/rerun 都让对比失败；`time` 换算成
+毫秒后必须仍是有限值。`body_residual_ms = test_elapsed_ms - fixture_ms` 含测试体、
+运行时开销和诊断写入，不是纯 body；对 JUnit 3 位小数的四舍五入容忍 0.5 ms，更负
+则失败。
+
+## CI 接线
+
+quality job：工具装好后先 `Prepare template database`（也写 timing JSONL），再
+`Run Rust tests in parallel`（同一 JSONL），随后无条件 `Cleanup template database`
+（失败即让 job 失败），再跑报告（prepare 或 test 任一到达就执行，用 `--junit`
+读 `target/nextest/default/junit.xml`），最后无条件上传
+`db-timing-diagnostics`（报告文本 + 原始 JSONL + JUnit）。`coverage` job 同样
+prepare/cleanup，但**不注入 timing 变量**、不产计时数据，覆盖率门槛
+`--fail-under-lines 75` 与 `rust-coverage` 工件不变。
+
+nextest 只在现有 default profile 增加 JUnit 输出（`[profile.default.junit]`），
+不新建 profile、不改并发/override/retry。
 
 ## JSONL 契约
 
-每一行一个 JSON 对象，只有两种事件，元数据键完全一致：
+每一行一个 JSON 对象。两代 schema 各自独立校验，v1 旧产物必须原样可解析。
 
+v1（`database_mode="schema"`），元数据键：
 `version, event, binary_name, test_identity, pid, database_mode, outcome, phases_ms`
 
-- `fixture`：成功时 `phases_ms` 恰好有 `bootstrap_connection`、`drop_create_schema`、
-  `pool_connect`、`migrate`、`sequence_reset`；失败时允许只包含已到达的相位。
-  固定 ID 用例跳过 `sequence_reset` 记 0。重复调用不去重。
+- `fixture`：成功时恰好有 `bootstrap_connection`、`drop_create_schema`、
+  `pool_connect`、`migrate`、`sequence_reset`；失败时允许子集。固定 ID 用例跳过
+  `sequence_reset` 记 0。重复调用不去重。
 - `migration`：成功时恰好有 `migration_lock_wait_ms` 和 `migration_apply_ms`；
-  连接获取失败可缺 lock，未执行到 apply 可缺 apply（apply 存在则 lock 必存在）。
+  失败时可缺 lock（连接获取失败）或 apply（未执行到），apply 存在则 lock 必存在。
 
-整份文件先全量校验再出报告：空文件、空白行、截断 JSON、重复键、布尔冒充数字、
+v2（`database_mode="template"`），元数据键同 v1，模板 fixture 额外带顶层
+`fixture_total_ms`：
+
+- `fixture`：成功时恰好有 `bootstrap_connection`、`database_clone_ms`、
+  `pool_connect`、`sequence_reset`；失败时允许子集。`fixture_total_ms` 是配置解析
+  前就开始的包裹计时（有限、非负）。
+- `template_prepare`：成功时恰好有 `template_prepare_ms`，**没有**
+  `fixture_total_ms`；失败时允许子集甚至为空。
+
+`template_prepare` 的整体耗时已经包含内部 `db::migrate`，所以 prepare 期间用
+task-local 作用域 suppress 掉嵌套的 migration 诊断事件（不改迁移语义、错误优先级
+或环境变量）。因此报告里的 migration 计数**不代表每一次 migrate 调用**。
+
+整份文件先全量校验再出报告：空、空白行、截断 JSON、重复键、布尔冒充数字、
 NaN/Infinity、负时长、未知事件/相位、缺失必需相位、多余字段、无效 UTF-8 或
-文件不存在都会非零退出，且不打印部分报告、不回显原始输入。聚合统计（sum /
-median）一旦溢出为非有限值也按非法处理，不会打印半截报告。
+文件不存在都会非零退出，不打印部分报告、不回显原始输入。聚合统计（sum / median）
+溢出为非有限值同样非法。
 
 ## 限制（报告里也会重复）
 
-- 同一个 fixture 内的五个相位互不重叠，可以在单次 fixture 内相加。不能相加的是
-  `fixture.migrate` 与 migration 事件的 lock/apply：`migrate` 是包含后者的嵌套
-  区间，相加会重复计数。migration 事件也可能独立出现，不要仅凭 PID 或 identity
-  把 fixture 行和 migration 行强行 join。
-- 任何跨调用、跨并发聚合的相位耗时之和都 **不等于** 墙钟加速比。
-- 报告里的 count 是「写出计时行的 fixture/migration 调用数」，不是测试总数。
-  测试总数、失败数和墙钟时间看测试日志与 GitHub step 时长，二者分开记录。
+- v1：单个 schema fixture 内五个相位互不重叠，可相加；`fixture.migrate` 已包含
+  migration 的 lock/apply，不能再把 migration 事件加回去（重复计数）。
+- v2：模板 fixture 四个相位可相加，但 `fixture_total_ms` 已包含它们和相位间开销，
+  不要把克隆相位再加到它上面。
+- migration 事件可能独立出现；不要仅凭 PID 或 identity 把 fixture 行和 migration
+  行强行 join。独立 migration 的 error 不等于失败用例。
+- 任何跨调用、跨并发聚合的相位耗时之和都 **不等于** 墙钟加速比；两个对照用例的
+  耗时也不预测整套测试的加速比。
+- 报告里的 count 是“写出计时行的调用数”，不是测试总数。测试总数、失败数和墙钟
+  时间看测试日志与 GitHub step 时长。
 
 ## 验收门槛
 
-STAGE 0 的验收是证据性的：CI 基线必须显示 migration / migration lock wait 是
-夹具成本的主要来源，然后才进入模板重构（STAGE 1）。不要把 fixture 计数当成
-测试总数，也不要在没有基线数据时声称模板重构有收益。
+STAGE 0 门槛已由 run 34734563113 满足（1876 通过、migration 占夹具成本 87.56%）。
+STAGE 1 的门槛是基础设施证据：prepare/cleanup 在 CI 中稳定跑通、v2 事件可解析、
+JUnit 关联能给出两个 schema 对照用例的 `test_elapsed_ms` / `fixture_ms`。在 phase 1
+CI 用这些证据确认收益前，不进行任何 caller switch，也不要把 fixture 计数当成
+测试总数或声称模板重构已有收益。

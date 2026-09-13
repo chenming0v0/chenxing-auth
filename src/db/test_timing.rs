@@ -1,25 +1,38 @@
-//! Opt-in diagnostic timing for test database fixtures (issue #710, stage 0).
+//! Opt-in diagnostic timing for test database fixtures (issue #710).
 //!
 //! This is internal test plumbing shared by the integration fixture
-//! (`tests/support/db_isolation.rs`) and the production migration runner. It is
-//! dormant unless `CHENXING_TEST_DB_TIMING_FILE` names a non-empty file: with
-//! the variable unset or empty there is no clock read, serialization, or file
-//! access beyond the single environment lookup.
+//! (`tests/support/db_isolation.rs`), the template lifecycle example, and the
+//! production migration runner. It is dormant unless
+//! `CHENXING_TEST_DB_TIMING_FILE` names a non-empty file: with the variable
+//! unset or empty there is no clock read, serialization, or file access beyond
+//! the single environment lookup.
 //!
 //! When enabled, each completed fixture or migration invocation appends one
 //! complete JSON object followed by `\n` with a single `O_APPEND` write attempt
 //! on a blocking thread. A short write is rejected rather than split across
 //! appends. Diagnostic failures are best effort: they never change the database
 //! result, panic, or log the sink path, error, or URL.
+//!
+//! Stage 1 adds the template lifecycle (`database_mode = "template"`):
+//!
+//! - `emit_template_fixture` writes one v2 `fixture` event for a template
+//!   clone, including the overall `fixture_total_ms` timer that starts before
+//!   any configuration is parsed.
+//! - `emit_template_prepare` writes one v2 `template_prepare` event for the
+//!   template build. Its `template_prepare_ms` already contains the inner
+//!   migration run, so [`without_migration_diagnostics`] suppresses the nested
+//!   `db::migrate` migration event. Emitted migration counts therefore do not
+//!   represent every migrate call.
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::future::Future;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
 use serde_json::{Map, Value, json};
 
+mod emit;
 mod migration;
+mod schema;
 pub use migration::MigrationTiming;
 
 /// Environment variable that opts a test process into timing diagnostics.
@@ -28,12 +41,7 @@ pub use migration::MigrationTiming;
 #[doc(hidden)]
 pub const TIMING_FILE_ENV: &str = "CHENXING_TEST_DB_TIMING_FILE";
 
-const EVENT_VERSION: u32 = 1;
-const FIXTURE_EVENT: &str = "fixture";
-const MIGRATION_EVENT: &str = "migration";
-const DATABASE_MODE_SCHEMA: &str = "schema";
-
-// Fixture phase keys (issue #710 stage 0 contract).
+// Fixture phase keys (issue #710 stage 0 schema contract).
 #[doc(hidden)]
 pub const PHASE_BOOTSTRAP_CONNECTION: &str = "bootstrap_connection";
 #[doc(hidden)]
@@ -45,8 +53,15 @@ pub const PHASE_MIGRATE: &str = "migrate";
 #[doc(hidden)]
 pub const PHASE_SEQUENCE_RESET: &str = "sequence_reset";
 
+// Template fixture phase keys (issue #710 stage 1 v2 contract). `migrate` and
+// `drop_create_schema` do not apply to a clone from a prepared template.
+#[doc(hidden)]
+pub const PHASE_DATABASE_CLONE: &str = "database_clone_ms";
+#[doc(hidden)]
+pub const PHASE_TEMPLATE_PREPARE: &str = "template_prepare_ms";
+
 // Migration phase keys. The `_ms` suffix is part of the JSON contract here,
-// unlike the fixture phases.
+// unlike the schema fixture phases.
 #[doc(hidden)]
 pub const PHASE_MIGRATION_LOCK_WAIT: &str = "migration_lock_wait_ms";
 #[doc(hidden)]
@@ -67,6 +82,29 @@ impl Outcome {
             Self::Error => "error",
         }
     }
+}
+
+tokio::task_local! {
+    /// Marks the current task tree as building a template database. The inner
+    /// `db::migrate` diagnostic event is redundant there because
+    /// `template_prepare_ms` already measures it.
+    static MIGRATION_DIAGNOSTICS_SUPPRESSED: ();
+}
+
+/// True when the current task is inside [`without_migration_diagnostics`].
+#[doc(hidden)]
+pub fn migration_diagnostics_suppressed() -> bool {
+    MIGRATION_DIAGNOSTICS_SUPPRESSED.try_with(|_| ()).is_ok()
+}
+
+/// Run `future` with nested migration diagnostics suppressed.
+///
+/// This is task-local scope only: no process environment is read or mutated,
+/// migration semantics and error precedence are untouched, and after the
+/// future resolves (normally or with an error) the suppression is gone. A task
+/// spawned inside the scope does not inherit it.
+pub async fn without_migration_diagnostics<F: Future>(future: F) -> F::Output {
+    MIGRATION_DIAGNOSTICS_SUPPRESSED.scope((), future).await
 }
 
 /// Phase accumulator plus resolved sink for one fixture or migration invocation.
@@ -137,7 +175,7 @@ impl Timing {
         self.phases.insert(phase.to_owned(), json!(0.0));
     }
 
-    /// Serialize one fixture event line, or `None` when disabled.
+    /// Serialize one v1 schema fixture event line, or `None` when disabled.
     pub fn encode_fixture_line(
         &self,
         binary_name: &str,
@@ -145,16 +183,16 @@ impl Timing {
         outcome: Outcome,
     ) -> Option<String> {
         self.sink.as_ref()?;
-        encode_event(
-            FIXTURE_EVENT,
+        schema::encode_event_v1(
+            schema::FIXTURE_EVENT,
             binary_name,
             test_identity,
-            outcome,
+            outcome.as_str(),
             &self.phases,
         )
     }
 
-    /// Serialize one migration event line, or `None` when disabled.
+    /// Serialize one v1 schema migration event line, or `None` when disabled.
     pub fn encode_migration_line(
         &self,
         binary_name: &str,
@@ -162,111 +200,65 @@ impl Timing {
         outcome: Outcome,
     ) -> Option<String> {
         self.sink.as_ref()?;
-        encode_event(
-            MIGRATION_EVENT,
+        schema::encode_event_v1(
+            schema::MIGRATION_EVENT,
             binary_name,
             test_identity,
-            outcome,
+            outcome.as_str(),
             &self.phases,
         )
     }
 
-    /// Append one fixture event. Failures are swallowed.
-    pub async fn emit_fixture(&self, binary_name: &str, test_identity: &str, outcome: Outcome) {
-        if let Some(line) = self.encode_fixture_line(binary_name, test_identity, outcome) {
-            self.append(line).await;
-        }
+    /// Serialize one v2 template fixture event, including `fixture_total_ms`.
+    ///
+    /// Returns `None` when disabled or when no wrapper `fixture_start` was
+    /// captured: without a real timer the whole-fixture duration is unknown, so
+    /// the event is refused rather than emitting a phase-sum estimate.
+    pub fn encode_template_fixture_line(
+        &self,
+        binary_name: &str,
+        test_identity: &str,
+        outcome: Outcome,
+        fixture_start: Option<Instant>,
+    ) -> Option<String> {
+        self.sink.as_ref()?;
+        let total = schema::fixture_total_ms(fixture_start)?;
+        schema::encode_event_v2(
+            schema::FIXTURE_EVENT,
+            schema::DATABASE_MODE_TEMPLATE,
+            binary_name,
+            test_identity,
+            outcome.as_str(),
+            &self.phases,
+            Some(total),
+        )
     }
 
-    /// Append one migration event. Failures are swallowed.
-    pub async fn emit_migration(&self, binary_name: &str, test_identity: &str, outcome: Outcome) {
-        if let Some(line) = self.encode_migration_line(binary_name, test_identity, outcome) {
-            self.append(line).await;
-        }
+    /// Serialize one v2 template preparation event. It has no overall timer.
+    pub fn encode_template_prepare_line(
+        &self,
+        binary_name: &str,
+        test_identity: &str,
+        outcome: Outcome,
+    ) -> Option<String> {
+        self.sink.as_ref()?;
+        schema::encode_event_v2(
+            schema::TEMPLATE_PREPARE_EVENT,
+            schema::DATABASE_MODE_TEMPLATE,
+            binary_name,
+            test_identity,
+            outcome.as_str(),
+            &self.phases,
+            None,
+        )
     }
-
-    async fn append(&self, line: String) {
-        let Some(sink) = self.sink.clone() else {
-            return;
-        };
-        if tokio::runtime::Handle::try_current().is_err() {
-            warn_write_failed();
-            return;
-        }
-        let joined =
-            tokio::task::spawn_blocking(move || append_blocking(&sink, line.as_bytes())).await;
-        if !matches!(joined, Ok(Ok(()))) {
-            warn_write_failed();
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct Event<'a> {
-    version: u32,
-    event: &'static str,
-    binary_name: &'a str,
-    test_identity: &'a str,
-    pid: u32,
-    database_mode: &'static str,
-    outcome: &'static str,
-    phases_ms: Map<String, Value>,
-}
-
-fn encode_event(
-    event: &'static str,
-    binary_name: &str,
-    test_identity: &str,
-    outcome: Outcome,
-    phases_ms: &Map<String, Value>,
-) -> Option<String> {
-    let mut line = serde_json::to_string(&Event {
-        version: EVENT_VERSION,
-        event,
-        binary_name,
-        test_identity,
-        pid: std::process::id(),
-        database_mode: DATABASE_MODE_SCHEMA,
-        outcome: outcome.as_str(),
-        phases_ms: phases_ms.clone(),
-    })
-    .ok()?;
-    line.push('\n');
-    Some(line)
-}
-
-fn append_blocking(sink: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(sink)?;
-    // One complete-record write attempt. A short write would split the record
-    // across multiple appends and break the one-line-per-event contract, so it
-    // is rejected instead of appending the remainder; a reporter then fails
-    // closed on the truncated evidence. `Interrupted` means no bytes were
-    // written, so retrying the full buffer stays atomic.
-    loop {
-        match file.write(bytes) {
-            Ok(written) if written == bytes.len() => return Ok(()),
-            Ok(_) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    "short append",
-                ));
-            }
-            Err(ref error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-fn warn_write_failed() {
-    tracing::warn!("test DB timing diagnostics could not be appended");
 }
 
 fn millis(duration: Duration) -> f64 {
-    duration.as_secs_f64() * 1000.0
+    schema::millis(duration)
 }
 
+#[cfg(test)]
+mod template_tests;
 #[cfg(test)]
 mod tests;

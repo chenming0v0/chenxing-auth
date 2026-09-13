@@ -19,11 +19,25 @@ pub struct MigrationTiming {
 
 impl MigrationTiming {
     pub fn from_env() -> Self {
+        // Template preparation measures the whole build in `template_prepare_ms`
+        // and suppresses the nested migration event. This is a task-local scope
+        // check only: the environment is never read or mutated differently, and
+        // outside the scope behavior is identical.
+        if super::migration_diagnostics_suppressed() {
+            return Self {
+                timing: Timing::disabled(),
+                metadata: None,
+            };
+        }
         let timing = Timing::from_env();
         let metadata = timing
             .enabled()
             .then(|| (current_binary_name(), current_test_identity()));
         Self { timing, metadata }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.timing.enabled()
     }
 
     pub fn phase_start(&self) -> Option<Instant> {

@@ -1,38 +1,41 @@
 #!/usr/bin/env python3
-"""辰星认证中枢 - 数据库计时 JSONL 报告器（issue #710 STAGE 0）。
+"""辰星认证中枢 - 数据库计时 JSONL 报告器（issue #710）。
 
 用法：
 
-    python3 test_sh/db_timing_report.py PATH
+    python3 test_sh/db_timing_report.py PATH [--junit PATH]
 
-`PATH` 是测试进程写出的 JSONL 文件。文件里每一行是一个 JSON 对象，事件类型
-只有两种：`fixture`（测试夹具）和 `migration`（迁移执行）。两种事件共享同一组
-元数据键（version/event/binary_name/test_identity/pid/database_mode/outcome/
-phases_ms），只有 `phases_ms` 的相位名不同。
+`PATH` 是测试进程（或模板构建示例）写出的 JSONL 文件。每一行是一个 JSON
+对象。本脚本先校验**整个**文件，全部合法才打印报告；任何一行不合法都会以非零
+退出，并且不打印部分报告、不回显原始输入或其中的敏感字段/错误文本。
 
-本脚本先校验**整个**文件，全部合法才打印报告；任何一行不合法都会以非零退出，
-并且不打印部分报告、不回显原始输入或其中的敏感字段/错误文本。
+支持两代 schema，二者互不影响：
 
-契约要点（与 Rust 侧写入方共享，修改前先改契约）：
+- v1 `database_mode="schema"`：
+  - `fixture` 成功时 `phases_ms` 恰好包含 bootstrap_connection、
+    drop_create_schema、pool_connect、migrate、sequence_reset 五个相位；
+    固定 ID 用例跳过 sequence_reset 记 0。失败时允许只包含已到达的相位。
+  - `migration` 成功时恰好包含 migration_lock_wait_ms 和 migration_apply_ms；
+    失败时允许缺失，但 apply 存在则 lock 必须存在。
+- v2 `database_mode="template"`：
+  - `fixture`（模板克隆）带额外顶层 `fixture_total_ms`，成功时 `phases_ms` 恰好
+    包含 bootstrap_connection、database_clone_ms、pool_connect、sequence_reset；
+    失败时允许子集。
+  - `template_prepare`（模板构建）没有 `fixture_total_ms`，成功时 `phases_ms`
+    恰好是 `template_prepare_ms`；失败时允许子集（甚至为空）。
 
-- `fixture` 成功时 `phases_ms` 恰好包含 bootstrap_connection、drop_create_schema、
-  pool_connect、migrate、sequence_reset 五个相位。固定 ID 用例跳过 sequence_reset
-  时该值为 0（仍然存在）。
-- `fixture` 失败时允许只包含已到达的相位（含失败相位），键集合是五个相位的子集。
-- `migration` 成功时 `phases_ms` 恰好包含 migration_lock_wait_ms 和
-  migration_apply_ms。失败时允许缺失：连接获取失败可缺 lock，未执行到 apply 可缺
-  apply；反过来 apply 存在则 lock 必须存在。
-- 重复的 fixture 调用**不去重**，一次调用就是一行。
-- 为空、含空白行、JSON 截断、重复键、布尔冒充数字、NaN/Infinity、负时长、未知
-  事件或未知相位、缺失必需相位、多余字段，全部判为非法。聚合统计溢出为非有限
-  值同样判为非法，且不打印半截报告。
+两代都拒绝：空/空白行、JSON 截断、重复键、布尔冒充数字、NaN/Infinity、负时长、
+未知事件/相位、缺失必需相位、多余字段；聚合统计（sum/median）溢出为非有限值也
+判为非法，不打印半截报告。
 
-报告只汇总已经到达的相位的 count/sum/median/p95/max（毫秒，最近秩 p95）。
-同一个 fixture 内的五个相位互不重叠，可以在单次 fixture 内相加；不能相加的是
-`fixture.migrate` 与 migration 事件的 lock/apply——`migrate` 是包含后者的嵌套
-区间，相加会重复计数。migration 事件也可能独立出现，不要仅凭 PID 或 identity
-把 fixture 行和 migration 行强行 join。任何跨调用、跨并发聚合的相位耗时之和都
-不等于墙钟加速比。这里统计的只是写出计时行的调用数，不是测试总数。
+报告按 `(version, event)` 分组：schema fixture、schema migration、template
+fixture、template prepare。`fixture_total_ms` 是模板克隆的包裹计时，已包含四个
+互不重叠的阶段；`template_prepare_ms` 是独立的模板构建计时，其内部迁移事件被
+suppress，因此 migration 计数不代表每一次 migrate 调用。跨事件、跨并发的耗时
+相加都不等于墙钟加速比。这里统计的是写出计时行的调用数，不是测试总数。
+
+`--junit PATH` 时额外做 stage 1 的两个候选用例关联对比，详见
+`db_timing_junit.py`。
 
 仅使用标准库。
 """
@@ -45,8 +48,10 @@ import math
 import sys
 from pathlib import Path
 
-# 顶层元数据键集合：fixture 与 migration 必须完全一致，不允许缺、不允许多。
-METADATA_KEYS = frozenset(
+import db_timing_junit
+
+# 两代 schema 共同的元数据键（不含 v2 模板 fixture 的 fixture_total_ms）。
+BASE_METADATA_KEYS = frozenset(
     {
         "version",
         "event",
@@ -58,22 +63,40 @@ METADATA_KEYS = frozenset(
         "phases_ms",
     }
 )
+V2_TEMPLATE_FIXTURE_KEYS = BASE_METADATA_KEYS | {"fixture_total_ms"}
 
-EVENTS = frozenset({"fixture", "migration"})
 OUTCOMES = frozenset({"ok", "error"})
 
-# 相位顺序同时决定报告里的行顺序。
-FIXTURE_PHASES = (
+# v1 schema 相位（顺序即报告行顺序）。
+V1_FIXTURE_PHASES = (
     "bootstrap_connection",
     "drop_create_schema",
     "pool_connect",
     "migrate",
     "sequence_reset",
 )
-MIGRATION_PHASES = ("migration_lock_wait_ms", "migration_apply_ms")
+V1_MIGRATION_PHASES = ("migration_lock_wait_ms", "migration_apply_ms")
 
-FIXTURE_PHASE_NAMES = frozenset(FIXTURE_PHASES)
-MIGRATION_PHASE_NAMES = frozenset(MIGRATION_PHASES)
+# v2 template 相位。
+V2_TEMPLATE_FIXTURE_PHASES = (
+    "bootstrap_connection",
+    "database_clone_ms",
+    "pool_connect",
+    "sequence_reset",
+)
+V2_TEMPLATE_PREPARE_PHASES = ("template_prepare_ms",)
+
+V1_FIXTURE_PHASE_NAMES = frozenset(V1_FIXTURE_PHASES)
+V1_MIGRATION_PHASE_NAMES = frozenset(V1_MIGRATION_PHASES)
+V2_TEMPLATE_FIXTURE_PHASE_NAMES = frozenset(V2_TEMPLATE_FIXTURE_PHASES)
+V2_TEMPLATE_PREPARE_PHASE_NAMES = frozenset(V2_TEMPLATE_PREPARE_PHASES)
+
+ALL_PHASE_NAMES = (
+    V1_FIXTURE_PHASE_NAMES
+    | V1_MIGRATION_PHASE_NAMES
+    | V2_TEMPLATE_FIXTURE_PHASE_NAMES
+    | V2_TEMPLATE_PREPARE_PHASE_NAMES
+)
 
 U32_MAX = 0xFFFFFFFF
 
@@ -97,15 +120,15 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
     return dict(pairs)
 
 
-def _phase_ms(value: object) -> float:
+def _duration_ms(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise InvalidInput("phase duration is not a number")
+        raise InvalidInput("duration is not a number")
     try:
         numeric = float(value)
     except (OverflowError, ValueError):
-        raise InvalidInput("phase duration is not representable") from None
+        raise InvalidInput("duration is not representable") from None
     if not math.isfinite(numeric) or numeric < 0:
-        raise InvalidInput("phase duration is not a finite nonnegative number")
+        raise InvalidInput("duration is not a finite nonnegative number")
     return numeric
 
 
@@ -115,61 +138,123 @@ def _label(value: object) -> str:
     return value
 
 
+def _parse_phases(raw_phases: object) -> dict[str, float]:
+    if not isinstance(raw_phases, dict):
+        raise InvalidInput("phases_ms is not a JSON object")
+    phases: dict[str, float] = {}
+    for name, value in raw_phases.items():
+        if not isinstance(name, str) or name not in ALL_PHASE_NAMES:
+            raise InvalidInput("unknown phase name")
+        phases[name] = _duration_ms(value)
+    return phases
+
+
+def _validate_v1(record: dict) -> dict:
+    if set(record) != BASE_METADATA_KEYS:
+        raise InvalidInput("record field set does not match the v1 contract")
+    if record["database_mode"] != "schema":
+        raise InvalidInput("v1 record has an unsupported database mode")
+
+    event = record["event"]
+    if event not in ("fixture", "migration"):
+        raise InvalidInput("unknown v1 event type")
+    outcome = _outcome(record)
+    phases = _parse_phases(record["phases_ms"])
+
+    if event == "fixture":
+        if not set(phases) <= V1_FIXTURE_PHASE_NAMES:
+            raise InvalidInput("phase is not valid for a v1 fixture")
+        if outcome == "ok" and set(phases) != V1_FIXTURE_PHASE_NAMES:
+            raise InvalidInput("successful v1 fixture is missing required phases")
+    else:
+        if not set(phases) <= V1_MIGRATION_PHASE_NAMES:
+            raise InvalidInput("phase is not valid for a v1 migration")
+        if outcome == "ok" and set(phases) != V1_MIGRATION_PHASE_NAMES:
+            raise InvalidInput("successful v1 migration is missing required phases")
+        if "migration_apply_ms" in phases and "migration_lock_wait_ms" not in phases:
+            raise InvalidInput("migration apply recorded without lock wait")
+
+    return _record(record, 1, event, "schema", outcome, phases, None)
+
+
+def _validate_v2(record: dict) -> dict:
+    if record.get("database_mode") != "template":
+        raise InvalidInput("v2 record has an unsupported database mode")
+
+    event = record.get("event")
+    outcome = _outcome(record)
+
+    if event == "fixture":
+        if set(record) != V2_TEMPLATE_FIXTURE_KEYS:
+            raise InvalidInput("record field set does not match the v2 template fixture")
+        phases = _parse_phases(record["phases_ms"])
+        if not set(phases) <= V2_TEMPLATE_FIXTURE_PHASE_NAMES:
+            raise InvalidInput("phase is not valid for a v2 template fixture")
+        if outcome == "ok" and set(phases) != V2_TEMPLATE_FIXTURE_PHASE_NAMES:
+            raise InvalidInput("successful template fixture is missing required phases")
+        total = _duration_ms(record["fixture_total_ms"])
+        return _record(record, 2, event, "template", outcome, phases, total)
+
+    if event == "template_prepare":
+        if set(record) != BASE_METADATA_KEYS:
+            raise InvalidInput("record field set does not match the v2 template_prepare")
+        phases = _parse_phases(record["phases_ms"])
+        if not set(phases) <= V2_TEMPLATE_PREPARE_PHASE_NAMES:
+            raise InvalidInput("phase is not valid for template_prepare")
+        if outcome == "ok" and set(phases) != V2_TEMPLATE_PREPARE_PHASE_NAMES:
+            raise InvalidInput("successful template_prepare is missing template_prepare_ms")
+        return _record(record, 2, event, "template", outcome, phases, None)
+
+    raise InvalidInput("unknown v2 event type")
+
+
+def _outcome(record: dict) -> str:
+    outcome = record.get("outcome")
+    if not isinstance(outcome, str) or outcome not in OUTCOMES:
+        raise InvalidInput("unknown outcome")
+    return outcome
+
+
+def _record(
+    record: dict,
+    version: int,
+    event: str,
+    database_mode: str,
+    outcome: str,
+    phases: dict[str, float],
+    fixture_total_ms: float | None,
+) -> dict:
+    _label(record["binary_name"])
+    _label(record["test_identity"])
+    pid = record["pid"]
+    if isinstance(pid, bool) or not isinstance(pid, int) or not 1 <= pid <= U32_MAX:
+        raise InvalidInput("pid is not a positive u32")
+    return {
+        "version": version,
+        "event": event,
+        "database_mode": database_mode,
+        "outcome": outcome,
+        "phases": phases,
+        "fixture_total_ms": fixture_total_ms,
+        "binary_name": record["binary_name"],
+        "test_identity": record["test_identity"],
+        "pid": pid,
+    }
+
+
 def validate_record(record: object) -> dict:
     """校验单条记录，返回报告内部使用的精简结构。"""
     if not isinstance(record, dict):
         raise InvalidInput("record is not a JSON object")
-    if set(record) != METADATA_KEYS:
-        raise InvalidInput("record field set does not match the contract")
 
-    version = record["version"]
-    if isinstance(version, bool) or not isinstance(version, int) or version != 1:
+    version = record.get("version")
+    if isinstance(version, bool) or not isinstance(version, int):
         raise InvalidInput("unsupported record version")
-
-    event = record["event"]
-    if not isinstance(event, str) or event not in EVENTS:
-        raise InvalidInput("unknown event type")
-
-    _label(record["binary_name"])
-    _label(record["test_identity"])
-
-    pid = record["pid"]
-    if isinstance(pid, bool) or not isinstance(pid, int) or not 1 <= pid <= U32_MAX:
-        raise InvalidInput("pid is not a positive u32")
-
-    if record["database_mode"] != "schema":
-        raise InvalidInput("unsupported database mode")
-
-    outcome = record["outcome"]
-    if not isinstance(outcome, str) or outcome not in OUTCOMES:
-        raise InvalidInput("unknown outcome")
-
-    raw_phases = record["phases_ms"]
-    if not isinstance(raw_phases, dict):
-        raise InvalidInput("phases_ms is not a JSON object")
-
-    phases: dict[str, float] = {}
-    for name, value in raw_phases.items():
-        if not isinstance(name, str) or name not in (
-            FIXTURE_PHASE_NAMES | MIGRATION_PHASE_NAMES
-        ):
-            raise InvalidInput("unknown phase name")
-        phases[name] = _phase_ms(value)
-
-    if event == "fixture":
-        if not set(phases) <= FIXTURE_PHASE_NAMES:
-            raise InvalidInput("phase is not valid for fixture events")
-        if outcome == "ok" and set(phases) != FIXTURE_PHASE_NAMES:
-            raise InvalidInput("successful fixture is missing required phases")
-    else:
-        if not set(phases) <= MIGRATION_PHASE_NAMES:
-            raise InvalidInput("phase is not valid for migration events")
-        if outcome == "ok" and set(phases) != MIGRATION_PHASE_NAMES:
-            raise InvalidInput("successful migration is missing required phases")
-        if "migration_apply_ms" in phases and "migration_lock_wait_ms" not in phases:
-            raise InvalidInput("migration apply recorded without lock wait")
-
-    return {"event": event, "outcome": outcome, "phases": phases}
+    if version == 1:
+        return _validate_v1(record)
+    if version == 2:
+        return _validate_v2(record)
+    raise InvalidInput("unsupported record version")
 
 
 def load_records(path: Path) -> list[dict]:
@@ -227,38 +312,46 @@ def _finite_stat(value: float) -> float:
     return value
 
 
+def _safe_sum(samples: list[float]) -> float:
+    try:
+        total = math.fsum(samples)
+    except OverflowError:
+        raise InvalidInput("aggregated statistic is not finite") from None
+    return _finite_stat(total)
+
+
 def format_ms(value: float) -> str:
     """毫秒保留 3 位小数，去掉无意义的尾零。"""
     text = f"{value:.3f}".rstrip("0").rstrip(".")
     return text or "0"
 
 
-def phase_rows(records: list[dict], order: tuple[str, ...]) -> list[tuple]:
-    values: dict[str, list[float]] = {name: [] for name in order}
-    for record in records:
-        for name, value in record["phases"].items():
-            values[name].append(value)
-
+def stats_rows(samples_by_name: dict[str, list[float]], order: tuple[str, ...]) -> list[tuple]:
     rows = []
     for name in order:
-        if not values[name]:
+        if not samples_by_name[name]:
             continue
-        samples = sorted(values[name])
-        try:
-            total = math.fsum(samples)
-        except OverflowError:
-            raise InvalidInput("aggregated statistic is not finite") from None
+        samples = sorted(samples_by_name[name])
         rows.append(
             (
                 name,
                 len(samples),
-                _finite_stat(total),
+                _safe_sum(samples),
                 _finite_stat(median(samples)),
                 nearest_rank(samples, 0.95),
                 samples[-1],
             )
         )
     return rows
+
+
+def phase_rows(records: list[dict], order: tuple[str, ...]) -> list[tuple]:
+    values: dict[str, list[float]] = {name: [] for name in order}
+    for record in records:
+        for name, value in record["phases"].items():
+            if name in values:
+                values[name].append(value)
+    return stats_rows(values, order)
 
 
 def _outcome_counts(records: list[dict]) -> tuple[int, int]:
@@ -278,14 +371,12 @@ def _format_cells(cells: tuple[str, ...]) -> str:
     return "  ".join(padded)
 
 
-def _render_table(title: str, records: list[dict], order: tuple[str, ...]) -> list[str]:
-    lines = [f"{title} — {len(records)} record(s)"]
-    rows = phase_rows(records, order)
+def _render_rows(title: str, rows: list[tuple]) -> list[str]:
+    lines = [title]
     if not rows:
         lines.append("  (no reached phase)")
         lines.append("")
         return lines
-
     header = _format_cells(("phase", "count", "sum", "median", "p95", "max"))
     lines.append(header)
     lines.append("-" * len(header))
@@ -306,46 +397,119 @@ def _render_table(title: str, records: list[dict], order: tuple[str, ...]) -> li
     return lines
 
 
-def render(records: list[dict]) -> str:
-    fixtures = [record for record in records if record["event"] == "fixture"]
-    migrations = [record for record in records if record["event"] == "migration"]
-    fixture_ok, fixture_err = _outcome_counts(fixtures)
-    migration_ok, migration_err = _outcome_counts(migrations)
+def _render_table(title: str, records: list[dict], order: tuple[str, ...]) -> list[str]:
+    ok, error = _outcome_counts(records)
+    heading = f"{title} — {len(records)} record(s), ok={ok}, error={error}"
+    return _render_rows(heading, phase_rows(records, order))
 
+
+def _template_total_rows(records: list[dict]) -> list[tuple]:
+    values = [record["fixture_total_ms"] for record in records]
+    samples = [value for value in values if value is not None]
+    return stats_rows({"fixture_total_ms": samples}, ("fixture_total_ms",))
+
+
+def _cost_summary(records: list[dict]) -> list[str]:
     lines: list[str] = []
-    lines.append("DB timing report (issue #710 STAGE 0 baseline)")
+    clone = [
+        record["phases"]["database_clone_ms"]
+        for record in records
+        if record["version"] == 2
+        and record["event"] == "fixture"
+        and "database_clone_ms" in record["phases"]
+    ]
+    total = [
+        record["fixture_total_ms"]
+        for record in records
+        if record["version"] == 2
+        and record["event"] == "fixture"
+        and record["fixture_total_ms"] is not None
+    ]
+    prepare = [
+        record["phases"]["template_prepare_ms"]
+        for record in records
+        if record["version"] == 2
+        and record["event"] == "template_prepare"
+        and "template_prepare_ms" in record["phases"]
+    ]
+    if not (clone or total or prepare):
+        return lines
+
+    lines.append("Template cost visibility (ms; not additive across events):")
+    if clone:
+        lines.append(
+            f"  database_clone_ms       count={len(clone):<6} sum={format_ms(_safe_sum(clone))}"
+        )
+    if total:
+        lines.append(
+            f"  fixture_total_ms        count={len(total):<6} sum={format_ms(_safe_sum(total))}"
+        )
+    if prepare:
+        lines.append(
+            f"  template_prepare_ms     count={len(prepare):<6} sum={format_ms(_safe_sum(prepare))}"
+        )
+    lines.append("")
+    return lines
+
+
+_GROUPS = (
+    ("Schema fixture (v1)", 1, "fixture", V1_FIXTURE_PHASES),
+    ("Schema migration (v1)", 1, "migration", V1_MIGRATION_PHASES),
+    ("Template fixture (v2)", 2, "fixture", V2_TEMPLATE_FIXTURE_PHASES),
+    ("Template prepare (v2)", 2, "template_prepare", V2_TEMPLATE_PREPARE_PHASES),
+)
+
+_CAVEATS = (
+    "Caveats:",
+    "- v1: within one schema fixture the five stages are disjoint and may be summed; "
+    "the fixture `migrate` stage already contains migration lock-wait and apply time, "
+    "so adding those migration events to it would double count.",
+    "- v2: the four template fixture stages are disjoint and may be summed, but "
+    "`fixture_total_ms` is the wrapper timer that already contains them plus "
+    "interstage overhead; do not add clone stages to it.",
+    "- v2: `template_prepare_ms` is a separate template build; its inner migration "
+    "diagnostic is suppressed, so migration counts here are not every migrate call.",
+    "- migration events can be standalone; do not join fixture rows and migration rows "
+    "solely by PID or test identity.",
+    "- no aggregate of stage durations across calls or concurrently running tests "
+    "implies wall-clock speedup.",
+    "- counts here are fixture/migration/prepare invocations that emitted timing rows, "
+    "not the total number of tests; standalone migration errors are not failed tests. "
+    "Read total tests/failures/wall-clock time from the test logs and CI step durations.",
+)
+
+
+def render(records: list[dict]) -> str:
+    lines: list[str] = []
+    lines.append("DB timing report (issue #710 STAGE 1)")
+    counts = {}
+    for _title, version, event, _order in _GROUPS:
+        counts[(version, event)] = sum(
+            1 for record in records if record["version"] == version and record["event"] == event
+        )
     lines.append(
         f"Records: {len(records)} total "
-        f"(fixture={len(fixtures)}, migration={len(migrations)})"
-    )
-    lines.append(
-        f"Fixture calls: {len(fixtures)} (ok={fixture_ok}, error={fixture_err})"
-    )
-    lines.append(
-        f"Migration calls: {len(migrations)} (ok={migration_ok}, error={migration_err})"
+        f"(schema_fixture={counts[(1, 'fixture')]}, "
+        f"schema_migration={counts[(1, 'migration')]}, "
+        f"template_fixture={counts[(2, 'fixture')]}, "
+        f"template_prepare={counts[(2, 'template_prepare')]})"
     )
     lines.append("")
-    lines.extend(_render_table("Fixture phases (ms)", fixtures, FIXTURE_PHASES))
-    lines.extend(_render_table("Migration phases (ms)", migrations, MIGRATION_PHASES))
-    lines.append("Caveats:")
-    lines.append(
-        "- within one fixture the five stages are disjoint and may be summed; a "
-        "fixture `migrate` span already contains the migration lock-wait and apply "
-        "time, so adding those migration spans to it would double count."
-    )
-    lines.append(
-        "- migration events can be standalone; do not join fixture rows and migration "
-        "rows solely by PID or test identity."
-    )
-    lines.append(
-        "- no aggregate of stage durations across calls or concurrently running tests "
-        "implies wall-clock speedup."
-    )
-    lines.append(
-        "- counts here are fixture/migration invocations that emitted timing rows, "
-        "not the total number of tests; read total tests/failures/wall-clock time "
-        "from the test logs and CI step durations."
-    )
+
+    for title, version, event, order in _GROUPS:
+        selected = [
+            record
+            for record in records
+            if record["version"] == version and record["event"] == event
+        ]
+        lines.extend(_render_table(title, selected, order))
+        if version == 2 and event == "fixture":
+            lines.extend(
+                _render_rows("Template fixture overall (v2)", _template_total_rows(selected))
+            )
+
+    lines.extend(_cost_summary(records))
+    lines.extend(_CAVEATS)
     lines.append("")
     return "\n".join(lines)
 
@@ -356,13 +520,21 @@ def main(argv: list[str]) -> int:
         description="Validate and summarize the issue #710 database timing JSONL file",
     )
     parser.add_argument("path", type=Path, help="JSONL timing file to report on")
+    parser.add_argument(
+        "--junit",
+        type=Path,
+        default=None,
+        help="optional nextest JUnit XML for the two stage 1 candidate comparisons",
+    )
     args = parser.parse_args(argv)
 
     try:
         records = load_records(args.path)
-        # render 的聚合统计也可能溢出；必须在写任何 stdout 之前捕获。
+        # render/compare 的聚合统计也可能溢出；必须在写任何 stdout 之前捕获。
         output = render(records)
-    except InvalidInput as error:
+        if args.junit is not None:
+            output += "\n".join(db_timing_junit.compare(records, args.junit))
+    except (InvalidInput, db_timing_junit.JunitError) as error:
         # 只输出静态原因（可能带行号），不回显原始输入。
         print(f"db_timing_report: invalid timing input ({error})", file=sys.stderr)
         return 1
