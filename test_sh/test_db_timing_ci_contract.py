@@ -230,35 +230,23 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("if: ${{ always() }}", "\n".join(cleanup_block))
         self.assertIn("bash test_sh/test_database.sh cleanup", "\n".join(cleanup_block))
 
-    def test_coverage_step_does_not_wipe_the_helper_build(self) -> None:
-        # `cargo-llvm-cov` 默认会对默认 target 目录跑 `cargo clean --package`
-        # （实测会删掉约 22 GiB，几乎是整棵 target），把 prepare 建好的普通 dev
-        # 产物清掉，于是随后的 cleanup 步骤必须从零重编依赖（实测每分片约
-        # 40–47s）。`--no-clean` 关掉这次清理。
+    def test_coverage_step_keeps_the_default_target_dir(self) -> None:
+        # 已试过两种「省掉 cleanup 重编」的改法，**都没有效果**，不要重复：
         #
-        # 尝试过用独立 `CARGO_TARGET_DIR` 隔离辅助程序，实测是**净回归**：那个目录
-        # 不在 rust-cache 覆盖范围内，prepare 从 48s 涨到 111–141s（热缓存重跑仍是
-        # 111–139s），而 cleanup 只省下约 45s。因此必须用 `--no-clean`，不要改回
-        # 独立 target 目录。
+        # 1) 给模板辅助程序独立的 `CARGO_TARGET_DIR=target/test-db-tool`：实测
+        #    净回归。该目录不在 rust-cache 覆盖内，prepare 从 48s 涨到 111–141s
+        #    （热缓存重跑仍 111–139s），而 cleanup 只省约 45s，工作流 7m20s → 8m17s。
+        # 2) 给 `cargo llvm-cov nextest` 加 `--no-clean`：实测无效，cleanup 仍
+        #    重编 38–51s（`--no-clean` 关掉的是 `cargo clean`，不是 flush 行为）。
+        #
+        # 因此这里只锁定「不要引入独立 target 目录」这一条已验证的负面结论；
+        # cleanup 重编的根因尚未定位，见 db_timing_results.md 的「剩余浪费」。
         test_block = "\n".join(self.block(self.step_index_by_name(TEST_STEP)))
-        self.assertIn("--no-clean", test_block)
         self.assertNotIn("CARGO_TARGET_DIR", test_block)
-        prepare_block = "\n".join(self.block(self.step_index_by_name(PREPARE_STEP)))
-        cleanup_block = "\n".join(self.block(self.step_index_by_name(CLEANUP_STEP)))
-        self.assertNotIn("CARGO_TARGET_DIR", prepare_block)
-        self.assertNotIn("CARGO_TARGET_DIR", cleanup_block)
-
-    def test_stale_profiles_are_cleared_before_the_no_clean_run(self) -> None:
-        # `--no-clean` 会保留旧产物，README 明确警告可能造成覆盖率的假阳/假阴；
-        # 因此必须在跑测试前清掉恢复自缓存的 profraw/profdata，避免旧运行的数据
-        # 混进本次合并。
-        clear = self.step_index_by_name("Clear stale coverage profiles from the restored cache")
-        test = self.step_index_by_name(TEST_STEP)
-        self.assertLess(clear, test)
-        block = "\n".join(self.block(clear))
-        self.assertIn("rm -f", block)
-        self.assertIn("target/llvm-cov-target/*.profraw", block)
-        self.assertIn("target/llvm-cov-target/*.profdata", block)
+        self.assertNotIn("--no-clean", test_block)
+        for step in (PREPARE_STEP, CLEANUP_STEP):
+            block = "\n".join(self.block(self.step_index_by_name(step)))
+            self.assertNotIn("CARGO_TARGET_DIR", block)
 
     def test_shard_artifacts_are_always_uploaded(self) -> None:
         coverage_upload = self.step_index_by_name("Upload shard coverage report")

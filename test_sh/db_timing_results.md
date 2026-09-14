@@ -373,20 +373,41 @@ python3 .codex/skills/src-line-limit/scripts/check_src_lines.py --base 60ac1a4
 
 ### 已知的剩余浪费（下一步）
 
-- **`Cleanup template database` 每个分片仍编译约 40–47s**：日志显示它在重新编译
-  ring/rustls/sqlx/reqwest/lettre/`chenxing-auth`（`Finished dev profile in
-  45.78s`）。llvm-cov 的插桩构建改变了 `target/` 指纹，使随后的普通 `dev`
-  构建需要重编。这是纯浪费，四个分片各付一次。
-- `Prepare template database` 每个分片 37–52s，其中大部分同样是编译
+- **`Cleanup template database` 每个分片仍编译 38–51s**：日志显示它在重新编译
+  ring/rustls/sqlx/reqwest/lettre/`chenxing-auth`。这是四个分片各付一次的浪费，
+  但**根因尚未定位**。
+- `Prepare template database` 每个分片 37–53s，其中大部分同样是编译
   `test_database` 示例与依赖，而非建库本身（建库只需 `template_prepare_ms`
   约 1s 量级）。
 - 分片数仍是 4；是否加到 8 需要新的实测，不能靠推算。
 
+#### 两次「省掉 cleanup 重编」的尝试都失败（已回退，不要重复）
+
+两次都基于**未经验证的假设**就改了 CI，结果一次是净回归、一次完全无效。记录在此
+避免重复同样的错误：
+
+1. **独立 `CARGO_TARGET_DIR=target/test-db-tool`**（`22c65f3`）：假设是
+   `cargo-llvm-cov` 的默认 `cargo clean` 清掉了普通 dev 产物。实测**净回归**——
+   该目录不在 rust-cache 覆盖范围内，`prepare` 从 48s 涨到 **111–141s**，而
+   `cleanup` 只省下约 45s，工作流从 7m20s **恶化到 8m17s**。热缓存重跑仍是
+   111–139s，确认不是冷缓存的一次性成本。
+2. **`cargo llvm-cov nextest --no-clean`**（`53536d5`）：假设同上，只是换个开关。
+   实测**完全无效**，cleanup 仍重编 **38–51s**（`--no-clean` 只影响
+   `cargo clean`，不改变 llvm-cov 让普通 target 失效的行为）。
+
+两处改动都已回退。负面结论已写进
+`test_sh/test_db_timing_ci_contract.py` 的契约测试，防止再次引入。
+
+顺带确认的一件事实：`cargo clean -p chenxing-auth` 在本地会删除
+**10281 个文件 / 22.2 GiB**（`cargo clean --dry-run` 实测），所以「谁在动
+`target/`」这件事值得继续查，但上面的两种猜测都不是答案。
+
 ### 口径边界
 
-- 这是**单次**成功的 run（`8f7c27f`）。按 `db_timing.md` 的 KPI 定义，达标要
-  看**连续 3 次 run 的中位数**，因此当前只能说「首次全绿即低于 8 分钟目标」，
-  还不能宣布稳定达标。
+- 三次连续全绿的工作流总时长：`8f7c27f` **7m11s**、`5f3875f` **7m20s**、
+  `22c65f3` 8m17s（含上面第 1 项的错误改动）。前两次是未叠加失败改动的架构，
+  中位数 **7m15.5s**，低于 8 分钟目标。`22c65f3` 因为带错误改动而偏慢，不作为
+  目标架构样本。回退后的 run 会补第三个干净样本。
 - 覆盖率用 `test_sh/merge_lcov.py` 合并各分片 lcov（同一行取最大值），与原生
   LF/LH 口径接近但不等价：它只累计有 `DA` 记录的行，因此数值可能略高于或低于
   原生值。真实工件上的对照为合并 81.88% 对原生 81.75%，两者都远高于 75% 门槛。
