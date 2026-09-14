@@ -371,7 +371,7 @@ python3 .codex/skills/src-line-limit/scripts/check_src_lines.py --base 60ac1a4
   `src/db/migration_compat.rs:38-47`）；现在四个分片各自连独立 PostgreSQL 实例，
   锁不再跨分片共享。这正是总时长从 14m37s 降到 7m11s 的主因。
 
-### 已知的剩余浪费（下一步）
+### 四分片阶段观察到的剩余成本
 
 - **`Cleanup template database` 每个分片仍编译 38–51s**：日志显示它在重新编译
   ring/rustls/sqlx/reqwest/lettre/`chenxing-auth`。这是四个分片各付一次的浪费，
@@ -379,7 +379,7 @@ python3 .codex/skills/src-line-limit/scripts/check_src_lines.py --base 60ac1a4
 - `Prepare template database` 每个分片 37–53s，其中大部分同样是编译
   `test_database` 示例与依赖，而非建库本身（建库只需 `template_prepare_ms`
   约 1s 量级）。
-- 分片数仍是 4；是否加到 8 需要新的实测，不能靠推算。
+- 该阶段分片数为 4；加到 8 的收益需要新的实测，不能靠推算。
 
 #### 两次「省掉 cleanup 重编」的尝试都失败（已回退，不要重复）
 
@@ -414,3 +414,46 @@ python3 .codex/skills/src-line-limit/scripts/check_src_lines.py --base 60ac1a4
 - 失败上报的两条链路已修：首次 run（`4f9b375`）暴露了合并步骤对 artifact 嵌套
   路径的错误假设（`download-artifact` 会按 artifact 名建一层子目录），已改为按
   文件名递归查找并补回归测试（`8f7c27f`）。
+
+## 八分片与容器回收（实现完成，性能待 CI 验证）
+
+本轮把 matrix 和 `SHARDS` 同步改为 8，仍由同一个分母控制 nextest 的 slice 划分
+和 lcov 合并的完整性检查。契约测试比较配置值与完整的 `1..N` 分片 ID，防止只改
+分母、漏分片或重复分片。行覆盖率门槛仍为 75%，测试集合和 Rust 配置不变。
+
+移除测试 job 末尾的 `Cleanup template database`：这些 PostgreSQL / Redis 是 job
+专属 service container，GitHub 在 job 完成时销毁它们，数据库无需再单独清理。
+依据：[GitHub service container 生命周期](https://docs.github.com/en/actions/concepts/use-cases/about-service-containers)。
+本地 cleanup wrapper 与 platform 生命周期回归仍保留；这是省掉一次冗余调用，
+**不代表已定位或修复重新编译的根因**。
+
+### 回退后四分片基准（`54d36f7` / run 34851342516）
+
+以下时间来自 [GitHub run](https://github.com/chenming0v0/chenxing-auth/actions/runs/34851342516)
+及 jobs API 的 `started_at` / `completed_at`，是墙钟而非编译日志内的分项估算：
+
+| shard | Prepare template | Run tests（含编译） | Cleanup template | job 合计 |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 53s | 249s | 49s | 6m38s |
+| 2 | 48s | 217s | 43s | 6m13s |
+| 3 | 50s | 259s | 45s | 6m35s |
+| 4 | 54s | 261s | 53s | 6m48s |
+
+- run 创建于 13:46:34 UTC；quality 于 13:49:22 完成，coverage 于 13:53:40 完成，
+  **质量检查完成耗时 7m06s**。
+- Apifox 从 13:53:42 跑到 14:00:58，耗时 **7m16s**；run 于 14:00:59 更新为成功，
+  **工作流总时长 14m25s**，不能称为「工作流约 7 分钟」。
+- 上文的两个干净历史样本及其 7m15.5s 中位数不足以证明三次验收；这次回退后的
+  干净样本又暴露了 Apifox 对总时长的影响。不能据此宣称连续三次 ≤ 8 分钟已达成。
+
+本轮预期减少 cleanup 的 43–53s，并通过更多独立实例缩短测试执行，但编译、缓存、
+runner 排队、用例分布及外部同步仍会影响墙钟。必须用同一配置的三次成功 run，分别
+记录全部测试通过情况、合并覆盖率、最慢分片、质量检查完成耗时、Apifox 和工作流
+总时长，再报告收益；目前没有八分片运行结果。
+
+本地轻量验证：135 项 DB timing / CI / 合并契约测试、模板 wrapper、部署契约
+（含部署 Compose 解析）、运行器契约、生产 Compose 解析、Action 固定引用及两个
+workflow 的 YAML 基础结构检查通过。CI 内嵌 shell 与安装脚本语法、发布产物和
+SHA256SUMS 声明检查通过；四种内存内错误配置（分母错误、缺片、重复、越界）都被
+分片契约拒绝。`src-line-limit` 默认增量检查没有匹配文件，因为本轮未修改 `src`；
+这不是全仓零警告结论。本地没有运行 Rust 全量测试，也没有测出新的覆盖率数字。

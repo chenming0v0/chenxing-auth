@@ -27,13 +27,11 @@ TIMING_VAR = "CHENXING_TEST_DB_TIMING_FILE"
 TIMING_VALUE = "${{ runner.temp }}/db-timing.jsonl"
 TEST_STEP = "Run Rust tests in parallel"
 PREPARE_STEP = "Prepare template database"
-CLEANUP_STEP = "Cleanup template database"
 REPORT_STEP = "Report database timing baseline"
 MERGE_LCOV_STEP = "Merge shard coverage and enforce the line threshold"
 MERGE_DIAGNOSTICS_STEP = "Merge shard diagnostics"
 TEMPLATE_DB_VAR = "CHENXING_TEST_TEMPLATE_DATABASE"
 PREFIX_VAR = "CHENXING_TEST_DATABASE_PREFIX"
-SHARDS = 4
 
 
 class WorkflowContractTest(unittest.TestCase):
@@ -105,7 +103,8 @@ class WorkflowContractTest(unittest.TestCase):
     # --------------------------------------------- sharding is the mechanism
     def test_test_job_shards_with_its_own_postgres_and_redis(self) -> None:
         test_job = self.job_text("test")
-        self.assertIn("shard: [1, 2, 3, 4]", test_job)
+        self.assertIn("    services:", test_job)
+        self.assertIn("runs-on: ubuntu-latest", test_job)
         self.assertIn("fail-fast: false", test_job)
         # Each shard needs its own service containers: the migration advisory lock
         # id is derived from `current_database()`, so only a separate database per
@@ -122,8 +121,13 @@ class WorkflowContractTest(unittest.TestCase):
         matrix = re.search(r"shard: \[([^\]]+)\]", self.job_text("test"))
         assert matrix is not None, "test job must declare a shard matrix"
         declared = [part.strip() for part in matrix.group(1).split(",")]
-        self.assertEqual(len(declared), SHARDS)
-        self.assertIn("SHARDS", "\n".join(self.lines))
+        configured = re.search(r'^  SHARDS: "([1-9][0-9]*)"$', "\n".join(self.lines), re.M)
+        assert configured is not None, "workflow must declare a positive SHARDS count"
+        count = int(configured.group(1))
+        self.assertGreater(count, 1)
+        # Counting entries alone misses duplicated or out-of-range partitions;
+        # compare all IDs with the actual denominator used by nextest and merge.
+        self.assertEqual(declared, [str(shard) for shard in range(1, count + 1)])
 
     def test_shards_use_slice_partition_and_no_threshold(self) -> None:
         test_block = "\n".join(self.block(self.step_index_by_name(TEST_STEP)))
@@ -142,7 +146,7 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertNotIn("llvm-cov nextest", coverage)
         self.assertNotIn("cargo nextest", coverage)
         self.assertIn("cargo llvm-cov nextest", self.job_text("test"))
-        # The full suite runs once per shard, so there are exactly SHARDS runs.
+        # Each shard runs one distinct slice; together they cover the suite once.
         self.assertNotIn("Run Rust tests in parallel", coverage)
 
     # ------------------------------------------------- coverage: merge + gate
@@ -221,14 +225,13 @@ class WorkflowContractTest(unittest.TestCase):
         prepare_block = self.block(prepare)
         self.assertIn("bash test_sh/test_database.sh prepare", "\n".join(prepare_block))
 
-    def test_cleanup_runs_immediately_after_tests_and_always(self) -> None:
+    def test_disposable_services_need_no_post_test_cleanup(self) -> None:
+        # GitHub destroys the job-local service containers at job completion.
+        # Cleanup behavior remains covered by the platform lifecycle tests;
+        # local runs against persistent databases still use the cleanup wrapper.
+        self.assertNotIn("test_database.sh cleanup", self.job_text("test"))
         test = self.step_index_by_name(TEST_STEP)
-        cleanup = self.step_index_by_name(CLEANUP_STEP)
-        self.assertEqual(self.next_step_name(test), CLEANUP_STEP)
-        self.assertLess(test, cleanup)
-        cleanup_block = self.block(cleanup)
-        self.assertIn("if: ${{ always() }}", "\n".join(cleanup_block))
-        self.assertIn("bash test_sh/test_database.sh cleanup", "\n".join(cleanup_block))
+        self.assertEqual(self.next_step_name(test), "Upload shard coverage report")
 
     def test_coverage_step_keeps_the_default_target_dir(self) -> None:
         # 已试过两种「省掉 cleanup 重编」的改法，**都没有效果**，不要重复：
@@ -240,13 +243,12 @@ class WorkflowContractTest(unittest.TestCase):
         #    重编 38–51s（`--no-clean` 关掉的是 `cargo clean`，不是 flush 行为）。
         #
         # 因此这里只锁定「不要引入独立 target 目录」这一条已验证的负面结论；
-        # cleanup 重编的根因尚未定位，见 db_timing_results.md 的「剩余浪费」。
+        # cleanup 重编的根因尚未定位；现在 CI 随容器销毁回收数据库，见结果页。
         test_block = "\n".join(self.block(self.step_index_by_name(TEST_STEP)))
         self.assertNotIn("CARGO_TARGET_DIR", test_block)
         self.assertNotIn("--no-clean", test_block)
-        for step in (PREPARE_STEP, CLEANUP_STEP):
-            block = "\n".join(self.block(self.step_index_by_name(step)))
-            self.assertNotIn("CARGO_TARGET_DIR", block)
+        prepare_block = "\n".join(self.block(self.step_index_by_name(PREPARE_STEP)))
+        self.assertNotIn("CARGO_TARGET_DIR", prepare_block)
 
     def test_shard_artifacts_are_always_uploaded(self) -> None:
         coverage_upload = self.step_index_by_name("Upload shard coverage report")

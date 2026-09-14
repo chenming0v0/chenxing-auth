@@ -14,7 +14,7 @@ concurrency:
 
 # Rust 测试套件的分片数（issue #710 转向）。
 #
-# 旧结构把 1909 个测试塞在一个 job 里跑两遍（quality + coverage），而墙钟的
+# 旧结构把 1909 个测试塞进一个 job 里跑两遍（quality + coverage），而墙钟的
 # ~87% 卡在同一把 PostgreSQL 迁移锁上：src/db/migration_compat.rs 用 SQLx 的
 # `pg_advisory_lock`，锁 ID 只由 `current_database()` 生成，因此所有走 schema
 # 路径的测试共用一个数据库、排队等同一把 session 级锁
@@ -22,8 +22,11 @@ concurrency:
 #
 # 每个分片自带独立的 PostgreSQL / Redis service container，锁 ID 随数据库名
 # 变化，串行的迁移工作被切成 N 份并行，而不是继续排在一把锁上。
+#
+# 本轮从 4 增至 8；收益以 CI 墙钟实测为准。容器初始化、模板辅助程序和插桩
+# 编译仍是每个分片的固定成本，不能假设分片加倍就让整个 job 耗时减半。
 env:
-  SHARDS: "4"
+  SHARDS: "8"
 
 jobs:
   # 静态检查：不跑集成测试，也不需要数据库。测试在 `test` 分片里只跑一次。
@@ -163,7 +166,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     services:
       postgres:
         image: postgres:16-alpine
@@ -205,7 +208,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # All shards share one instrumented build cache; only shard 1 saves it
-          # so four parallel jobs cannot race to write the same key.
+          # so parallel jobs cannot race to write the same key.
           shared-key: rust-coverage
           save-if: ${{ matrix.shard == 1 }}
       - name: Install cargo-nextest and cargo-llvm-cov
@@ -229,10 +232,9 @@ jobs:
           cargo llvm-cov nextest --all-features --workspace
           --partition slice:${{ matrix.shard }}/${{ env.SHARDS }}
           --lcov --output-path lcov-shard-${{ matrix.shard }}.info
-      - name: Cleanup template database
-        if: ${{ always() }}
-        shell: bash
-        run: bash test_sh/test_database.sh cleanup
+      # GitHub destroys these job-local service containers when the job ends.
+      # No extra helper build is needed to drop their disposable databases here;
+      # template_lifecycle tests still exercise cleanup, including live sessions.
       - name: Upload shard coverage report
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -276,7 +278,7 @@ jobs:
           merge-multiple: true
           path: coverage-shards
       # 唯一权威的行覆盖率门槛在这里判定：分片上的局部覆盖率不具备判定资格。
-      # `--expect-shards` 要求四个分片全部到齐，缺一个就直接失败，避免用部分数据
+      # `--expect-shards` 要求所有分片全部到齐，缺一个就直接失败，避免用部分数据
       # 算出偏高的覆盖率而误绿。
       - name: Merge shard coverage and enforce the line threshold
         run: >-

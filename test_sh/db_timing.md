@@ -15,11 +15,11 @@ STAGE 0–3 的逐批 template 化**没有让 CI 变快**，反而让关键路�
 
 现行方向：
 
-1. **测试分片 + 每分片独立 PostgreSQL**（`test` job，matrix 4 路）。锁 ID 随数据库名
-   变化，串行的迁移工作被切成 4 份并行。分片用 `--partition slice:`；**不在分片上
+1. **测试分片 + 每分片独立 PostgreSQL**（`test` job，matrix 8 路）。各实例独立持有
+   迁移锁，串行的迁移工作被切成 8 份并行。分片用 `--partition slice:`；**不在分片上
    判覆盖率门槛**。
 2. **覆盖率门槛只在合并后判定**：`coverage` job 合并各分片 lcov
-   （`test_sh/merge_lcov.py`），行覆盖率门槛只在那里生效，且要求 4 个分片全部到齐。
+   （`test_sh/merge_lcov.py`），行覆盖率门槛只在那里生效，且要求 8 个分片全部到齐。
 3. **测试只跑一遍**：`quality` job 只做静态检查（fmt / clippy / 脚本契约 / web），
    不再重复整套 nextest；`coverage` job 不再 prepare/cleanup 模板、也不再重跑测试。
 
@@ -27,8 +27,9 @@ STAGE 0–3 的逐批 template 化**没有让 CI 变快**，反而让关键路�
 判定；基线为 14m37s（`f644df5`）。
 
 注意关键路径已经改变：转向后 `coverage` job 只做合并（约 10s），真正的长板是**最慢
-的那个分片 job**（`test` matrix 里各跑约 477 个用例）。因此盯分片 job 墙钟才有意义；
-workflow 总时长则等于「最慢分片 + 合并 + apifox」的串行尾巴。
+的那个分片 job**（8 路预计各跑约 239 个用例，收益待 CI 实测）。质量检查完成时间取
+`quality` 和「全部分片 + coverage 合并」两条路径较晚者；workflow 总时长还包含排队、
+调度和 Apifox 同步，必须分开记录，不能用质量检查完成时间代替总时长。
 
 **禁止**再用「聚合相位和下降」或单次运行作为提速证据（相位和是并行样本，
 不是墙钟）。
@@ -132,10 +133,10 @@ workflow 总时长则等于「最慢分片 + 合并 + apifox」的串行尾巴�
 - 模板库名 **精确等于** `prefix + "template"`。
 - 克隆库名格式为 `prefix + <16 位小写 hex> + "_" + <正数 canonical u32 PID>`。
 
-CI 两个 job 用各自独立的命名空间（job 级 env），互不覆盖：
+CI 每个测试分片使用独立命名空间（job 级 env），互不覆盖：
 
-- quality：`ctest_${{ github.run_id }}_${{ github.run_attempt }}_quality_`
-- coverage：`ctest_${{ github.run_id }}_${{ github.run_attempt }}_coverage_`
+- `test`：`ctest_${{ github.run_id }}_${{ github.run_attempt }}_s${{ matrix.shard }}_`
+- `quality` 与 `coverage` 不准备模板库。
 
 模板库与克隆库都是测试基础设施，只承载一次性测试 schema。它们**不是安全边界**：
 模板按当前数据库 owner 的权限运行，是“只读的运维便利”，不要把它当成提权隔离
@@ -232,16 +233,15 @@ fixture 行、固定 binary 标签 `integration_storage`、`outcome=ok`。缺失
   OpenAPI 校验、部署/运行器/模板 wrapper 契约、Redis 崩溃恢复、迁移 checksum、
   `src` 行数、`cargo fmt`、`cargo check`、`cargo clippy`、`cargo audit`。
   **不跑集成测试**——测试只在分片 job 里跑一次。
-- **`test`（matrix 4 个分片，每个自带独立 PostgreSQL + Redis）**：装 nextest +
+- **`test`（matrix 8 个分片，每个自带独立 PostgreSQL + Redis）**：装 nextest +
   llvm-cov → `Prepare template database`（写 timing JSONL）→
-  `Run Rust tests in parallel`（`cargo llvm-cov nextest --partition slice:m/4`，
-  同一 JSONL，产出**本分片局部**的 `lcov-shard-m.info`）→ 无条件
-  `Cleanup template database`（失败即让 job 失败）→ 无条件上传
+  `Run Rust tests in parallel`（`cargo llvm-cov nextest --partition slice:m/8`，
+  同一 JSONL，产出**本分片局部**的 `lcov-shard-m.info`）→ 无条件上传
   `lcov-shard-<m>` 与 `test-diagnostics-shard-<m>`。分片**不判覆盖率门槛**：
   局部覆盖率不是整套覆盖率。
 - **`coverage`（合并 + 唯一门槛）**：下载 `lcov-shard-*` 与
   `test-diagnostics-shard-*` → `merge_lcov.py` 合并并判 `--fail-under-lines 75`
-  （`--expect-shards 4`，缺分片直接失败）→ `merge_diagnostics.py` 把各分片的
+  （`--expect-shards 8`，缺分片直接失败）→ `merge_diagnostics.py` 把各分片的
   JSONL/JUnit 合成整套视图 → `db_timing_report.py --junit` 渲染报告并写 step
   summary → 上传 `db-timing-diagnostics` 与 `rust-coverage`。这个 job **不装
   Rust 工具链、不用 rust-cache、不 prepare/cleanup 模板、不跑测试**：它只是
@@ -255,8 +255,14 @@ fixture 行、固定 binary 标签 `integration_storage`、`outcome=ok`。缺失
 nextest 只在现有 default profile 增加 JUnit 输出（`[profile.default.junit]`），
 不新建 profile、不改并发/override/retry。
 
-分片命名空间按分片隔离（`ctest_<run>_<attempt>_s<m>_`），四个分片的
+分片命名空间按分片隔离（`ctest_<run>_<attempt>_s<m>_`），八个分片的
 template/clone 库不会互相碰撞；命名空间语法仍要求 `template == prefix + "template"`。
+
+CI 不再单独调用 cleanup：GitHub 在 job 完成时销毁该 job 的 service container，
+其中的测试数据库随之回收（[官方生命周期说明](https://docs.github.com/en/actions/concepts/use-cases/about-service-containers)）。
+`tests/platform/template_lifecycle/cleanup.rs` 仍验证克隆库和模板库清理、活动连接终止、
+重复清理及相似库名保护。本地使用持久 PostgreSQL，仍须按上面的 EXIT trap 执行 cleanup；
+如果未来改为外部数据库或持久卷，应重新设计 job 结束时的清理。
 
 ## JSONL 契约
 
@@ -310,9 +316,9 @@ NaN/Infinity、负时长、未知事件/相位、缺失必需相位、多余字�
 
 **现行方向（分片 + 合并门槛）的验收**：
 
-- **主 KPI**：`coverage` job 墙钟（关键路径）**≤ 8 分钟**。基线 14m11s
-  （`f644df5`，run 34755328667）。判定按**连续 3 次成功 run 的中位数**，
-  不是单次运行。
+- **主 KPI**：**工作流总时长 ≤ 8 分钟**。基线 14m37s
+  （`f644df5`，run 34755328667）。按同一配置的**连续 3 次成功 run 的中位数**判定，
+  不能只计已经缩短为合并步骤的 `coverage` job，也不能排除 Apifox 尾部耗时。
 - 次 KPI：`quality` job 墙钟；基线 12m54s（静态检查去掉整套测试后应显著下降）。
 - 正确性门槛：**1909/1909 passed**、合并后行覆盖率 ≥ 75%、失败能定位到具体用例。
 - **禁止**再用聚合相位和、或用两个候选用例的耗时声称整套提速
