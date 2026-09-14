@@ -95,14 +95,24 @@ class MergeJunitTest(unittest.TestCase):
 
 
 class MergeDiagnosticsTest(unittest.TestCase):
-    def _shard(self, root: Path, name: str, records: list[str], *, junit_text: str | None) -> None:
+    def _shard(
+        self,
+        root: Path,
+        name: str,
+        records: list[str],
+        *,
+        junit_text: str | None,
+        junit_relative: str = "junit.xml",
+        timing_relative: str = "db-timing.jsonl",
+    ) -> None:
         directory = root / name
-        directory.mkdir(parents=True)
-        (directory / "db-timing.jsonl").write_text(
-            "\n".join(records) + "\n", encoding="utf-8"
-        )
+        timing = directory / timing_relative
+        timing.parent.mkdir(parents=True, exist_ok=True)
+        timing.write_text("\n".join(records) + "\n", encoding="utf-8")
         if junit_text is not None:
-            (directory / "junit.xml").write_text(junit_text, encoding="utf-8")
+            junit = directory / junit_relative
+            junit.parent.mkdir(parents=True, exist_ok=True)
+            junit.write_text(junit_text, encoding="utf-8")
 
     def test_concatenates_records_and_merges_junit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,6 +136,39 @@ class MergeDiagnosticsTest(unittest.TestCase):
                 [case.get("name") for case in merged.iter("testcase")], ["t1", "t2"]
             )
             self.assertTrue((out / "db-timing.jsonl").is_file())
+
+    def test_handles_the_nested_artifact_layout(self) -> None:
+        # `actions/upload-artifact` 保留上传时的相对路径，`download-artifact` 再按
+        # artifact 名建一层子目录，于是真实落点是深层嵌套的，形如
+        # `test-diagnostics-shard-1/_temp/db-timing.jsonl` 和
+        # `test-diagnostics-shard-1/owner/repo/target/nextest/default/junit.xml`。
+        # 合并必须按文件名递归查找，不能假设任何中间层级。
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            root = tmp_path / "shard-diagnostics"
+            self._shard(
+                root, "test-diagnostics-shard-1",
+                ['{"version": 1, "event": "fixture"}'],
+                timing_relative="_temp/db-timing.jsonl",
+                junit_relative="chenxing-auth/chenxing-auth/target/nextest/default/junit.xml",
+                junit_text=junit_file([("t1", "chenxing-auth", "1.0")]),
+            )
+            self._shard(
+                root, "test-diagnostics-shard-2",
+                ['{"version": 2, "event": "template_prepare"}'],
+                timing_relative="_temp/db-timing.jsonl",
+                junit_relative="chenxing-auth/chenxing-auth/target/nextest/default/junit.xml",
+                junit_text=junit_file([("t2", "chenxing-auth", "2.0")]),
+            )
+            out = tmp_path / "merged"
+
+            count, junits = diagnostics.merge_diagnostics(root, out)
+            self.assertEqual(count, 2)
+            self.assertEqual(len(junits), 2)
+            merged = ET.parse(out / "junit.xml").getroot()
+            self.assertEqual(
+                [case.get("name") for case in merged.iter("testcase")], ["t1", "t2"]
+            )
 
     def test_rejects_invalid_json_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
