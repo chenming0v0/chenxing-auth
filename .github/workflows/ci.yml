@@ -217,13 +217,19 @@ jobs:
         shell: bash
         env:
           CHENXING_TEST_DB_TIMING_FILE: ${{ runner.temp }}/db-timing.jsonl
-          # 让 `test_database` 辅助程序在自己的 target 目录里构建：cargo-llvm-cov
-          # 的默认清理会动普通 `target/`（`cargo clean --package`），导致随后
-          # 的 cleanup 步骤重编 ring/rustls/sqlx/reqwest/lettre/chenxing-auth
-          # （实测每分片约 40–47s，纯浪费）。独立目录后 prepare 构建一次，
-          # cleanup 直接复用，且与插桩构建互不干扰。
-          CARGO_TARGET_DIR: target/test-db-tool
         run: bash test_sh/test_database.sh prepare
+      # `cargo-llvm-cov` 默认会对默认 target 目录跑 `cargo clean --package`（实测
+      # 会删掉约 22 GiB），把 prepare 阶段建好的普通 dev 产物整棵清掉，于是随后的
+      # `Cleanup template database` 必须从零重编一遍依赖（实测每分片约 40–47s）。
+      # `--no-clean` 关掉这次清理，让 cleanup 直接复用已有构建。
+      #
+      # 代价与缓解：`--no-clean` 会保留旧产物（README 警告可能造成覆盖率的假阳/
+      # 假阴），因此下一步显式清掉恢复自缓存的 profraw/profdata，避免旧运行数据
+      # 混入本次合并。插桩构建本身落在 `target/llvm-cov-target`，与默认 target 的
+      # 普通构建互不覆盖。
+      - name: Clear stale coverage profiles from the restored cache
+        shell: bash
+        run: rm -f target/llvm-cov-target/*.profraw target/llvm-cov-target/*.profdata
       # nextest 一测一进程，避免 oauth 代理边界用例改 HTTP_PROXY 污染 sibling。
       # `slice:` 把所有二进制里的测试汇总后 round-robin 切分，分布比已废弃的
       # `count:`（按二进制分桶）均匀。这里生成的是**本分片局部**的 lcov，
@@ -234,12 +240,11 @@ jobs:
         run: >-
           cargo llvm-cov nextest --all-features --workspace
           --partition slice:${{ matrix.shard }}/${{ env.SHARDS }}
+          --no-clean
           --lcov --output-path lcov-shard-${{ matrix.shard }}.info
       - name: Cleanup template database
         if: ${{ always() }}
         shell: bash
-        env:
-          CARGO_TARGET_DIR: target/test-db-tool
         run: bash test_sh/test_database.sh cleanup
       - name: Upload shard coverage report
         if: ${{ always() }}
