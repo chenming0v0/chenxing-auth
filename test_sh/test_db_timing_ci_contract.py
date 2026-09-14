@@ -230,6 +230,21 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("if: ${{ always() }}", "\n".join(cleanup_block))
         self.assertIn("bash test_sh/test_database.sh cleanup", "\n".join(cleanup_block))
 
+    def test_template_helper_build_is_isolated_from_the_coverage_clean(self) -> None:
+        # `cargo-llvm-cov` 默认会跑 `cargo clean --package <crate>`（实测会删掉
+        # 整个 target，约 22 GiB），因此 prepare 在 `target/` 里构建的
+        # `test_database` 辅助程序会被随后的 llvm-cov 步骤清掉，cleanup 只能从零
+        # 重编一遍依赖（实测每分片约 40–47s）。把辅助程序放进独立 target 目录后，
+        # prepare 构建一次、cleanup 直接复用，且与插桩构建互不干扰。
+        expected = "          CARGO_TARGET_DIR: target/test-db-tool"
+        prepare_block = self.block(self.step_index_by_name(PREPARE_STEP))
+        cleanup_block = self.block(self.step_index_by_name(CLEANUP_STEP))
+        self.assertIn(expected, prepare_block)
+        self.assertIn(expected, cleanup_block)
+        # 插桩测试步骤必须留在默认 target 目录，cargo-llvm-cov 依赖该布局。
+        test_block = "\n".join(self.block(self.step_index_by_name(TEST_STEP)))
+        self.assertNotIn("CARGO_TARGET_DIR", test_block)
+
     def test_shard_artifacts_are_always_uploaded(self) -> None:
         coverage_upload = self.step_index_by_name("Upload shard coverage report")
         diagnostics_upload = self.step_index_by_name("Upload shard diagnostics")
