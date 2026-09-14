@@ -12,39 +12,25 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Rust 测试套件的分片数（issue #710 转向）。
+#
+# 旧结构把 1909 个测试塞在一个 job 里跑两遍（quality + coverage），而墙钟的
+# ~87% 卡在同一把 PostgreSQL 迁移锁上：src/db/migration_compat.rs 用 SQLx 的
+# `pg_advisory_lock`，锁 ID 只由 `current_database()` 生成，因此所有走 schema
+# 路径的测试共用一个数据库、排队等同一把 session 级锁
+# （lock_wait 154.5s + apply 240.1s ≈ 394.6s，对比同次 nextest 墙钟 453.6s）。
+#
+# 每个分片自带独立的 PostgreSQL / Redis service container，锁 ID 随数据库名
+# 变化，串行的迁移工作被切成 N 份并行，而不是继续排在一把锁上。
+env:
+  SHARDS: "4"
+
 jobs:
+  # 静态检查：不跑集成测试，也不需要数据库。测试在 `test` 分片里只跑一次。
   quality:
-    name: Rust quality and tests
+    name: Rust quality and static checks
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: chenxing_auth
-          POSTGRES_USER: chenxing
-          POSTGRES_PASSWORD: chenxing
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U chenxing -d chenxing_auth"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 12
     env:
-      DATABASE_URL: postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth
-      REDIS_URL: redis://127.0.0.1:6379
-      MIGRATION_DATABASE_URL: postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth
-      CHENXING_TEST_TEMPLATE_DATABASE: ctest_${{ github.run_id }}_${{ github.run_attempt }}_quality_template
-      CHENXING_TEST_DATABASE_PREFIX: ctest_${{ github.run_id }}_${{ github.run_attempt }}_quality_
       RUST_BACKTRACE: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -123,63 +109,6 @@ jobs:
           exit "$failed"
       - run: cargo fmt --all -- --check
       - run: cargo check --all-targets --all-features
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
-        with:
-          tool: nextest@0.9.143
-          fallback: none
-      - name: Prepare template database
-        id: template_prepare
-        shell: bash
-        env:
-          CHENXING_TEST_DB_TIMING_FILE: ${{ runner.temp }}/db-timing.jsonl
-        run: bash test_sh/test_database.sh prepare
-      - name: Run Rust tests in parallel
-        id: rust_tests
-        env:
-          CHENXING_TEST_DB_TIMING_FILE: ${{ runner.temp }}/db-timing.jsonl
-        run: cargo nextest run --all-features
-      - name: Cleanup template database
-        if: ${{ always() }}
-        shell: bash
-        run: bash test_sh/test_database.sh cleanup
-      - name: Report database timing baseline
-        if: ${{ always() && (steps.template_prepare.outcome != 'skipped' || steps.rust_tests.outcome != 'skipped') }}
-        shell: bash
-        env:
-          TESTS_RAN: ${{ steps.rust_tests.outcome != 'skipped' }}
-        run: |
-          set -euo pipefail
-          report="$RUNNER_TEMP/db-timing-report.txt"
-          args=("$RUNNER_TEMP/db-timing.jsonl")
-          # Only require JUnit when the test step actually ran. If tests were
-          # skipped (e.g. prepare failed) the file does not exist, and demanding
-          # it would turn one prepare failure into a second, less informative red
-          # step. When tests ran, --junit stays mandatory so a missing or partial
-          # JUnit still fails closed.
-          if [ "$TESTS_RAN" = "true" ]; then
-            args+=(--junit target/nextest/default/junit.xml)
-          fi
-          python3 test_sh/db_timing_report.py ${args[@]+"${args[@]}"} | tee "$report"
-          # Append the real report, but never an empty code block to the summary.
-          if [ -s "$report" ]; then
-            {
-              printf '## DB timing baseline (issue #710)\n\n'
-              printf '```\n'
-              cat "$report"
-              printf '```\n'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - name: Upload database timing diagnostics
-        if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: db-timing-diagnostics
-          path: |
-            ${{ runner.temp }}/db-timing-report.txt
-            ${{ runner.temp }}/db-timing.jsonl
-            target/nextest/default/junit.xml
-          if-no-files-found: warn
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Install cargo-audit
         uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
@@ -225,9 +154,16 @@ jobs:
           printf -- '- Status: exception remains active because `rsa` is still on the 0.9.x line.\n' | tee -a "$GITHUB_STEP_SUMMARY"
       - run: cargo audit --ignore RUSTSEC-2023-0071
 
-  coverage:
-    name: Coverage gate
+  # 测试分片：每个分片一个独立 PostgreSQL 实例，迁移锁不再跨分片共享。
+  # 分片各自产出 lcov，但**不判覆盖率门槛**——分片上的覆盖率只是局部值，
+  # 门槛只能在 `coverage` job 合并后判定。
+  test:
+    name: Rust tests (shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     services:
       postgres:
         image: postgres:16-alpine
@@ -255,31 +191,150 @@ jobs:
       DATABASE_URL: postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth
       REDIS_URL: redis://127.0.0.1:6379
       MIGRATION_DATABASE_URL: postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth
-      CHENXING_TEST_TEMPLATE_DATABASE: ctest_${{ github.run_id }}_${{ github.run_attempt }}_coverage_template
-      CHENXING_TEST_DATABASE_PREFIX: ctest_${{ github.run_id }}_${{ github.run_attempt }}_coverage_
+      # Each shard owns a distinct namespace so its template/clone databases can
+      # never collide with another shard's; the namespace grammar requires
+      # `ctest_<token>_` and `template == prefix + "template"`.
+      CHENXING_TEST_TEMPLATE_DATABASE: ctest_${{ github.run_id }}_${{ github.run_attempt }}_s${{ matrix.shard }}_template
+      CHENXING_TEST_DATABASE_PREFIX: ctest_${{ github.run_id }}_${{ github.run_attempt }}_s${{ matrix.shard }}_
+      RUST_BACKTRACE: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           toolchain: 1.94.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # All shards share one instrumented build cache; only shard 1 saves it
+          # so four parallel jobs cannot race to write the same key.
+          shared-key: rust-coverage
+          save-if: ${{ matrix.shard == 1 }}
       - name: Install cargo-nextest and cargo-llvm-cov
         uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
         with:
           tool: nextest@0.9.143,cargo-llvm-cov@0.9.0
           fallback: none
       - name: Prepare template database
-        id: template_prepare
         shell: bash
+        env:
+          CHENXING_TEST_DB_TIMING_FILE: ${{ runner.temp }}/db-timing.jsonl
         run: bash test_sh/test_database.sh prepare
       # nextest 一测一进程，避免 oauth 代理边界用例改 HTTP_PROXY 污染 sibling。
-      # quality job 已经用 nextest；coverage 必须同一隔离模型，不能退回 cargo test。
-      - run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info --fail-under-lines 75
+      # `slice:` 把所有二进制里的测试汇总后 round-robin 切分，分布比已废弃的
+      # `count:`（按二进制分桶）均匀。这里生成的是**本分片局部**的 lcov，
+      # 不在这里判门槛——局部覆盖率不是整套覆盖率。
+      - name: Run Rust tests in parallel
+        env:
+          CHENXING_TEST_DB_TIMING_FILE: ${{ runner.temp }}/db-timing.jsonl
+        run: >-
+          cargo llvm-cov nextest --all-features --workspace
+          --partition slice:${{ matrix.shard }}/${{ env.SHARDS }}
+          --lcov --output-path lcov-shard-${{ matrix.shard }}.info
       - name: Cleanup template database
         if: ${{ always() }}
         shell: bash
         run: bash test_sh/test_database.sh cleanup
+      - name: Upload shard coverage report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lcov-shard-${{ matrix.shard }}
+          path: lcov-shard-${{ matrix.shard }}.info
+          if-no-files-found: error
+          retention-days: 1
+      # 只上传**本分片局部**的原始诊断，不在分片上跑报告：报告里的固定候选用例
+      # 关联要求每个候选在整份 JUnit 里恰好出现一次，而分片各自只含一部分用例。
+      # 完整口径的报告在 `coverage` job 合并后统一生成。
+      - name: Upload shard diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-diagnostics-shard-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/db-timing.jsonl
+            target/nextest/default/junit.xml
+          if-no-files-found: warn
+          retention-days: 1
+
+  # 覆盖率门槛：合并各分片的 lcov，输出唯一权威的 lcov 并判门槛。
+  #
+  # 合并语义是「同一行取各分片最大值」，等价于整套测试串行跑一次，见
+  # test_sh/merge_lcov.py。这里刻意不依赖 `cargo llvm-cov report` 的跨 job
+  # 合并：那条路线要么依赖 `nextest-archive`（cargo-llvm-cov 0.9.0 + nextest
+  # 0.9.143 命中上游未修复的 taiki-e/cargo-llvm-cov#520），要么要求合并 job 里
+  # 已经存在插桩产物。合并已经生成好的 lcov 不依赖构建布局，也不需要在这个 job
+  # 里重新编译。
+  coverage:
+    name: Coverage gate
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download shard coverage reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: lcov-shard-*
+          merge-multiple: true
+          path: coverage-shards
+      # 唯一权威的行覆盖率门槛在这里判定：分片上的局部覆盖率不具备判定资格。
+      # `--expect-shards` 要求四个分片全部到齐，缺一个就直接失败，避免用部分数据
+      # 算出偏高的覆盖率而误绿。
+      - name: Merge shard coverage and enforce the line threshold
+        run: >-
+          python3 test_sh/merge_lcov.py
+          coverage-shards/lcov-shard-*.info
+          --expect-shards ${{ env.SHARDS }}
+          --output lcov.info
+          --fail-under-lines 75
+      # 诊断也保持完整口径：各分片的 JSONL/JUnit 只覆盖本分片用例，这里合成一份
+      # 整套视图后再跑固定候选关联，否则单看任一分片都会判定「候选缺失」。
+      - name: Download shard diagnostics
+        if: ${{ always() }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: test-diagnostics-shard-*
+          path: shard-diagnostics
+      - name: Merge shard diagnostics
+        if: ${{ always() }}
+        shell: bash
+        run: >-
+          python3 test_sh/merge_diagnostics.py shard-diagnostics
+          --output-dir merged-diagnostics
+      # 只有合并成功后才有完整口径的输入。合并步骤本身失败会让 job 变红，这里不再
+      # 制造第二个、信息量更低的失败：没有合并结果就只写一行摘要。
+      - name: Report database timing baseline
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/db-timing-report.txt"
+          if [ ! -f merged-diagnostics/junit.xml ]; then
+            printf '## DB timing baseline (issue #710)\n\nShard diagnostics were not merged; see the merge step.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # 合并成功即代表 tests 跑过且 JUnit 齐全，因此 --junit 始终必填：缺失或
+          # 不完整的 JUnit 仍然 fail-closed，而不是悄悄跳过候选关联。
+          python3 test_sh/db_timing_report.py merged-diagnostics/db-timing.jsonl \
+            --junit merged-diagnostics/junit.xml | tee "$report"
+          if [ -s "$report" ]; then
+            {
+              printf '## DB timing baseline (issue #710)\n\n'
+              printf '```\n'
+              cat "$report"
+              printf '```\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload merged diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: db-timing-diagnostics
+          path: |
+            ${{ runner.temp }}/db-timing-report.txt
+            merged-diagnostics/db-timing.jsonl
+            merged-diagnostics/junit.xml
+          if-no-files-found: warn
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() }}
         with:
           name: rust-coverage
           path: lcov.info

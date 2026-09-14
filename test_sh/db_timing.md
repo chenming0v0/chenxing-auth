@@ -4,7 +4,30 @@
 各阶段、当前配置、JSONL 契约和限制。**CI 证据与数字见
 [`test_sh/db_timing_results.md`](./db_timing_results.md)**，本页不复述具体数值。
 
-## 阶段
+## 方向修正（2026-09-13，现行方向）
+
+STAGE 0–3 的逐批 template 化**没有让 CI 变快**，反而让关键路径净增约 106s 固定成本。
+原因是优化对象选错了：36/1909 = 1.9% 的用例本来就在并行跑，把它们省到极致也动不了
+墙钟；而墙钟的 ~87% 卡在**全库单把 session 级 `pg_advisory_lock`** 上
+（`src/db/migration_compat.rs:38-47`，锁 ID 只由 `current_database()` 生成，
+见 `sqlx-postgres-0.8.6/src/migrate.rs:326-330`）。完整分析见
+[issue #710 的方向修正评论](https://github.com/chenming0v0/chenxing-auth/issues/710)。
+
+现行方向：
+
+1. **测试分片 + 每分片独立 PostgreSQL**（`test` job，matrix 4 路）。锁 ID 随数据库名
+   变化，串行的迁移工作被切成 4 份并行。分片用 `--partition slice:`；**不在分片上
+   判覆盖率门槛**。
+2. **覆盖率门槛只在合并后判定**：`coverage` job 合并各分片 lcov
+   （`test_sh/merge_lcov.py`），行覆盖率门槛只在那里生效，且要求 4 个分片全部到齐。
+3. **测试只跑一遍**：`quality` job 只做静态检查（fmt / clippy / 脚本契约 / web），
+   不再重复整套 nextest；`coverage` job 不再 prepare/cleanup 模板、也不再重跑测试。
+
+**KPI（可证伪）**：`coverage` job 墙钟（关键路径）≤ 8 分钟，按**连续 3 次 run 的
+中位数**判定；基线为 14m11s。**禁止**再用「聚合相位和下降」或单次运行作为提速证据
+（相位和是并行样本，不是墙钟）。
+
+## 阶段（STAGE 0–3 为历史，结论仍有效）
 
 - **STAGE 0（schema 基线）**：测量 schema 夹具成本。CI run
   [34734563113](https://github.com/chenming0v0/chenxing-auth/actions/runs/34734563113)
@@ -29,7 +52,7 @@
   （SHA `1c83587`）**三个 job 全绿**：两个 job 都 **1909/1909 passed, 0 failed,
   0 skipped**、覆盖率 **81.76%**、prepare/cleanup 都成功（各 25 clones + 1 template）。
   失败的 `13be5e7` 历史保留在结果页。
-- **Phase 3 第二批（gate 已通过、已验证；planned scope 完成）**：候选审计 SAFE——
+- **Phase 3 第二批（gate 已通过、已验证；此批为旧方向的最后一批）**：候选审计 SAFE——
   `factors_repository`8 + `passkey_cas`3 共 11 个纯 PG 用例，无 Redis/AppState/全局
   worker/DDL，保留 max8；实现只把这两个私有 `database()` 的 callee 换成显式 template
   API，测试体不变。CI run
@@ -39,6 +62,9 @@
   11 个 auth 候选在两个 job 都 PASS。实测计数：template **36**、schema **445**、
   migration **466**、prepare **1**、总记录 **948**。这 11 个 opt-in 让 `auth` 目标也
   需要先 prepare 模板（或在过滤掉它们时跳过）。
+
+  **不再按「每批 N 个用例」扩围 template**：模板机制只在能作为默认夹具一次性铺开时
+  才有价值（见方向修正）。已落地的 36 个 opt-in 保留，不回退。
 
 ## 模板试点范围（stage 2）
 
@@ -194,20 +220,37 @@ fixture 行、固定 binary 标签 `integration_storage`、`outcome=ok`。缺失
 
 ## CI 接线
 
-quality job：工具装好后先 `Prepare template database`（也写 timing JSONL），再
-`Run Rust tests in parallel`（同一 JSONL），随后无条件 `Cleanup template database`
-（失败即让 job 失败），再跑报告（prepare 或 test 任一到达就执行）。报告只在
-test 步骤**未跳过**时才追加 `--junit target/nextest/default/junit.xml`：tests 被
-跳过时（例如 prepare 失败）省略该参数，让 JSONL 里的 error `template_prepare`
-行照常渲染，而不是把一次 prepare 失败级联成第二个更含糊的红步；tests 真跑过时
-`--junit` 仍是强制项，缺失或截断的 JUnit 依旧 fail-closed。报告为空时不写
-step summary 的空代码块。最后无条件上传 `db-timing-diagnostics`（报告文本 +
-原始 JSONL + JUnit）。`coverage` job 同样 prepare/cleanup，但**不注入 timing
-变量**、不产计时数据，覆盖率门槛 `--fail-under-lines 75` 与 `rust-coverage`
-工件不变。
+四个 job（`.github/workflows/ci.yml`）：
+
+- **`quality`（静态检查，不碰数据库）**：Action pin 校验、web 构建与测试、
+  OpenAPI 校验、部署/运行器/模板 wrapper 契约、Redis 崩溃恢复、迁移 checksum、
+  `src` 行数、`cargo fmt`、`cargo check`、`cargo clippy`、`cargo audit`。
+  **不跑集成测试**——测试只在分片 job 里跑一次。
+- **`test`（matrix 4 个分片，每个自带独立 PostgreSQL + Redis）**：装 nextest +
+  llvm-cov → `Prepare template database`（写 timing JSONL）→
+  `Run Rust tests in parallel`（`cargo llvm-cov nextest --partition slice:m/4`，
+  同一 JSONL，产出**本分片局部**的 `lcov-shard-m.info`）→ 无条件
+  `Cleanup template database`（失败即让 job 失败）→ 无条件上传
+  `lcov-shard-<m>` 与 `test-diagnostics-shard-<m>`。分片**不判覆盖率门槛**：
+  局部覆盖率不是整套覆盖率。
+- **`coverage`（合并 + 唯一门槛）**：下载 `lcov-shard-*` 与
+  `test-diagnostics-shard-*` → `merge_lcov.py` 合并并判 `--fail-under-lines 75`
+  （`--expect-shards 4`，缺分片直接失败）→ `merge_diagnostics.py` 把各分片的
+  JSONL/JUnit 合成整套视图 → `db_timing_report.py --junit` 渲染报告并写 step
+  summary → 上传 `db-timing-diagnostics` 与 `rust-coverage`。这个 job **不装
+  Rust 工具链、不用 rust-cache、不 prepare/cleanup 模板、不跑测试**：它只是
+  合并与判定，避免在关键路径上再叠一次编译。
+- **`apifox-sync`**：`needs: [quality, coverage]`，仅 dev push，语义不变。
+
+报告只在合并成功后渲染；合并步骤失败时报告步只写一行摘要并成功退出，不把一次
+合并失败级联成第二个更含糊的红步。合并成功即代表 tests 跑过且 JUnit 齐全，因此
+`--junit` 始终必填：缺失或不完整的 JUnit 仍然 fail-closed。
 
 nextest 只在现有 default profile 增加 JUnit 输出（`[profile.default.junit]`），
 不新建 profile、不改并发/override/retry。
+
+分片命名空间按分片隔离（`ctest_<run>_<attempt>_s<m>_`），四个分片的
+template/clone 库不会互相碰撞；命名空间语法仍要求 `template == prefix + "template"`。
 
 ## JSONL 契约
 
@@ -255,20 +298,24 @@ NaN/Infinity、负时长、未知事件/相位、缺失必需相位、多余字�
 
 ## 验收门槛
 
-- STAGE 0/1：已满足（见阶段小节与结果页）。
-- STAGE 2：已满足。CI run `34742275829` 中两个具名 repository 用例切到模板克隆并
-  通过，其余用例保持旧 schema 路径；prepare/test/cleanup 全绿，JUnit 关联对比可用。
-- Phase 3 第一批：**gate 已通过、已验证**。`1c83587`（run 34750664243）三个 job 全绿，
-  两个 job 都 **1909/1909 passed、0 failed、0 skipped**、覆盖率 **81.76%**、prepare/
-  cleanup 成功无残留。此前 `13be5e7` 的失败保留在结果页。实测诊断计数见结果页。
-- Phase 3 第二批：**gate 已通过、已验证；planned scope 完成**。`0f3ad2a`（run
-  34752963270）三个 job 全绿，两个 job 都 **1909/1909 passed、0 failed、0 skipped**、
-  覆盖率 **81.75%**、prepare/cleanup 成功无残留；11 个 auth 候选在两个 job 都 PASS。
-  实测计数 template 36 / schema 445 / migration 466 / prepare 1 / 记录 948。
-- 阶段状态：stage 2 历史结论仍然有效且未被改写；第一批、第二批都已验证。**不再扩展
-  范围**（不加 slot pool、不改并发），失败 run 只作为历史保留。
-- 计划范围内共 **36 个 opt-in**（2 repo + 23 plans + 8 factors_repository + 3
-  passkey_cas）；默认 schema 路径、危险的迁移/DDL/roles/source-URL 测试都未改动。
+**历史阶段（STAGE 0–3）**：STAGE 0/1/2、Phase 3 第一批与第二批的 gate 都已满足，
+证据见阶段小节与结果页。这些结论**不因方向修正而作废**——36 个 opt-in 的隔离、
+清理、回滚都仍然有效，也仍然保留。
+
+**现行方向（分片 + 合并门槛）的验收**：
+
+- **主 KPI**：`coverage` job 墙钟（关键路径）**≤ 8 分钟**。基线 14m11s
+  （`f644df5`，run 34755328667）。判定按**连续 3 次成功 run 的中位数**，
+  不是单次运行。
+- 次 KPI：`quality` job 墙钟；基线 12m54s（静态检查去掉整套测试后应显著下降）。
+- 正确性门槛：**1909/1909 passed**、合并后行覆盖率 ≥ 75%、失败能定位到具体用例。
+- **禁止**再用聚合相位和、或用两个候选用例的耗时声称整套提速
+  （相位和是并行样本，不是墙钟；见「限制」）。
+
+合并逻辑本身有契约测试守护，不需要跑 Rust：`test_sh/test_db_timing_merge_lcov.py`
+覆盖解析形状、逐行取最大值、LF/LH 重算、门槛判定、分片数量校验，以及
+「真实 llvm-cov 的 LF 可以大于 DA 条数」这一实测口径；
+`test_sh/test_db_timing_merge_diagnostics.py` 覆盖 JUnit 与 JSONL 合并。
 
 不要用两个用例或单次运行声称整套测试的收益或提速；`fixture_ms` 的 v1 估计与 v2 实际
 口径不同，不能直接当同口径对比。缺配置仍硬失败。
