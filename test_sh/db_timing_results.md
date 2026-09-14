@@ -339,3 +339,57 @@ python3 .codex/skills/src-line-limit/scripts/check_src_lines.py --base 60ac1a4
 - 三个都低于 500 硬上限，仅触发 >300 的弱警告；本阶段不要求重构 `src`。
 - 说明：默认的按“未提交改动”检查当时没有匹配到文件，返回的是“无匹配文件”，**不等于**
   整个变更集零警告。这里记录的是 `--base 60ac1a4` 的完整结果。
+
+## 方向修正后的首次全绿（分片架构，`8f7c27f` / run 34845247253）
+
+旧方向（STAGE 0–3 逐批 template 化）没有让 CI 变快，原因与完整分析见
+[`test_sh/db_timing.md`](./db_timing.md) 的「方向修正」一节。本节记录转向后
+**第一次全绿的实测**，只报 job/step 墙钟，不报聚合相位和。
+
+| 指标 | 旧架构基线 `f644df5` | 旧架构最后三次 | 新架构 `8f7c27f` |
+| --- | ---: | ---: | ---: |
+| 工作流总时长 | **14m37s** | 14m42s / 14m57s / 14m37s | **7m11s** |
+| quality / 静态 job | 12m54s（含整套 nextest） | 12m36–13m45s | **2m13s**（不再跑集成测试） |
+| coverage 关键路径 job | 14m11s | 14m30s / 14m35s | **0m12s**（只合并，不再重跑测试） |
+| 最慢测试 job | — | — | 6m29s（shard 3，4 个分片并行） |
+| 用例 | 1909 | 1909 | **1909/1909**（477+477+477+478，0 failed） |
+| 行覆盖率 | 81.75%（原生 LF/LH） | 81.75%–81.76% | **81.88%**（合并阈值，门槛 75%） |
+
+分片 job 的 step 墙钟（run 34845247253）：
+
+| shard | Prepare template | Run tests | Cleanup template | job 合计 |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 37s | 173s | 31s | 5m01s |
+| 2 | 49s | 257s | 44s | 6m29s |
+| 3 | 52s | 251s | 47s | 6m29s |
+| 4 | 47s | 247s | 43s | 6m16s |
+
+- 每个分片只跑 `slice:m/4` 的约 477 个用例，nextest 报
+  `Starting 477 tests across 8 binaries (1432 tests skipped)`，分片切分生效。
+- **锁竞争已被摊薄**：旧结构里 445+ 个 schema 路径测试排同一把 session 级
+  `pg_advisory_lock`（锁 ID 只由 `current_database()` 生成，见
+  `src/db/migration_compat.rs:38-47`）；现在四个分片各自连独立 PostgreSQL 实例，
+  锁不再跨分片共享。这正是总时长从 14m37s 降到 7m11s 的主因。
+
+### 已知的剩余浪费（下一步）
+
+- **`Cleanup template database` 每个分片仍编译约 40–47s**：日志显示它在重新编译
+  ring/rustls/sqlx/reqwest/lettre/`chenxing-auth`（`Finished dev profile in
+  45.78s`）。llvm-cov 的插桩构建改变了 `target/` 指纹，使随后的普通 `dev`
+  构建需要重编。这是纯浪费，四个分片各付一次。
+- `Prepare template database` 每个分片 37–52s，其中大部分同样是编译
+  `test_database` 示例与依赖，而非建库本身（建库只需 `template_prepare_ms`
+  约 1s 量级）。
+- 分片数仍是 4；是否加到 8 需要新的实测，不能靠推算。
+
+### 口径边界
+
+- 这是**单次**成功的 run（`8f7c27f`）。按 `db_timing.md` 的 KPI 定义，达标要
+  看**连续 3 次 run 的中位数**，因此当前只能说「首次全绿即低于 8 分钟目标」，
+  还不能宣布稳定达标。
+- 覆盖率用 `test_sh/merge_lcov.py` 合并各分片 lcov（同一行取最大值），与原生
+  LF/LH 口径接近但不等价：它只累计有 `DA` 记录的行，因此数值可能略高于或低于
+  原生值。真实工件上的对照为合并 81.88% 对原生 81.75%，两者都远高于 75% 门槛。
+- 失败上报的两条链路已修：首次 run（`4f9b375`）暴露了合并步骤对 artifact 嵌套
+  路径的错误假设（`download-artifact` 会按 artifact 名建一层子目录），已改为按
+  文件名递归查找并补回归测试（`8f7c27f`）。
