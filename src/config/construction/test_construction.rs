@@ -82,6 +82,7 @@ impl Config {
             security_limits: super::super::limits::SecurityLimits::default(),
             audit_retention: AuditRetentionConfig::default(),
             cltermux: None,
+            android_assetlinks: None,
         })
     }
 }

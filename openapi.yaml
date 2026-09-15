@@ -106,6 +106,35 @@ paths:
               example: { status: ok, service: chenxing-auth }
         '503':
           $ref: '#/components/responses/HealthServiceUnavailable'
+  /.well-known/assetlinks.json:
+    get:
+      tags: [System]
+      summary: Android App Links 声明
+      operationId: androidAssetLinks
+      description: |
+        返回 Digital Asset Links 语句数组，供 Android 校验"以本 Issuer 域名为回调落地链接的移动端 OAuth 客户端"
+        （例如 `https://<issuer>/app/<app-name>/oauth/callback`）确实归指定 App 所有。内容完全由启动配置
+        `ANDROID_ASSETLINKS`（`包名:SHA-256签名指纹`，逗号或空白分隔，同一包名可重复以声明多套签名）生成，
+        不读取请求上下文，不经 Issuer 门禁；未配置时返回 404 `assetlinks_not_configured`。
+        响应携带 `Cache-Control: public, max-age=3600, must-revalidate`。
+      responses:
+        '200':
+          description: Digital Asset Links 语句数组
+          headers:
+            Cache-Control:
+              description: '`public, max-age=3600, must-revalidate`'
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AndroidAssetLinks'
+              example:
+                - relation: [delegate_permission/common.handle_all_urls]
+                  target:
+                    namespace: android_app
+                    package_name: com.chengming.termux
+                    sha256_cert_fingerprints: ['14:6D:E9:83:C5:73:06:50:D8:EE:B9:95:2F:34:FC:64:16:A0:83:42:E6:1D:BE:A8:8A:04:96:B2:3F:CF:44:E5']
+        '404': { $ref: '#/components/responses/NotFound' }
   /.well-known/openid-configuration:
     get:
       tags: [OAuth/OIDC]
@@ -4469,6 +4498,26 @@ components:
         name:
           type: string
           description: "scope 含 profile 时签发（用户显示名称）"
+    AndroidAssetLinks:
+      type: array
+      description: Digital Asset Links 语句数组（https://developers.google.com/digital-asset-links）
+      items:
+        type: object
+        required: [relation, target]
+        properties:
+          relation:
+            type: array
+            items: { type: string, enum: [delegate_permission/common.handle_all_urls] }
+          target:
+            type: object
+            required: [namespace, package_name, sha256_cert_fingerprints]
+            properties:
+              namespace: { type: string, enum: [android_app] }
+              package_name: { type: string, description: Android 应用包名 }
+              sha256_cert_fingerprints:
+                type: array
+                description: 大写、冒号分隔的 SHA-256 签名证书指纹
+                items: { type: string }
     OpenIdConfiguration:
       type: object
       description: "OIDC Discovery 元数据（OIDC Discovery 1.0 §3）"

@@ -6,6 +6,7 @@ use crate::clients::domain::ClientRegistrationLimits;
 use crate::redis_keyspace::RedisKeyspace;
 
 mod admin;
+mod assetlinks;
 mod audit;
 mod cltermux;
 mod construction;
@@ -34,6 +35,9 @@ pub use crate::sessions::domain::{
 const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 const DEFAULT_HTTP_GRACEFUL_DRAIN_SECONDS: u64 = 15;
 
+pub use assetlinks::{
+    AndroidApp, AndroidAssetLinks, android_assetlinks_from_env, parse_android_assetlinks,
+};
 pub use audit::AuditRetentionConfig;
 pub(crate) use cltermux::validate_interop_token;
 pub use cltermux::{CltermuxConfig, cltermux_config_from_env};
@@ -159,6 +163,8 @@ pub struct Config {
     pub audit_retention: AuditRetentionConfig,
     /// CLtermux 服务端到服务端集成（#706）。`None` = 集成禁用。
     pub cltermux: Option<CltermuxConfig>,
+    /// Android App Links 声明（`/.well-known/assetlinks.json`）。`None` = 端点 404。
+    pub android_assetlinks: Option<AndroidAssetLinks>,
 }
 
 impl fmt::Debug for Config {
@@ -231,6 +237,7 @@ impl fmt::Debug for Config {
             .field("security_limits", &self.security_limits)
             .field("audit_retention", &self.audit_retention)
             .field("cltermux", &self.cltermux)
+            .field("android_assetlinks", &self.android_assetlinks)
             .finish()
     }
 }
