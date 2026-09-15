@@ -40,6 +40,7 @@ fn authorization_code_from_request(
             logo_uri: None,
             client_uri: None,
             description: None,
+            numeric_app_id: 1,
         },
         AuthorizationRequest {
             client_id: CLIENT_ID.to_owned(),

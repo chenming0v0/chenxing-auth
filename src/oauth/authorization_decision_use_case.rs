@@ -408,6 +408,7 @@ mod tests {
             logo_uri: None,
             client_uri: None,
             description: None,
+            numeric_app_id: 1,
         }
     }
 

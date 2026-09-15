@@ -14,6 +14,7 @@ fn client() -> RegisteredClient {
         logo_uri: None,
         client_uri: None,
         description: None,
+        numeric_app_id: 1,
     }
 }
 
@@ -385,4 +386,50 @@ fn authorization_request_rejects_invalid_prompt_combinations_and_unrepresentable
         validate_authorization_request(&client(), request).expect_err("max_age is too large"),
         AuthorizationRequestError::MaxAgeTooLarge
     );
+}
+
+fn request_at(redirect_uri: &str) -> AuthorizationRequest {
+    AuthorizationRequest {
+        client_id: "cx_project".to_owned(),
+        redirect_uri: redirect_uri.to_owned(),
+        response_type: "code".to_owned(),
+        scope: "openid".to_owned(),
+        state: Some("state-value".to_owned()),
+        nonce: None,
+        code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
+        code_challenge_method: Some("S256".to_owned()),
+        prompt: None,
+        max_age: None,
+    }
+}
+
+#[test]
+fn authorization_request_accepts_matching_numeric_app_callback() {
+    let mut client = client();
+    client.redirect_uris = vec!["https://oauth.example/app/1/oauth/callback".to_owned()];
+    validate_authorization_request(
+        &client,
+        request_at("https://oauth.example/app/1/oauth/callback"),
+    )
+    .expect("matching numeric_app_id callback must be allowed");
+}
+
+#[test]
+fn authorization_request_rejects_mismatched_numeric_app_callback_even_if_registered() {
+    let mut client = client();
+    client.redirect_uris = vec!["https://oauth.example/app/2/oauth/callback".to_owned()];
+    let error = validate_authorization_request(
+        &client,
+        request_at("https://oauth.example/app/2/oauth/callback"),
+    )
+    .expect_err("wrong numeric_app_id in a registered callback must still be rejected");
+    assert_eq!(error, AuthorizationRequestError::RedirectUriNotAllowed);
+}
+
+#[test]
+fn authorization_request_does_not_constrain_ordinary_redirect_uris() {
+    let mut client = client();
+    client.redirect_uris = vec!["https://client.example/callback".to_owned()];
+    validate_authorization_request(&client, request_at("https://client.example/callback"))
+        .expect("ordinary registered redirect URIs are not subject to numeric_app_id path checks");
 }

@@ -4,7 +4,6 @@ use super::{ClientService, ClientServiceError};
 use crate::clients::android_link::{
     AndroidAssetLink, AndroidAssetLinkInput, validate_android_asset_link,
 };
-use crate::clients::domain::ClientRegistrationError;
 use crate::clients::repository;
 
 #[derive(Debug, Clone)]
@@ -35,7 +34,9 @@ impl ClientService {
             sha256_cert_fingerprints,
         }))?
         else {
-            return Err(ClientRegistrationError::InvalidAndroidFingerprint.into());
+            return Err(
+                crate::clients::android_link::AndroidAssetLinkError::InvalidFingerprint.into(),
+            );
         };
         let updated = repository::upsert_client_app_link(&self.pool, client_id, &link).await?;
         Ok(updated.then_some(link))

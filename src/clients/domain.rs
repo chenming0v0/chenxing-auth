@@ -173,10 +173,6 @@ pub enum ClientRegistrationError {
     InvalidClientUri,
     #[error("description is invalid")]
     InvalidDescription,
-    #[error("Android package name is invalid")]
-    InvalidAndroidPackageName,
-    #[error("Android SHA-256 certificate fingerprint is invalid")]
-    InvalidAndroidFingerprint,
 }
 
 pub fn validate_client_registration(

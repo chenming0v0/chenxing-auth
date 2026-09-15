@@ -12,7 +12,7 @@ use crate::{
     admin::domain::AdminPermission,
     api::extract::{AdminRead, AdminWrite},
     audit::{AuditAction, AuditEvent},
-    clients::domain::ClientRegistrationError,
+    clients::android_link::AndroidAssetLinkError,
     error,
     state::AppState,
 };
@@ -32,17 +32,16 @@ pub struct AppLinkResponse {
     pub sha256_cert_fingerprints: Vec<String>,
 }
 
-fn validation_response(error: &ClientRegistrationError) -> Response {
+fn validation_response(error: &AndroidAssetLinkError) -> Response {
     match error {
-        ClientRegistrationError::InvalidAndroidPackageName => error::bad_request(
+        AndroidAssetLinkError::InvalidPackageName => error::bad_request(
             "invalid_android_package_name",
             "Android package name is invalid",
         ),
-        ClientRegistrationError::InvalidAndroidFingerprint => error::bad_request(
+        AndroidAssetLinkError::InvalidFingerprint => error::bad_request(
             "invalid_android_fingerprint",
             "Android SHA-256 certificate fingerprint is invalid",
         ),
-        other => error::bad_request("invalid_client_registration", other.to_string()),
     }
 }
 
@@ -130,7 +129,7 @@ pub async fn upsert_app_link(
                 .into_response()
         }
         Ok(None) => error::not_found("oauth_client_not_found", "OAuth project was not found"),
-        Err(crate::clients::service::ClientServiceError::Validation(error)) => {
+        Err(crate::clients::service::ClientServiceError::AndroidLink(error)) => {
             validation_response(&error)
         }
         Err(database_error) => {

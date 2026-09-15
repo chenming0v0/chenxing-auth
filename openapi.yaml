@@ -2897,6 +2897,7 @@ paths:
       responses:
         '204':
           description: App Link 已清除
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -5439,7 +5440,7 @@ components:
             android_asset_link:
               type: object
               nullable: true
-              description: Android App Links 声明；只有把回调地址登记在辰星域名下时才会被公开。package_name 和 sha256_cert_fingerprints 由 `/.well-known/assetlinks.json` 派生，不在这里直接填。
+              description: 只读。已通过 `/api/v1/admin/app-links` 登记的 Android App Links 声明；创建/更新 Client 不接受该字段。未登记时为 null。公开端点 `/.well-known/assetlinks.json` 从这些登记派生。
               properties:
                 package_name: { type: string }
                 sha256_cert_fingerprints: { type: array, items: { type: string } }

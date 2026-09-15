@@ -16,6 +16,7 @@ use crate::harness::HarnessBuilder;
 use crate::http::json_body;
 
 const FINGERPRINT: &str = "14:6D:E9:83:C5:73:06:50:D8:EE:B9:95:2F:34:FC:64:16:A0:83:42:E6:1D:BE:A8:8A:04:96:B2:3F:CF:44:E5";
+const FINGERPRINT_B: &str = "B6:DA:01:48:0E:EF:D5:FB:F2:CD:37:71:B8:D1:02:1E:C7:91:30:4B:DD:6C:4B:F4:1D:3F:AA:BA:D4:8E:E5:E1";
 const ADMIN_TOKEN: &str = "assetlinks-admin-token";
 
 async fn fetch(router: &axum::Router) -> axum::response::Response {
@@ -54,10 +55,14 @@ async fn create_client(router: &axum::Router) -> String {
         .await
         .expect("create client response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    json_body(response).await["client_id"]
-        .as_str()
-        .expect("client_id")
-        .to_owned()
+    let body = json_body(response).await;
+    assert!(
+        body["numeric_app_id"]
+            .as_i64()
+            .is_some_and(|numeric_app_id| numeric_app_id >= 1)
+    );
+    assert!(body["android_asset_link"].is_null());
+    body["client_id"].as_str().expect("client_id").to_owned()
 }
 
 async fn put_app_link(router: &axum::Router, client_id: &str, fingerprint: &str) -> Value {
@@ -110,6 +115,34 @@ async fn published_app_link_is_served_without_issuer_gate() {
     assert_eq!(declared["package_name"], "com.chengming.termux");
     assert_eq!(declared["numeric_app_id"], 1);
     assert_eq!(declared["sha256_cert_fingerprints"], json!([FINGERPRINT]));
+
+    let listed_clients = harness
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/clients")
+                .header(AUTHORIZATION, format!("Bearer {ADMIN_TOKEN}"))
+                .body(Body::empty())
+                .expect("list clients"),
+        )
+        .await
+        .expect("list clients response");
+    assert_eq!(listed_clients.status(), StatusCode::OK);
+    let listed_clients_body = json_body(listed_clients).await;
+    let created = listed_clients_body
+        .as_array()
+        .expect("client list")
+        .iter()
+        .find(|client| client["client_id"] == client_id)
+        .expect("created client");
+    assert_eq!(
+        created["android_asset_link"],
+        json!({
+            "package_name": "com.chengming.termux",
+            "sha256_cert_fingerprints": [FINGERPRINT],
+        })
+    );
 
     let listed = harness
         .router
@@ -214,5 +247,33 @@ async fn invalid_fingerprint_is_rejected() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = json_body(response).await;
     assert_eq!(body["code"], "invalid_android_fingerprint");
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn same_package_fingerprints_merge_into_one_statement() {
+    let harness = HarnessBuilder::new("assetlinks_merge")
+        .admin_token(ADMIN_TOKEN)
+        .build()
+        .await;
+    let client_a = create_client(&harness.router).await;
+    let client_b = create_client(&harness.router).await;
+    put_app_link(&harness.router, &client_a, FINGERPRINT).await;
+    put_app_link(&harness.router, &client_b, FINGERPRINT_B).await;
+
+    let response = fetch(&harness.router).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(
+        body,
+        json!([{
+            "relation": ["delegate_permission/common.handle_all_urls"],
+            "target": {
+                "namespace": "android_app",
+                "package_name": "com.chengming.termux",
+                "sha256_cert_fingerprints": [FINGERPRINT, FINGERPRINT_B],
+            }
+        }])
+    );
     harness.cleanup().await;
 }

@@ -4,14 +4,14 @@
 //! Android 只有在链接域名下取到列有 App 包名和签名指纹的 Digital Asset Links 声明后，
 //! 才会把回调链接交给 App 而不是浏览器。
 //!
-//! 声明是 Client 档案的一部分：Client 在这里登记自己的回调地址，也在同一行登记
-//! 该地址归哪个包名所有；公开端点只发布那些确实把回调地址登记在辰星域名下的 Client。
+//! 包名和签名指纹由软件链接管理面（`/api/v1/admin/app-links`）显式登记，不是
+//! Client 注册/更新入参。公开端点只发布已登记声明；同包名多 Client 的指纹合并到
+//! 同一 statement。
 //!
 //! 指纹是公钥派生，不是秘密，也不需要保密；格式统一为大写冒号分隔，便于确定性发布。
 
 use serde::{Deserialize, Serialize};
-
-use super::domain::ClientRegistrationError;
+use thiserror::Error;
 
 /// 单个 Client 最多声明的签名指纹数量：够覆盖调试/发布/上传密钥轮换，又不至于失控。
 pub const MAX_ANDROID_FINGERPRINTS: usize = 8;
@@ -34,32 +34,40 @@ pub struct AndroidAssetLinkInput {
     pub sha256_cert_fingerprints: Vec<String>,
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum AndroidAssetLinkError {
+    #[error("Android package name is invalid")]
+    InvalidPackageName,
+    #[error("Android SHA-256 certificate fingerprint is invalid")]
+    InvalidFingerprint,
+}
+
 pub fn validate_android_asset_link(
     input: Option<AndroidAssetLinkInput>,
-) -> Result<Option<AndroidAssetLink>, ClientRegistrationError> {
+) -> Result<Option<AndroidAssetLink>, AndroidAssetLinkError> {
     let Some(input) = input else {
         return Ok(None);
     };
     let package_name = input.package_name.trim().to_owned();
     if !is_android_package_name(&package_name) {
-        return Err(ClientRegistrationError::InvalidAndroidPackageName);
+        return Err(AndroidAssetLinkError::InvalidPackageName);
     }
     if input.sha256_cert_fingerprints.is_empty()
         || input.sha256_cert_fingerprints.len() > MAX_ANDROID_FINGERPRINTS
     {
-        return Err(ClientRegistrationError::InvalidAndroidFingerprint);
+        return Err(AndroidAssetLinkError::InvalidFingerprint);
     }
 
     let mut fingerprints: Vec<String> = Vec::with_capacity(input.sha256_cert_fingerprints.len());
     for raw in input.sha256_cert_fingerprints {
-        let fingerprint = normalize_fingerprint(&raw)
-            .ok_or(ClientRegistrationError::InvalidAndroidFingerprint)?;
+        let fingerprint =
+            normalize_fingerprint(&raw).ok_or(AndroidAssetLinkError::InvalidFingerprint)?;
         if !fingerprints.contains(&fingerprint) {
             fingerprints.push(fingerprint);
         }
     }
     if fingerprints.is_empty() {
-        return Err(ClientRegistrationError::InvalidAndroidFingerprint);
+        return Err(AndroidAssetLinkError::InvalidFingerprint);
     }
 
     Ok(Some(AndroidAssetLink {
@@ -176,7 +184,7 @@ mod tests {
         ] {
             assert_eq!(
                 validate_android_asset_link(input(package_name, &[FP_A])),
-                Err(ClientRegistrationError::InvalidAndroidPackageName),
+                Err(AndroidAssetLinkError::InvalidPackageName),
                 "{package_name}"
             );
         }
@@ -186,20 +194,20 @@ mod tests {
     fn malformed_or_excessive_fingerprints_are_rejected() {
         assert_eq!(
             validate_android_asset_link(input("com.a.b", &[""])),
-            Err(ClientRegistrationError::InvalidAndroidFingerprint)
+            Err(AndroidAssetLinkError::InvalidFingerprint)
         );
         assert_eq!(
             validate_android_asset_link(input("com.a.b", &["14:6D:E9"])),
-            Err(ClientRegistrationError::InvalidAndroidFingerprint)
+            Err(AndroidAssetLinkError::InvalidFingerprint)
         );
         assert_eq!(
             validate_android_asset_link(input("com.a.b", &[&FP_A.replace('4', "G")])),
-            Err(ClientRegistrationError::InvalidAndroidFingerprint)
+            Err(AndroidAssetLinkError::InvalidFingerprint)
         );
         let too_many: Vec<&str> = std::iter::repeat_n(FP_A, MAX_ANDROID_FINGERPRINTS + 1).collect();
         assert_eq!(
             validate_android_asset_link(input("com.a.b", &too_many)),
-            Err(ClientRegistrationError::InvalidAndroidFingerprint)
+            Err(AndroidAssetLinkError::InvalidFingerprint)
         );
     }
 

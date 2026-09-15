@@ -34,6 +34,7 @@ impl ClientService {
             logo_uri: client.logo_uri,
             client_uri: client.client_uri,
             description: client.description,
+            numeric_app_id: client.numeric_app_id,
         }))
     }
 }

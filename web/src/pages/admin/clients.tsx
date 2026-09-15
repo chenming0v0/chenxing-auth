@@ -114,7 +114,12 @@ export function ClientsTable({ access }: { access: AdminAccess }) {
       >
         {result?.items.map((client) => (
           <tr key={client.client_id}>
-            <td className="chenxing-mono text-sm">{client.numeric_app_id ?? '—'}</td>
+            <td>
+              <p className="chenxing-mono text-sm">{client.numeric_app_id ?? '—'}</p>
+              {typeof client.numeric_app_id === 'number' ? (
+                <p className="chenxing-caption chenxing-mono">/app/{client.numeric_app_id}/oauth/callback</p>
+              ) : null}
+            </td>
             <td>
               <p className="chenxing-body text-sm font-semibold">{client.client_name}</p>
               <p className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{client.client_id}</p>

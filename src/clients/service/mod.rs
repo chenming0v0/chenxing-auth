@@ -10,6 +10,7 @@ use std::fmt;
 use thiserror::Error;
 
 use crate::{
+    clients::android_link::AndroidAssetLinkError,
     clients::domain::{ClientAuthMethod, ClientRegistrationError, ClientRegistrationLimits},
     config::AuthEncryptionKeyRing,
     oauth::refresh_store::RefreshTokenStore,
@@ -163,6 +164,8 @@ impl fmt::Debug for RotatedClientSecret {
 pub enum ClientServiceError {
     #[error(transparent)]
     Validation(#[from] ClientRegistrationError),
+    #[error(transparent)]
+    AndroidLink(#[from] AndroidAssetLinkError),
     #[error("could not hash client secret")]
     SecretHash,
     #[error("could not persist client")]
