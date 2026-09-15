@@ -94,6 +94,8 @@
 
 核心约束一句话——验证强度按执行角色和变更风险分层。所有改动（包括数据库、Redis、Session、OAuth 等高风险改动）默认完成后提交并推送，由 CI 执行一次完整验证；本地全量套件不是每个子任务的默认收尾，而是 CI 问题排查时的例外诊断手段。子代理完成各自工作后，由编排者统一汇总并推送 CI。
 
+推送后必须用命令持续监控对应提交的 CI，或安排有完成回调的监控子代理，不能只报告“CI 已触发”就结束。CI 失败后继续查看日志、修复并推送，直到验证通过或遇到明确的外部阻塞；子代理不可用时改用命令监控。
+
 ### 测试工具
 
 判定标准只有一条：命令是否实际执行 `#[test]` 用例。执行的，走脚本；不执行的，不受限制。
@@ -149,7 +151,7 @@ CHENXING_TEST_ROLE=orchestrator ./test_sh/test.sh --full
 
 `test_sh/prune_target.py` 依据 Cargo 自己报告的 `compiler-artifact` 清单判定哪些产物还活着，只删陈旧配置的残留。受限编译（`--lib` / `--test`）下退化为同名去重，并用 mtime 窗口保留同一次构建的多个合法产物。
 
-`--coverage` 会用独立的 `target/llvm-cov-target` 从零重编译，并通过 `cargo llvm-cov nextest` 按进程隔离跑用例（与 quality job 同一模型，避免共享进程里的 `HTTP_PROXY` 泄漏），运行器在覆盖率阶段结束后顺带剪枝该目录。
+`--coverage` 会用独立的 `target/llvm-cov-target` 从零重编译，并通过 `cargo llvm-cov nextest` 按进程隔离跑用例（与 CI 的分片 job 同一模型，避免共享进程里的 `HTTP_PROXY` 泄漏），运行器在覆盖率阶段结束后顺带剪枝该目录。
 
 #### 会执行用例的裸 Cargo 命令
 

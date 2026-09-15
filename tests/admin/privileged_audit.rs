@@ -9,20 +9,15 @@
 //! `users` 表保持可写，因此失败时若仍提交，用户行或角色变更会残留。
 
 use axum::{
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
-use chenxing_auth::{
-    api,
-    audit::{AuditEvent, AuditService},
-    config::Config,
-    state::AppState,
-};
+use chenxing_auth::audit::{AuditEvent, AuditService};
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow as key_directory};
+use crate::http;
 
 const ADMIN_TOKEN: &str = "privileged-audit-token";
 const PASSWORD: &str = "1234567890";
@@ -32,42 +27,11 @@ async fn setup() -> (
     chenxing_auth::sqlx::PgPool,
     std::path::PathBuf,
 ) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("privileged_audit", &database_url).await;
-    let key_directory = key_directory::isolated_key_directory("privileged-audit");
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.admin_token = ADMIN_TOKEN.to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(
-            AppState::new_with_pool(config, database.clone())
-                .await
-                .expect("state"),
-        ),
-        database,
-        key_directory,
-    )
-}
-
-async fn json(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body"),
-    )
-    .expect("JSON")
+    let harness = crate::harness::HarnessBuilder::new("privileged_audit")
+        .admin_token(ADMIN_TOKEN)
+        .build()
+        .await;
+    (harness.router, harness.database, harness.key_directory)
 }
 
 fn authorized(method: &str, uri: &str, body: Value) -> Request<Body> {
@@ -101,7 +65,9 @@ async fn bootstrap_owner(router: &axum::Router, suffix: &str) -> i64 {
         .await
         .expect("bootstrap response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    json(response).await["id"].as_i64().expect("owner id")
+    http::json_body(response).await["id"]
+        .as_i64()
+        .expect("owner id")
 }
 
 async fn seed_user(database: &chenxing_auth::sqlx::PgPool, name: &str, role: &str) -> i64 {
@@ -217,7 +183,9 @@ async fn privileged_mutations_share_a_commit_with_audit() {
         .await
         .expect("create admin response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    let admin_id = json(response).await["id"].as_i64().expect("admin id");
+    let admin_id = http::json_body(response).await["id"]
+        .as_i64()
+        .expect("admin id");
     assert_eq!(user_role(&database, admin_id).await, "admin");
 
     let owner_name = format!("grant-owner-{suffix}");
@@ -236,7 +204,7 @@ async fn privileged_mutations_share_a_commit_with_audit() {
         .await
         .expect("create privileged user response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    let second_owner_id = json(response).await["id"]
+    let second_owner_id = http::json_body(response).await["id"]
         .as_i64()
         .expect("second owner id");
     assert_eq!(user_role(&database, second_owner_id).await, "owner");
@@ -298,7 +266,10 @@ async fn privileged_mutations_share_a_commit_with_audit() {
         .await
         .expect("demote last owner response");
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(json(response).await["code"], "last_owner_required");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "last_owner_required"
+    );
     assert_eq!(user_role(&database, second_owner_id).await, "owner");
 
     let _ = std::fs::remove_dir_all(key_directory);
@@ -329,7 +300,7 @@ async fn privileged_mutations_roll_back_when_audit_insert_fails() {
         .await
         .expect("create admin with broken audit");
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(json(response).await["code"], "audit_unavailable");
+    assert_eq!(http::json_body(response).await["code"], "audit_unavailable");
     assert_eq!(user_count(&database, &admin_name).await, 0);
 
     let owner_name = format!("ghost-owner-{suffix}");
@@ -348,7 +319,7 @@ async fn privileged_mutations_roll_back_when_audit_insert_fails() {
         .await
         .expect("create owner with broken audit");
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(json(response).await["code"], "audit_unavailable");
+    assert_eq!(http::json_body(response).await["code"], "audit_unavailable");
     assert_eq!(user_count(&database, &owner_name).await, 0);
 
     let response = router
@@ -361,7 +332,7 @@ async fn privileged_mutations_roll_back_when_audit_insert_fails() {
         .await
         .expect("promote with broken audit");
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(json(response).await["code"], "audit_unavailable");
+    assert_eq!(http::json_body(response).await["code"], "audit_unavailable");
     assert_eq!(user_role(&database, target_id).await, "user");
 
     // 普通用户创建不走同事务审计，审计故障不得误伤这条路径。
@@ -393,7 +364,10 @@ async fn privileged_mutations_roll_back_when_audit_insert_fails() {
         .await
         .expect("last owner demotion with broken audit");
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(json(response).await["code"], "last_owner_required");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "last_owner_required"
+    );
     assert_eq!(user_role(&database, owner_id).await, "owner");
 
     assert!(events_for(&database, "user_create").await.is_empty());
@@ -414,7 +388,7 @@ async fn privileged_mutations_roll_back_when_audit_insert_fails() {
         .await
         .expect("retry create admin");
     assert_eq!(response.status(), StatusCode::CREATED);
-    let admin_id = json(response).await["id"]
+    let admin_id = http::json_body(response).await["id"]
         .as_i64()
         .expect("retried admin id");
     let creates = events_for(&database, "user_create").await;

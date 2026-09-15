@@ -8,71 +8,34 @@
 use std::time::Duration;
 
 use axum::{
-    Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
 use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
-use chenxing_auth::{
-    api, config::Config, oauth::code::AuthorizationCode, sessions::domain::Session, state::AppState,
-};
+use chenxing_auth::{oauth::code::AuthorizationCode, sessions::domain::Session};
 use sha2::{Digest, Sha256};
 use tokio::time::{sleep, timeout};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow as oauth_support};
+use crate::{http, oauth_flow as oauth_support};
 
 const ADMIN_TOKEN: &str = "flow-admin-token";
 const REDIRECT_URI: &str = "https://disabled.example/callback";
 const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 
-struct TestEnv {
-    state: AppState,
-    router: Router,
-    database: chenxing_auth::sqlx::PgPool,
-    key_directory: std::path::PathBuf,
-}
+type TestEnv = crate::harness::Harness;
 
 async fn setup() -> TestEnv {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    // The barrier regression needs one connection for the blocker, one for the request, and one
-    // for the lock-wait probe. OAuth setup and assertions may overlap with those operations.
-    let database = db_isolation::isolated_pool_with_max_connections(
-        "admin_role_generation",
-        &database_url,
-        10,
-    )
-    .await;
-    let key_directory = oauth_support::isolated_key_directory("admin-role-generation");
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("test configuration");
-    config.admin_token = ADMIN_TOKEN.to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let mut state = AppState::new_with_pool(config, database.clone())
+    crate::harness::HarnessBuilder::new("admin_role_generation")
+        .admin_token(ADMIN_TOKEN)
+        .max_connections(10)
+        .qps_window_override()
+        .build()
         .await
-        .expect("test state");
-    oauth_support::qps_window::override_qps_window(&mut state);
-    TestEnv {
-        router: api::router(state.clone()),
-        state,
-        database,
-        key_directory,
-    }
 }
 
 async fn seed_user(database: &chenxing_auth::sqlx::PgPool, name: &str, role: &str) -> i64 {
@@ -103,13 +66,6 @@ async fn stored_role(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -> St
         .fetch_one(database)
         .await
         .expect("read user role")
-}
-
-async fn response_json(response: axum::response::Response) -> serde_json::Value {
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("response body");
-    serde_json::from_slice(&body).expect("JSON response")
 }
 
 async fn save_consent(database: &chenxing_auth::sqlx::PgPool, user_id: i64, client_id: &str) {
@@ -178,7 +134,7 @@ async fn issue_refresh_token(
         .await
         .expect("authorization-code exchange response");
     assert_eq!(response.status(), StatusCode::OK);
-    response_json(response).await["refresh_token"]
+    http::json_body(response).await["refresh_token"]
         .as_str()
         .expect("issued refresh token")
         .to_owned()
@@ -227,7 +183,7 @@ async fn assert_refresh_rejected(
         .expect("refresh-token exchange response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
-        response_json(response).await["error"].as_str(),
+        http::json_body(response).await["error"].as_str(),
         Some("invalid_grant")
     );
     assert!(
@@ -447,7 +403,7 @@ async fn actor_active_role_and_generation_are_rechecked_inside_the_target_transa
         let response = request.await.expect("target write request task");
         assert_eq!(response.status(), mutation.expected_status(), "{label}");
         assert_eq!(
-            response_json(response).await["code"],
+            http::json_body(response).await["code"],
             mutation.expected_code(),
             "{label}"
         );

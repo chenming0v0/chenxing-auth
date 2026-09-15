@@ -1,61 +1,26 @@
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
 use chenxing_auth::{
-    api,
-    config::Config,
     oauth::providers::secrets::SecretManager,
     sessions::{cookies, domain::Session, store::SessionStore},
     settings::{SettingsService, SmtpPasswordAction, SmtpSettingUpdate},
     sqlx,
-    state::AppState,
 };
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::db_isolation;
+use crate::{db_isolation, http};
 
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("admin_settings", &database_url).await;
-    let key_directory =
-        std::env::temp_dir().join(format!("chenxing-admin-settings-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.admin_token = "admin-settings-token".to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(
-            AppState::new_with_pool(config, database.clone())
-                .await
-                .expect("state"),
-        ),
-        database,
-        key_directory,
-    )
-}
-
-async fn json(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body"),
-    )
-    .expect("JSON")
+    let harness = crate::harness::HarnessBuilder::new("admin_settings")
+        .admin_token("admin-settings-token")
+        .build()
+        .await;
+    (harness.router, harness.database, harness.key_directory)
 }
 
 async fn browser_session(
@@ -97,7 +62,7 @@ async fn owner_can_read_update_and_persist_registration_email_setting() {
         .expect("settings response");
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
-        json(response)
+        http::json_body(response)
             .await
             .get("registration_email_from")
             .is_some()
@@ -120,7 +85,7 @@ async fn owner_can_read_update_and_persist_registration_email_setting() {
         .await
         .expect("invalid settings response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json(response).await["code"], "invalid_email");
+    assert_eq!(http::json_body(response).await["code"], "invalid_email");
 
     let response = router
         .clone()
@@ -136,7 +101,7 @@ async fn owner_can_read_update_and_persist_registration_email_setting() {
         .await
         .expect("missing settings field response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json(response).await["code"], "invalid_request");
+    assert_eq!(http::json_body(response).await["code"], "invalid_request");
 
     let response = router
         .clone()
@@ -170,7 +135,10 @@ async fn owner_can_read_update_and_persist_registration_email_setting() {
         .await
         .expect("update settings response");
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(json(response).await["registration_email_from"], email);
+    assert_eq!(
+        http::json_body(response).await["registration_email_from"],
+        email
+    );
 
     let stored: Option<String> = chenxing_auth::sqlx::query_scalar(
         "SELECT setting_value FROM app_settings WHERE setting_key = 'registration_email_from'",
@@ -220,7 +188,10 @@ async fn clearing_registration_email_also_clears_mirrored_smtp_sender() {
         .await
         .expect("set registration email response");
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(json(response).await["registration_email_from"], email);
+    assert_eq!(
+        http::json_body(response).await["registration_email_from"],
+        email
+    );
     assert_eq!(smtp_from().await, email);
 
     // 清除：独立值与镜像的 SMTP from 必须一并清空。
@@ -240,7 +211,7 @@ async fn clearing_registration_email_also_clears_mirrored_smtp_sender() {
         .await
         .expect("clear registration email response");
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(json(response).await["registration_email_from"].is_null());
+    assert!(http::json_body(response).await["registration_email_from"].is_null());
 
     let stored: Option<String> = chenxing_auth::sqlx::query_scalar(
         "SELECT setting_value FROM app_settings WHERE setting_key = 'registration_email_from'",
@@ -264,7 +235,7 @@ async fn clearing_registration_email_also_clears_mirrored_smtp_sender() {
         .await
         .expect("read registration email response");
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(json(response).await["registration_email_from"].is_null());
+    assert!(http::json_body(response).await["registration_email_from"].is_null());
 
     let _ = std::fs::remove_dir_all(key_directory);
 }
@@ -638,7 +609,7 @@ async fn key_rotation_keeps_a_durable_intent_when_outcome_audit_fails() {
         .await
         .expect("key rotation response");
     assert_eq!(response.status(), StatusCode::OK);
-    let payload = json(response).await;
+    let payload = http::json_body(response).await;
     assert!(
         payload["key_id"]
             .as_str()

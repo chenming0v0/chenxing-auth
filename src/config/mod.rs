@@ -35,6 +35,7 @@ const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 const DEFAULT_HTTP_GRACEFUL_DRAIN_SECONDS: u64 = 15;
 
 pub use audit::AuditRetentionConfig;
+pub(crate) use cltermux::validate_interop_token;
 pub use cltermux::{CltermuxConfig, cltermux_config_from_env};
 // 上界常量必须公开可达 `crate::config::MAX_*`：`for_each_security_limit!` 用绝对路径
 // 引用它们，才能在 config 之外（settings）的调用点正确解析。

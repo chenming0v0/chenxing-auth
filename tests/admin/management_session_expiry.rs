@@ -8,68 +8,32 @@
 use std::time::Duration;
 
 use axum::{
-    Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
 use chenxing_auth::{
-    api,
     audit::{AuditEvent, AuditService},
-    config::Config,
     sessions::domain::Session,
-    state::AppState,
 };
 use tokio::time::{sleep, timeout};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow as oauth_support};
+use crate::{http, oauth_flow as oauth_support};
 
 const ADMIN_TOKEN: &str = "flow-admin-token";
 const DENIED_ACTION: &str = "admin_authorization_denied";
 const MUTATION_ACTION: &str = "user_disabled";
 
-struct TestEnv {
-    state: AppState,
-    router: Router,
-    database: chenxing_auth::sqlx::PgPool,
-    key_directory: std::path::PathBuf,
-}
+type TestEnv = crate::harness::Harness;
 
 async fn setup() -> TestEnv {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool_with_max_connections(
-        "admin_management_session_expiry",
-        &database_url,
-        10,
-    )
-    .await;
-    let key_directory = oauth_support::isolated_key_directory("admin-management-session-expiry");
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("test configuration");
-    config.admin_token = ADMIN_TOKEN.to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let mut state = AppState::new_with_pool(config, database.clone())
+    crate::harness::HarnessBuilder::new("admin_management_session_expiry")
+        .admin_token(ADMIN_TOKEN)
+        .max_connections(10)
+        .qps_window_override()
+        .build()
         .await
-        .expect("test state");
-    oauth_support::qps_window::override_qps_window(&mut state);
-    TestEnv {
-        router: api::router(state.clone()),
-        state,
-        database,
-        key_directory,
-    }
 }
 
 async fn seed_user(database: &chenxing_auth::sqlx::PgPool, name: &str, role: &str) -> i64 {
@@ -95,13 +59,6 @@ async fn save_session(env: &TestEnv, user_id: i64) -> Session {
         .await
         .expect("save session");
     session
-}
-
-async fn response_json(response: axum::response::Response) -> serde_json::Value {
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("response body");
-    serde_json::from_slice(&body).expect("JSON response")
 }
 
 async fn wait_for_actor_lock(database: &chenxing_auth::sqlx::PgPool, blocker_pid: i32) {
@@ -273,7 +230,7 @@ async fn management_writes_recheck_absolute_and_idle_expiry_after_actor_lock_wai
 
         let response = pending.await.expect("target write request task");
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{label}");
-        assert_eq!(response_json(response).await["code"], "invalid_session");
+        assert_eq!(http::json_body(response).await["code"], "invalid_session");
         assert_eq!(user_status(&env.database, target_id).await, "active");
 
         let target_id_text = target_id.to_string();

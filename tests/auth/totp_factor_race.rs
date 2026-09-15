@@ -2,14 +2,13 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
 use chenxing_auth::{
     api,
     auth_factors::{domain::FactorMethod, service::TotpConfirmation},
     clock::SharedClock,
-    config::Config,
     state::AppState,
     users::domain::AuthenticatedUser,
 };
@@ -19,7 +18,7 @@ use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow, totp_time};
+use crate::{harness, http, oauth_flow, totp_time};
 
 const ADMIN_TOKEN: &str = "totp-race-admin-token";
 struct Harness {
@@ -30,50 +29,24 @@ struct Harness {
     email: String,
 }
 
-/// 并发用例会同时发起多路 service 调用，每一路都要查一次 factor methods。
-/// 默认的 2 个连接会把它们串成队列，Redis 侧的竞态窗口就被数据库排队掩盖了。
-async fn isolated_database(database_url: &str) -> chenxing_auth::sqlx::PgPool {
-    db_isolation::isolated_pool_with_max_connections("totp_factor_race", database_url, 8).await
-}
-
 async fn setup() -> Harness {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = isolated_database(&database_url).await;
-    let key_directory = std::env::temp_dir().join(format!("chenxing-totp-race-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("test configuration");
-    config.admin_token = ADMIN_TOKEN.to_owned();
-    config.cookie_secure = false;
-    config.redis_keyspace = chenxing_auth::redis_keyspace::RedisKeyspace::new(&format!(
-        "totp-factor-race-{}",
-        Uuid::new_v4().simple()
-    ))
-    .expect("test Redis namespace");
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let email = format!("totp-race-{}@example.com", Uuid::new_v4().simple());
-    // Service 层的并发测试需要直接持有 AppState，因此这里先克隆再交给 router。
-    let state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("test state")
-        .with_clock(SharedClock::fixed(totp_time::centered_now()));
+    let (state, database, key_directory, _admin_token, binary_name) =
+        harness::HarnessBuilder::new("totp_factor_race")
+            .admin_token(ADMIN_TOKEN)
+            .max_connections(8)
+            .redis_keyspace(
+                chenxing_auth::redis_keyspace::RedisKeyspace::new(&format!(
+                    "totp-factor-race-{}",
+                    Uuid::new_v4().simple()
+                ))
+                .expect("test Redis namespace"),
+            )
+            .build_state()
+            .await;
+    let state = state.with_clock(SharedClock::fixed(totp_time::centered_now()));
     let router = api::router(state.clone());
-    oauth_flow::ensure_owner_bootstrapped(
-        &router,
-        &database,
-        "totp_factor_race",
-        "totp_factor_race",
-    )
-    .await;
+    oauth_flow::ensure_owner_bootstrapped(&router, &database, &binary_name, &binary_name).await;
+    let email = format!("totp-race-{}@example.com", Uuid::new_v4().simple());
     Harness {
         router,
         state,
@@ -81,34 +54,6 @@ async fn setup() -> Harness {
         key_directory,
         email,
     }
-}
-
-async fn json_body(response: axum::response::Response) -> serde_json::Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body"),
-    )
-    .expect("JSON response")
-}
-
-async fn request(
-    router: &Router,
-    uri: &str,
-    payload: serde_json::Value,
-) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
-        )
-        .await
-        .expect("JSON response")
 }
 
 async fn create_user(router: &Router, username: &str, email: &str, password: &str) {
@@ -146,23 +91,8 @@ async fn redis_key_exists(key: &str) -> bool {
     connection.exists(key).await.expect("Redis key existence")
 }
 
-fn pending_cookie(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .map(|value| value.split(';').next().expect("cookie pair"))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
 fn csrf(cookie: &str) -> String {
-    cookie
-        .split(';')
-        .find_map(|part| part.trim().strip_prefix("chenxing_csrf="))
-        .expect("CSRF cookie")
-        .to_owned()
+    http::cookie_value(cookie, "chenxing_csrf")
 }
 
 async fn request_with_session(
@@ -172,20 +102,13 @@ async fn request_with_session(
     cookie: &str,
     csrf_token: &str,
 ) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("cookie", cookie)
-                .header("x-csrf-token", csrf_token)
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
-        )
-        .await
-        .expect("JSON response")
+    http::post_json_with_headers(
+        router,
+        uri,
+        &[("cookie", cookie), ("x-csrf-token", csrf_token)],
+        payload,
+    )
+    .await
 }
 
 #[tokio::test]
@@ -201,14 +124,14 @@ async fn parallel_authenticated_totp_confirmations_have_only_one_winner() {
     let password = "correct horse battery";
     create_user(&router, &username, &email, password).await;
 
-    let login_response = request(
+    let login_response = http::post_json(
         &router,
         "/api/v1/auth/login",
         serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
     assert_eq!(login_response.status(), StatusCode::OK);
-    let session_cookie = pending_cookie(&login_response);
+    let session_cookie = http::set_cookies(&login_response);
     let csrf_token = csrf(&session_cookie);
     let start_response = request_with_session(
         &router,
@@ -224,7 +147,7 @@ async fn parallel_authenticated_totp_confirmations_have_only_one_winner() {
         "enrollment start failed: {:?}",
         start_response.status()
     );
-    let setup = json_body(start_response).await;
+    let setup = http::json_body(start_response).await;
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
     let now = u64::try_from(state.clock.now().unix_timestamp()).expect("fixed test timestamp");
     let body = serde_json::json!({

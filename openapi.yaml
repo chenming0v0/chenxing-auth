@@ -1418,7 +1418,7 @@ paths:
     get:
       tags: [User Auth/Security]
       summary: 查询当前用户可绑定的业务账号供应商
-      operationId: listAccountProviders
+      operationId: listUserAccountProviders
       security: [{ sessionCookie: [] }]
       responses:
         '200':
@@ -1580,6 +1580,9 @@ paths:
         只在内存中验证，不记录日志。服务端从签名、Issuer、受撤销状态、aud allowlist、授权 scope 和当前用户状态
         得到 subject、client_id 与 scope，不接受调用方自行声明这些字段。响应 valid_until 不超过辰星 Token 剩余寿命和
         5 分钟，所有响应禁止缓存。
+        多供应商模式先验证用户令牌，再用 aud 选择已启用的供应商并校验其独立入站凭据。
+        401 invalid_chenxing_token 表示用户令牌无效或授权已撤销；
+        401 invalid_integration_credential 表示缺少服务凭据、aud 未匹配已启用供应商，或凭据与所选供应商不匹配。
       requestBody:
         required: true
         content:
@@ -3416,6 +3419,64 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/account-providers:
+    get:
+      tags: [Admin Identity Providers]
+      summary: 特殊业务供应商列表
+      operationId: listAccountProviders
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+      responses:
+        '200':
+          description: CLtermux 特殊供应商列表，不包含服务凭据
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AccountProviderSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/account-providers/{slug}:
+    put:
+      tags: [Admin Identity Providers]
+      summary: 保存特殊业务供应商
+      operationId: saveAccountProvider
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountProviderInput' }
+      responses:
+        '200':
+          description: 更新成功，不返回服务凭据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountProviderSummary' }
+        '201':
+          description: 创建成功，不返回服务凭据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountProviderSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/oauth/providers:
     get:
       tags: [Admin OAuth Providers]
@@ -5098,6 +5159,46 @@ components:
       required: [state_version]
       properties:
         state_version: { type: integer, format: int64, minimum: 1 }
+    AccountProviderInput:
+      type: object
+      required: [slug, name, adapter, base_url, allowed_client_ids, enabled, expected_version]
+      properties:
+        slug: { type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$' }
+        name: { type: string, minLength: 1, maxLength: 128 }
+        adapter: { type: string, enum: [cltermux] }
+        base_url: { type: string, format: uri, description: HTTPS root URL of the CLtermux service }
+        allowed_client_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { type: string, minLength: 1, maxLength: 128 }
+        enabled: { type: boolean }
+        expected_version: { type: integer, format: int64, minimum: 0 }
+        outbound_token:
+          type: string
+          minLength: 32
+          maxLength: 4096
+          writeOnly: true
+          description: Optional on update; blank means keep the encrypted value.
+        inbound_token:
+          type: string
+          minLength: 32
+          maxLength: 4096
+          writeOnly: true
+          description: Optional on update; blank means keep the encrypted value.
+    AccountProviderSummary:
+      type: object
+      required: [slug, name, adapter, base_url, allowed_client_ids, enabled, version, outbound_token_configured, inbound_token_configured]
+      properties:
+        slug: { type: string }
+        name: { type: string }
+        adapter: { type: string, enum: [cltermux] }
+        base_url: { type: string, format: uri }
+        allowed_client_ids: { type: array, items: { type: string } }
+        enabled: { type: boolean }
+        version: { type: integer, format: int64, minimum: 1 }
+        outbound_token_configured: { type: boolean }
+        inbound_token_configured: { type: boolean }
     OAuthProviderSummary:
       type: object
       description: >-

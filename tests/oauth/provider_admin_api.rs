@@ -1,53 +1,21 @@
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, state::AppState};
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::db_isolation;
+use crate::harness::HarnessBuilder;
+use crate::http;
 
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("oauth_provider_admin_api", &database_url).await;
-    let key_directory =
-        std::env::temp_dir().join(format!("chenxing-provider-admin-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.admin_token = "provider-admin-token".to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(
-            AppState::new_with_pool(config, database.clone())
-                .await
-                .expect("state"),
-        ),
-        database,
-        key_directory,
-    )
-}
-
-async fn json(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body"),
-    )
-    .expect("JSON")
+    let harness = HarnessBuilder::new("oauth_provider_admin_api")
+        .admin_token("provider-admin-token")
+        .build()
+        .await;
+    (harness.router, harness.database, harness.key_directory)
 }
 
 fn provider_input(slug: &str) -> Value {
@@ -142,7 +110,10 @@ async fn provider_admin_api_requires_email_verified_claim() {
             StatusCode::BAD_REQUEST,
             "email_verified_claim {shape} 必须被拒绝"
         );
-        assert_eq!(json(response).await["code"], "invalid_oauth_provider");
+        assert_eq!(
+            http::json_body(response).await["code"],
+            "invalid_oauth_provider"
+        );
 
         let count: (i64,) =
             chenxing_auth::sqlx::query_as("SELECT COUNT(*) FROM oauth_providers WHERE slug = $1")
@@ -169,7 +140,7 @@ async fn provider_admin_api_requires_email_verified_claim() {
         .await
         .expect("provider response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    let created = json(response).await;
+    let created = http::json_body(response).await;
 
     let mut update = provider_input(&slug);
     update["expected_version"] = created["state_version"].clone();
@@ -239,7 +210,7 @@ async fn provider_admin_api_requires_auth_and_never_returns_client_secret() {
         .await
         .expect("response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    let created = json(response).await;
+    let created = http::json_body(response).await;
     assert_eq!(created["slug"], slug);
     assert_eq!(created["client_secret_configured"], true);
     assert!(created.get("client_secret").is_none());
@@ -292,7 +263,7 @@ async fn provider_admin_api_requires_auth_and_never_returns_client_secret() {
         .await
         .expect("response");
     assert_eq!(response.status(), StatusCode::OK);
-    let providers = json(response).await;
+    let providers = http::json_body(response).await;
     assert_eq!(providers[0]["client_secret_configured"], true);
     assert!(providers[0].get("client_secret").is_none());
     assert_eq!(providers[0]["trust_model"], "oauth2_userinfo");

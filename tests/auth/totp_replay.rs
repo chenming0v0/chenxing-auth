@@ -1,9 +1,9 @@
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, redis_keyspace::RedisKeyspace, state::AppState};
+use chenxing_auth::{redis_keyspace::RedisKeyspace, state::AppState};
 use redis::AsyncCommands;
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,7 +11,7 @@ use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow};
+use crate::{harness, http};
 
 const ADMIN_TOKEN: &str = "totp-replay-admin-token";
 /// TOTP 步长，与 `auth_factors::totp::TOTP_STEP_SECONDS` 一致。
@@ -23,55 +23,59 @@ async fn setup() -> (
     chenxing_auth::sqlx::PgPool,
     std::path::PathBuf,
 ) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("totp_replay", &database_url).await;
-    let key_directory = std::env::temp_dir().join(format!("chenxing-replay-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("test configuration");
-    config.admin_token = ADMIN_TOKEN.to_owned();
-    config.cookie_secure = false;
-    config.redis_keyspace = RedisKeyspace::new(&format!("totp-replay-{}", Uuid::new_v4().simple()))
-        .expect("test Redis namespace");
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("test state");
-    let router = api::router(state.clone());
-    oauth_flow::ensure_owner_bootstrapped(&router, &database, "totp_replay", "totp_replay").await;
-    db_isolation::isolate_user_ids(&database, "totp_replay").await;
-    (router, state, database, key_directory)
-}
-
-async fn json(response: axum::response::Response) -> Value {
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("response body");
-    serde_json::from_slice(&body).expect("JSON response")
-}
-
-async fn request(router: &Router, uri: &str, payload: Value) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
+    let harness = harness::HarnessBuilder::new("totp_replay")
+        .admin_token(ADMIN_TOKEN)
+        .redis_keyspace(
+            RedisKeyspace::new(&format!("totp-replay-{}", Uuid::new_v4().simple()))
+                .expect("test Redis namespace"),
         )
-        .await
-        .expect("JSON response")
+        .bootstrap_owner()
+        .build()
+        .await;
+    (
+        harness.router,
+        harness.state,
+        harness.database,
+        harness.key_directory,
+    )
+}
+
+async fn request_with_cookie(
+    router: &Router,
+    uri: &str,
+    payload: Value,
+    cookie: &str,
+) -> axum::response::Response {
+    http::post_json_with_headers(router, uri, &[("cookie", cookie)], payload).await
+}
+
+async fn request_with_session(
+    router: &Router,
+    uri: &str,
+    payload: Value,
+    cookie: &str,
+    csrf: &str,
+) -> axum::response::Response {
+    http::post_json_with_headers(
+        router,
+        uri,
+        &[("cookie", cookie), ("x-csrf-token", csrf)],
+        payload,
+    )
+    .await
+}
+
+/// 从合并后的 cookie 头里取出单个 cookie 值。ticket 的 setup 键由 ticket_id 派生，
+/// 因此需要拿到 cookie 里的原始 ticket_id 才能定位 Redis 中的待确认注册。
+fn csrf(cookie: &str) -> String {
+    http::cookie_value(cookie, "chenxing_csrf")
+}
+
+fn now_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_secs()
 }
 
 async fn create_user(router: &Router, username: &str, email: &str, password: &str) {
@@ -96,55 +100,6 @@ async fn create_user(router: &Router, username: &str, email: &str, password: &st
         .await
         .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
-}
-
-fn pending_cookie(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .map(|value| value.split(';').next().expect("cookie pair"))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-async fn request_with_cookie(
-    router: &Router,
-    uri: &str,
-    payload: Value,
-    cookie: &str,
-) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("cookie", cookie)
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
-        )
-        .await
-        .expect("JSON response")
-}
-
-/// 从合并后的 cookie 头里取出单个 cookie 值。ticket 的 setup 键由 ticket_id 派生，
-/// 因此需要拿到 cookie 里的原始 ticket_id 才能定位 Redis 中的待确认注册。
-fn cookie_value(cookie: &str, name: &str) -> String {
-    cookie
-        .split("; ")
-        .find_map(|pair| pair.strip_prefix(&format!("{name}=")))
-        .expect("cookie present")
-        .to_owned()
-}
-
-fn now_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_secs()
 }
 
 async fn redis_connection() -> redis::aio::MultiplexedConnection {
@@ -175,42 +130,15 @@ async fn factor_count(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -> i
 
 /// 走完密码登录，返回 pending cookie 头。
 async fn password_login(router: &Router, identifier: &str, password: &str) -> String {
-    let response = request(
+    let response = http::post_json(
         router,
         "/api/v1/auth/login",
         serde_json::json!({"identifier": identifier, "password": password}),
     )
     .await;
-    let cookie = pending_cookie(&response);
-    let _pending = json(response).await;
+    let cookie = http::set_cookies(&response);
+    let _pending = http::json_body(response).await;
     cookie
-}
-
-async fn request_with_session(
-    router: &Router,
-    uri: &str,
-    payload: Value,
-    cookie: &str,
-    csrf: &str,
-) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("cookie", cookie)
-                .header("x-csrf-token", csrf)
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
-        )
-        .await
-        .expect("JSON response")
-}
-
-fn csrf(cookie: &str) -> String {
-    cookie_value(cookie, "chenxing_csrf")
 }
 
 /// 在认证会话上启动 TOTP 注册，返回 registration ID 与验证器侧的生成器。
@@ -224,7 +152,7 @@ async fn start_enrollment(router: &Router, cookie: &str, csrf: &str) -> (String,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK, "TOTP enrollment start");
-    let setup = json(response).await;
+    let setup = http::json_body(response).await;
     (
         setup["enrollment_id"]
             .as_str()
@@ -297,7 +225,7 @@ async fn a_totp_time_step_is_single_use_across_tickets_and_inline_login() {
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        request(
+        http::post_json(
             &router,
             "/api/v1/auth/login",
             serde_json::json!({
@@ -382,7 +310,7 @@ async fn an_enrollment_code_cannot_be_replayed_on_a_fresh_login_ticket() {
 
     // 内联登录走的是 verify_totp（按 user_id 而非 ticket），同一个边界必须同样生效。
     assert_eq!(
-        request(
+        http::post_json(
             &router,
             "/api/v1/auth/login",
             serde_json::json!({

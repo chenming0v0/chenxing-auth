@@ -4,6 +4,12 @@
 
 #[path = "../support/db_isolation.rs"]
 mod db_isolation;
+#[path = "../support/harness.rs"]
+mod harness;
+#[path = "../support/http.rs"]
+mod http;
+#[path = "../support/key_directory.rs"]
+mod key_directory;
 #[path = "../support/oauth_flow.rs"]
 mod oauth_flow;
 #[path = "../support/totp_time.rs"]
@@ -12,6 +18,9 @@ mod totp_time;
 mod browser_flow;
 mod credentials;
 mod factor_security_api;
+mod factor_security_passkey;
+mod factor_security_removal;
+mod factor_security_totp;
 mod factors_domain;
 mod factors_repository;
 mod factors_storage;
@@ -21,6 +30,8 @@ mod login_domain;
 mod login_security;
 mod login_ticket_epoch;
 mod passkey_auth;
+mod passkey_auth_authentication;
+mod passkey_auth_registration;
 mod passkey_cas;
 mod passkey_policy;
 mod passkey_recovery;

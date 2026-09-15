@@ -3,6 +3,7 @@ use rand::{RngCore, rngs::OsRng};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
+pub mod account_provider_handlers;
 pub mod auth_handlers;
 pub mod authorization;
 pub mod bootstrap_guard;

@@ -77,15 +77,11 @@ impl fmt::Debug for ResolveInput {
 }
 
 pub async fn account_providers(State(state): State<AppState>, _session: SessionRead) -> Response {
-    with_no_store_headers(
-        (
-            StatusCode::OK,
-            Json(ProviderList {
-                items: state.linked_accounts.provider_descriptors(),
-            }),
-        )
-            .into_response(),
-    )
+    let items = match state.linked_accounts.provider_descriptors().await {
+        Ok(items) => items,
+        Err(error) => return response::map_service_error(error),
+    };
+    with_no_store_headers((StatusCode::OK, Json(ProviderList { items })).into_response())
 }
 
 pub async fn list_linked_accounts(
@@ -128,7 +124,7 @@ pub async fn bind_linked_account(
     Path(provider): Path<String>,
     ApiJson(input): ApiJson<CredentialBindInput>,
 ) -> Response {
-    if provider != "cltermux"
+    if !crate::settings::account_providers::valid_provider_slug(&provider)
         || input.public_key.is_empty()
         || input.public_key.len() > 255
         || input.private_key.is_empty()
@@ -142,6 +138,7 @@ pub async fn bind_linked_account(
     let result = state
         .linked_accounts
         .bind_cltermux(
+            &provider,
             credential,
             CredentialBundle {
                 public_key: input.public_key,
@@ -160,7 +157,7 @@ pub async fn bind_linked_account(
                     crate::audit::AuditAction::CltermuxCredentialBind,
                     "linked_account".to_owned(),
                     Some(item.id.clone()),
-                    serde_json::json!({"provider":"cltermux"}),
+                    serde_json::json!({"provider":provider}),
                 ))
                 .await;
             with_no_store_headers((StatusCode::CREATED, Json(item)).into_response())
@@ -173,7 +170,7 @@ pub async fn bind_linked_account(
                     Some(session.user_id.to_string()),
                     crate::audit::AuditAction::CltermuxCredentialBindFailure,
                     "linked_account".to_owned(),
-                    Some("cltermux".to_owned()),
+                    Some(provider),
                     serde_json::json!({"code": response::service_code(&error_value)}),
                 ))
                 .await;
@@ -282,24 +279,12 @@ pub async fn resolve(
     headers: HeaderMap,
     ApiJson(input): ApiJson<ResolveInput>,
 ) -> Response {
-    let Some(config) = state.config.cltermux.as_ref() else {
-        return error::unauthorized(
-            "invalid_integration_credential",
-            "integration credential is invalid",
-        );
-    };
     let Some(token) = bearer_token(&headers) else {
         return error::unauthorized(
             "invalid_integration_credential",
             "integration credential is invalid",
         );
     };
-    if !verify_inbound_token(token, &config.inbound_token_digest) {
-        return error::unauthorized(
-            "invalid_integration_credential",
-            "integration credential is invalid",
-        );
-    }
     if input.access_token.len() > 16 * 1024 {
         return error::bad_request("invalid_request", "the access token is invalid");
     }
@@ -308,6 +293,32 @@ pub async fn resolve(
             Ok(value) => value,
             Err(_) => return resolve_denied(&state, "invalid_chenxing_token").await,
         };
+    let provider = match state
+        .settings
+        .account_provider_for_client(&claims.aud)
+        .await
+    {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            return error::unauthorized(
+                "invalid_integration_credential",
+                "integration credential is invalid",
+            );
+        }
+        Err(_) => {
+            return error::service_unavailable(
+                "provider_unavailable",
+                "provider configuration is unavailable",
+            );
+        }
+    };
+    let config = &provider.config;
+    if !verify_inbound_token(token, &config.inbound_token_digest) {
+        return error::unauthorized(
+            "invalid_integration_credential",
+            "integration credential is invalid",
+        );
+    }
     match state.revocations.is_revoked(&input.access_token).await {
         Ok(false) => {}
         Ok(true) | Err(_) => return resolve_denied(&state, "invalid_chenxing_token").await,
@@ -348,7 +359,7 @@ pub async fn resolve(
             return error::service_unavailable("provider_unavailable", "user state is unavailable");
         }
     }
-    let binding = match state.linked_accounts.resolve(user_id).await {
+    let binding = match state.linked_accounts.resolve(user_id, &provider.slug).await {
         Ok(value) => value,
         Err(LinkedAccountServiceError::NotFound) => {
             return error::not_found("account_not_linked", "the user has no linked account");
@@ -366,7 +377,7 @@ pub async fn resolve(
         subject: claims.sub,
         client_id: claims.aud,
         scope: scopes.join(" "),
-        provider: "cltermux".to_owned(),
+        provider: provider.slug,
         uid: binding.uid,
         binding_id: binding.binding_id,
         binding_version: binding.binding_version,

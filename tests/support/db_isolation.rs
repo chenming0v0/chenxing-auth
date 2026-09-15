@@ -37,6 +37,8 @@
 //!   若不使用 `new_with_pool`，隔离无效。
 //! - Redis 中以 UUID、client id 或 ticket id 组成的键天然保持唯一；以 `user_id` 组成
 //!   的键由上面的用户序列偏移隔离，不需要对共享 Redis 做全库清理。
+//! - 诊断计时默认关闭；设置 `CHENXING_TEST_DB_TIMING_FILE` 后，每次 setup 追加一行
+//!   JSON，记录五个阶段耗时，供 issue #710 的离线分析使用。
 //!
 //! ## 使用方法
 //!
@@ -53,6 +55,12 @@
 //! }
 //! ```
 
+#[path = "template_database/mod.rs"]
+pub mod template_database;
+
+use std::time::Instant;
+
+use chenxing_auth::db::test_timing::{self, Outcome, Timing};
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::sqlx::{Connection, PgConnection, PgPool};
 use sha2::{Digest, Sha256};
@@ -63,7 +71,8 @@ use sha2::{Digest, Sha256};
 /// `ctest_{binary_name}_{test_identity}`，非字母数字字符替换为 `_`，最长 63 字节。
 ///
 /// 每次运行都 DROP CASCADE 已存在的 schema，保证迁移状态干净（避免编辑迁移文件时
-/// 的 checksum VersionMismatch）。性能影响可忽略（~100ms per test，nextest 并发摊销）。
+/// 的 checksum VersionMismatch）。各阶段耗时可设置 `CHENXING_TEST_DB_TIMING_FILE`
+/// 打开诊断（issue #710）。
 ///
 /// Pool 上限 2 个连接：测试内是串行的，2 个足够，同时避免 32 并发时超过
 /// `max_connections = 100` 的服务器限制（32 × 2 = 64）。
@@ -78,6 +87,7 @@ pub async fn isolated_pool_with_max_connections(
     max_connections: u32,
 ) -> PgPool {
     let test_identity = current_test_identity();
+    let mut timing = Timing::from_env();
     let execution_identity = current_execution_identity(&test_identity);
     let schema = schema_name(binary_name, &execution_identity);
     // 建 schema 和跑迁移是 owner 的活（CREATE TABLE / GRANT / ALTER FUNCTION），
@@ -86,17 +96,42 @@ pub async fn isolated_pool_with_max_connections(
     let owner_url = owner_database_url(database_url);
 
     // DROP + CREATE：每次运行都从干净状态开始，消除迁移 checksum 问题
-    let mut bootstrap = PgConnection::connect(&owner_url)
-        .await
-        .expect("db_isolation: bootstrap connection");
-    chenxing_auth::sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
-        .execute(&mut bootstrap)
-        .await
-        .expect("db_isolation: drop schema");
-    chenxing_auth::sqlx::query(&format!("CREATE SCHEMA {schema}"))
-        .execute(&mut bootstrap)
-        .await
-        .expect("db_isolation: create schema");
+    let phase = timing.phase_start();
+    let mut bootstrap = expect_or_emit(
+        PgConnection::connect(&owner_url).await,
+        &mut timing,
+        test_timing::PHASE_BOOTSTRAP_CONNECTION,
+        phase,
+        binary_name,
+        &test_identity,
+        "db_isolation: bootstrap connection",
+    )
+    .await;
+    let phase = timing.phase_start();
+    expect_or_emit(
+        chenxing_auth::sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
+            .execute(&mut bootstrap)
+            .await,
+        &mut timing,
+        test_timing::PHASE_DROP_CREATE_SCHEMA,
+        phase,
+        binary_name,
+        &test_identity,
+        "db_isolation: drop schema",
+    )
+    .await;
+    expect_or_emit(
+        chenxing_auth::sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&mut bootstrap)
+            .await,
+        &mut timing,
+        test_timing::PHASE_DROP_CREATE_SCHEMA,
+        phase,
+        binary_name,
+        &test_identity,
+        "db_isolation: create schema",
+    )
+    .await;
     drop(bootstrap);
 
     // 迁移和应用都走 owner 连接。表 owner 必须是迁移角色，否则基线的 REVOKE
@@ -106,32 +141,187 @@ pub async fn isolated_pool_with_max_connections(
     // `database_schema.rs` 里验证审计边界的用例会给它写随机口令。若并发测试都用
     // 这个口令连接，一次轮换就会连带打死其他测试和开发服务器。
     // 运行时角色的权限姿态由 `database_schema.rs` 的专用用例单独覆盖。
-    let pool = schema_scoped_pool(&owner_url, &schema, max_connections).await;
-    chenxing_auth::db::migrate(&pool)
-        .await
-        .expect("db_isolation: migrate");
+    let phase = timing.phase_start();
+    let pool = expect_or_emit(
+        schema_scoped_pool(&owner_url, &schema, max_connections).await,
+        &mut timing,
+        test_timing::PHASE_POOL_CONNECT,
+        phase,
+        binary_name,
+        &test_identity,
+        "db_isolation: pool connect",
+    )
+    .await;
+    let phase = timing.phase_start();
+    expect_or_emit(
+        chenxing_auth::db::migrate(&pool).await,
+        &mut timing,
+        test_timing::PHASE_MIGRATE,
+        phase,
+        binary_name,
+        &test_identity,
+        "db_isolation: migrate",
+    )
+    .await;
 
     // 应用的少数 Redis 键以 user_id 作为组成部分。每个 schema 都从独立的序列区间
     // 开始，避免测试之间共用 Redis 时把不同 schema 的用户误认为同一个用户。
-    if !matches!(binary_name, "admin_api" | "bootstrap_invariant") {
+    if matches!(binary_name, "admin_api" | "bootstrap_invariant") {
+        // 固定 ID 语义的用例保留原序列，不执行序列重置；契约要求该阶段以 0ms 出现。
+        timing.record_zero(test_timing::PHASE_SEQUENCE_RESET);
+    } else {
         let user_id_start = user_id_sequence_start(binary_name, &execution_identity);
-        chenxing_auth::sqlx::query(
+        let phase = timing.phase_start();
+        expect_or_emit(
+            chenxing_auth::sqlx::query(
+                "SELECT setval(pg_get_serial_sequence('users', 'id'), $1, false)",
+            )
+            .bind(user_id_start)
+            .execute(&pool)
+            .await,
+            &mut timing,
+            test_timing::PHASE_SEQUENCE_RESET,
+            phase,
+            binary_name,
+            &test_identity,
+            "db_isolation: set user id sequence",
+        )
+        .await;
+    }
+
+    // 一次 setup 只写一条记录；记录在锁释放之后追加，不阻塞任何数据库操作。
+    timing
+        .emit_fixture(binary_name, &test_identity, Outcome::Ok)
+        .await;
+
+    pool
+}
+
+/// 为测试用例创建隔离的 PgPool，直接克隆已冻结的模板数据库（issue #710 stage 1）。
+///
+/// 与 `isolated_pool` 不同，这条路径不建 schema、不跑迁移、不清理既有数据，而是
+/// 从 `CHENXING_TEST_TEMPLATE_DATABASE` 克隆一个全新数据库并连接。配置或权限缺失
+/// 时直接失败，绝不回退到 schema 隔离。
+pub async fn isolated_pool_from_template(binary_name: &str, database_url: &str) -> PgPool {
+    isolated_pool_from_template_with_max_connections(binary_name, database_url, 2).await
+}
+
+/// 为测试用例创建隔离的模板克隆 PgPool，并使用指定的最大连接数。
+///
+/// 模板替换件返回的 pool 会校验 `current_database` 与 `current_schema`，并沿用
+/// 与 schema 路径相同的用户序列重置算法和固定 ID 例外。
+pub async fn isolated_pool_from_template_with_max_connections(
+    binary_name: &str,
+    database_url: &str,
+    max_connections: u32,
+) -> PgPool {
+    let test_identity = current_test_identity();
+    let mut timing = Timing::from_env();
+    // 整体计时必须在读取配置之前开始，配置失败时记录零阶段。
+    let fixture_start = timing.phase_start();
+    let pid = std::process::id();
+
+    let config = match template_database::TemplateConfig::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            timing
+                .emit_template_fixture(binary_name, &test_identity, Outcome::Error, fixture_start)
+                .await;
+            panic!("db_isolation: template config: {error}");
+        }
+    };
+    if let Err(error) = config.validate_source_url(database_url) {
+        timing
+            .emit_template_fixture(binary_name, &test_identity, Outcome::Error, fixture_start)
+            .await;
+        panic!("db_isolation: template source: {error}");
+    }
+
+    let pool = match config
+        .clone_pool(
+            binary_name,
+            &test_identity,
+            pid,
+            max_connections,
+            &mut timing,
+        )
+        .await
+    {
+        Ok(pool) => pool,
+        Err(error) => {
+            timing
+                .emit_template_fixture(binary_name, &test_identity, Outcome::Error, fixture_start)
+                .await;
+            panic!("db_isolation: template clone: {error}");
+        }
+    };
+
+    // 用户序列重置沿用现有算法与固定 ID 例外。
+    let execution_identity = current_execution_identity(&test_identity);
+    if matches!(binary_name, "admin_api" | "bootstrap_invariant") {
+        timing.record_zero(test_timing::PHASE_SEQUENCE_RESET);
+    } else {
+        let user_id_start = user_id_sequence_start(binary_name, &execution_identity);
+        let phase = timing.phase_start();
+        let result = chenxing_auth::sqlx::query(
             "SELECT setval(pg_get_serial_sequence('users', 'id'), $1, false)",
         )
         .bind(user_id_start)
         .execute(&pool)
-        .await
-        .expect("db_isolation: set user id sequence");
+        .await;
+        timing.record(test_timing::PHASE_SEQUENCE_RESET, phase);
+        if result.is_err() {
+            timing
+                .emit_template_fixture(binary_name, &test_identity, Outcome::Error, fixture_start)
+                .await;
+            panic!("db_isolation: template sequence reset failed");
+        }
     }
 
+    // 查询耗时在诊断写入之前记录。
+    timing
+        .emit_template_fixture(binary_name, &test_identity, Outcome::Ok, fixture_start)
+        .await;
     pool
+}
+
+/// 执行一步 setup；失败时先写一条 error 记录再按原有消息 panic。
+///
+/// `phase` 同时用于成功和失败路径：失败阶段的耗时同样被记录，未执行到的阶段不会
+/// 出现。诊断写入本身不会改变这里的返回或 panic 行为。
+async fn expect_or_emit<T, E: std::fmt::Debug>(
+    result: Result<T, E>,
+    timing: &mut Timing,
+    phase: &'static str,
+    phase_start: Option<Instant>,
+    binary_name: &str,
+    test_identity: &str,
+    context: &str,
+) -> T {
+    match result {
+        Ok(value) => {
+            timing.record(phase, phase_start);
+            value
+        }
+        Err(error) => {
+            timing.record(phase, phase_start);
+            timing
+                .emit_fixture(binary_name, test_identity, Outcome::Error)
+                .await;
+            panic!("{context}: {error:?}");
+        }
+    }
 }
 
 /// 建 pool 并把 `search_path` 固定到指定 schema。
 ///
 /// `search_path` 必须挂在 pool 的 `after_connect` 上：它对每个新建连接生效。
 /// 在一次性连接上 SET 是无效的，那个会话随连接一起销毁。
-async fn schema_scoped_pool(database_url: &str, schema: &str, max_connections: u32) -> PgPool {
+async fn schema_scoped_pool(
+    database_url: &str,
+    schema: &str,
+    max_connections: u32,
+) -> Result<PgPool, chenxing_auth::sqlx::Error> {
     let schema = schema.to_owned();
     PgPoolOptions::new()
         .max_connections(max_connections)
@@ -146,7 +336,6 @@ async fn schema_scoped_pool(database_url: &str, schema: &str, max_connections: u
         })
         .connect(database_url)
         .await
-        .expect("db_isolation: pool connect")
 }
 
 /// owner 连接串：优先 `MIGRATION_DATABASE_URL`，缺失时回落到运行时连接串。
@@ -234,7 +423,7 @@ pub(crate) fn schema_name(binary_name: &str, test_identity: &str) -> String {
     )
 }
 
-fn user_id_sequence_start(binary_name: &str, test_identity: &str) -> i64 {
+pub(crate) fn user_id_sequence_start(binary_name: &str, test_identity: &str) -> i64 {
     let digest = Sha256::digest(format!("{binary_name}\0{test_identity}").as_bytes());
     let mut bytes = [0_u8; 8];
     bytes.copy_from_slice(&digest[..8]);

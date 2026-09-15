@@ -4,6 +4,12 @@
 
 #[path = "../support/db_isolation.rs"]
 mod db_isolation;
+#[path = "../support/harness.rs"]
+mod harness;
+#[path = "../support/http.rs"]
+mod http;
+#[path = "../support/key_directory.rs"]
+mod key_directory;
 #[path = "../support/oauth_flow.rs"]
 mod oauth_flow;
 #[path = "../support/plan_fixtures.rs"]
@@ -27,18 +33,25 @@ mod consent_revocation_durability;
 mod consents_service;
 mod domain;
 mod flow;
+mod flow_consent;
+mod flow_refresh;
 mod pkce;
 mod provider_admin_api;
 mod provider_domain;
 mod provider_endpoint_policy;
 mod provider_flow;
+mod provider_flow_email;
+mod provider_flow_login;
 mod provider_pending_flow;
 mod provider_proxy_boundary;
 mod provider_secret_recovery;
 mod quota;
 mod refresh_token_security;
+mod refresh_token_security_client;
+mod refresh_token_security_revoke;
 mod refresh_tokens;
 mod request_rebinding;
+mod request_rebinding_consent;
 mod revocation;
 mod revocation_handler;
 mod session_binding;

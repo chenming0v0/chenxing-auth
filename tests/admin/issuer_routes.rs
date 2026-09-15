@@ -13,7 +13,7 @@ use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow as key_directory};
+use crate::{db_isolation, http, oauth_flow as key_directory};
 
 const ADMIN_TOKEN: &str = "issuer-routes-admin-token";
 
@@ -60,15 +60,6 @@ async fn restricted_state(
     (state, database, key_directory)
 }
 
-async fn json_body(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body"),
-    )
-    .expect("JSON body")
-}
-
 async fn post_json(
     router: &Router,
     path: &str,
@@ -104,7 +95,7 @@ async fn get_bootstrap_status(router: &Router) -> (StatusCode, Value) {
         )
         .await
         .expect("status response");
-    (response.status(), json_body(response).await)
+    (response.status(), http::json_body(response).await)
 }
 
 async fn unknown_path_body(router: &Router) -> Value {
@@ -119,7 +110,7 @@ async fn unknown_path_body(router: &Router) -> Value {
         .await
         .expect("unknown path response");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    json_body(response).await
+    http::json_body(response).await
 }
 
 fn assert_no_issuer_diagnostics(body: &Value) {
@@ -247,7 +238,7 @@ async fn missing_issuer_allows_only_initial_owner_and_blocks_all_user_creation()
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
-    let owner_id = json_body(response).await["id"]
+    let owner_id = http::json_body(response).await["id"]
         .as_i64()
         .expect("bootstrap owner id");
     assert!(owner_id > 0);
@@ -281,7 +272,10 @@ async fn missing_issuer_allows_only_initial_owner_and_blocks_all_user_creation()
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(json_body(response).await["code"], "invalid_credentials");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "invalid_credentials"
+    );
 
     let response = post_json(
         &router,
@@ -294,7 +288,10 @@ async fn missing_issuer_allows_only_initial_owner_and_blocks_all_user_creation()
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(json_body(response).await["code"], "invalid_credentials");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "invalid_credentials"
+    );
 
     let response = post_json(
         &router,
@@ -347,7 +344,10 @@ async fn missing_issuer_allows_only_initial_owner_and_blocks_all_user_creation()
             StatusCode::SERVICE_UNAVAILABLE,
             "path={path}"
         );
-        assert_eq!(json_body(response).await["code"], "issuer_not_configured");
+        assert_eq!(
+            http::json_body(response).await["code"],
+            "issuer_not_configured"
+        );
     }
 
     let user_count: i64 = chenxing_auth::sqlx::query_scalar("SELECT COUNT(*) FROM users")
@@ -469,7 +469,10 @@ async fn awaiting_gate_treats_a_persisted_empty_issuer_as_invalid_runtime_state(
         .await
         .expect("discovery response");
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(json_body(response).await["code"], "issuer_runtime_invalid");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "issuer_runtime_invalid"
+    );
 
     let _ = std::fs::remove_dir_all(key_directory);
 }
@@ -536,7 +539,10 @@ async fn awaiting_gate_treats_a_persisted_invalid_issuer_as_invalid_runtime_stat
         .await
         .expect("JWKS response");
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(json_body(response).await["code"], "issuer_runtime_invalid");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "issuer_runtime_invalid"
+    );
 
     let _ = std::fs::remove_dir_all(key_directory);
 }
@@ -574,7 +580,7 @@ async fn issuer_gate_does_not_turn_malformed_dynamic_paths_into_503() {
             .expect("malformed dynamic response");
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "path={path}");
         assert_eq!(
-            json_body(response).await,
+            http::json_body(response).await,
             serde_json::json!({"code": "not_found", "message": "not found"}),
             "path={path}"
         );
@@ -605,7 +611,7 @@ async fn final_session_issuance_rechecks_issuer_login_policy() {
         .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{factor}");
         assert_eq!(
-            json_body(response).await["code"],
+            http::json_body(response).await["code"],
             "invalid_factor",
             "{factor}"
         );
@@ -630,7 +636,7 @@ async fn final_session_issuance_rechecks_issuer_login_policy() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(json_body(response).await["code"], "invalid_factor");
+    assert_eq!(http::json_body(response).await["code"], "invalid_factor");
     assert!(
         state
             .sessions
@@ -720,7 +726,7 @@ async fn manage_issuer_keeps_convergence_diagnostics() {
         .await
         .expect("issuer setting response");
     assert_eq!(response.status(), StatusCode::OK);
-    let body = json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(body["phase"], "awaiting_issuer");
     assert_eq!(body["persisted"]["value"], "https://auth.example.com");
     assert_eq!(body["persisted"]["generation"], 1);
@@ -744,7 +750,7 @@ async fn manage_issuer_reports_invalid_runtime_phase() {
         .await
         .expect("issuer setting response");
     assert_eq!(response.status(), StatusCode::OK);
-    let body = json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(body["phase"], "issuer_invalid");
     assert!(body.get("persisted").is_some());
     assert!(body.get("loaded").is_some());

@@ -14,21 +14,28 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD, engine::general_purpose::URL_SAFE_NO_PAD};
 use chenxing_auth::{
     api, config::Config, oauth::authorization::ValidatedAuthorizationRequest,
-    sessions::domain::Session, state::AppState,
+    redis_keyspace::RedisKeyspace, sessions::domain::Session, state::AppState,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tower::ServiceExt;
 
-#[path = "key_directory.rs"]
-mod key_directory;
-
-#[path = "qps_window.rs"]
-pub mod qps_window;
+/// QPS 窗口注入的规范实例由 `oauth_flow` 声明；这里公开转发，保留
+/// `plans_support::qps_window` 路径，同时避免同一测试目标重复加载
+/// `qps_window.rs`（`clippy::duplicate_mod`）。
+pub use super::oauth_flow::qps_window;
 
 #[path = "plan_fixtures.rs"]
 pub mod fixtures;
+
+#[path = "plans_admin.rs"]
+mod admin;
+
+pub use admin::{
+    archive_plan, assign_plan, create_plan, list_plans, plan_limits, restore_plan, submit_plan,
+    update_plan,
+};
 
 pub use fixtures::{
     DEFAULT_PLAN_CODE, active_default_plan_count, clear_all_plans, plan_status_and_default,
@@ -40,10 +47,15 @@ pub const REDIRECT_URI: &str = "https://plan.example/callback";
 
 /// 一个套餐测试的运行环境。
 ///
-/// 套餐前提由 schema 隔离保证（见 `support/db_isolation.rs`）：`plans` 表存在于
-/// 本二进制私有的 schema 中，`clear_all_plans` 只影响自己，不需要跨二进制锁。
+/// 套餐前提由隔离保证：默认走 schema 隔离（见 `support/db_isolation.rs`），
+/// `plans` 表存在于本二进制私有的 schema 中；显式选择模板路径时则是本测试私有
+/// 的数据库克隆。两种方式下 [`clear_all_plans`] 都只影响自己，不需要跨二进制锁。
 /// `default_plan_id` 是 [`test_state`] 播种的默认套餐 id，不把 identity 序列值当作
 /// 测试契约。
+///
+/// 数据库隔离不足以隔离 Redis：退款 worker 会扫描全局队列，把仍在等待的
+/// reservation 退款给其它测试。因此模板路径还额外为本测试签发一个独立的
+/// [`RedisKeyspace`]，让所有 Redis 存储（含退款队列）互不可见。
 pub struct PlanTestEnv {
     pub state: AppState,
     pub database: chenxing_auth::sqlx::PgPool,
@@ -66,13 +78,37 @@ impl PlanTestEnv {
 /// 构造测试状态，并把套餐前提重置为「只有一个原种子等价的 active 默认套餐」。
 ///
 /// 即使迁移提供了种子，这里仍显式清空后播种；需要「没有任何套餐」的测试在拿到
-/// 环境后自己调 [`clear_all_plans`]。
+/// 环境后自己调 [`clear_all_plans`]。默认走 schema 隔离：本二进制私有的 schema。
 pub async fn test_state() -> PlanTestEnv {
     test_state_with_max_connections(2).await
 }
 
+/// 构造测试状态，使用已迁移的模板数据库克隆而不是 schema 隔离（issue #710）。
+///
+/// 与 [`test_state`] 相同的 URL 读取与默认值，但 pool 来自
+/// `isolated_pool_from_template_with_max_connections`，固定 2 个连接，并为本测试
+/// 签发一个新的 [`RedisKeyspace`]，避免退款 worker 扫描到其它测试的 pending
+/// reservation。模板命名空间缺失时 fail-closed，不回退到 schema 路径。
+pub async fn test_state_from_template() -> PlanTestEnv {
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let database = super::db_isolation::isolated_pool_from_template_with_max_connections(
+        "plans",
+        &database_url,
+        2,
+    )
+    .await;
+    let redis_keyspace = RedisKeyspace::new(&format!("plans-{}", uuid::Uuid::new_v4().simple()))
+        .expect("test Redis namespace");
+    finish_plan_env(database, database_url, redis_url, redis_keyspace).await
+}
+
 /// Construct a plan test environment with an explicit pool size for tests that
 /// need a blocker, a blocked request, and an independent mutator at once.
+///
+/// 保持既有 schema 路径行为：沿用默认（legacy）Redis key 空间。
 pub async fn test_state_with_max_connections(max_connections: u32) -> PlanTestEnv {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
@@ -84,9 +120,23 @@ pub async fn test_state_with_max_connections(max_connections: u32) -> PlanTestEn
         max_connections,
     )
     .await;
+    finish_plan_env(database, database_url, redis_url, RedisKeyspace::default()).await
+}
+
+/// 从已建立的 pool 完成公共初始化：清空并播种默认套餐、密钥目录、配置、
+/// AppState 注入和 QPS 覆盖。两种 pool 来源（schema / 模板克隆）共用。
+///
+/// `redis_keyspace` 在 `AppState::new_with_pool` 之前写入 config，因此所有 Redis
+/// 存储都继承它；schema 路径传 [`RedisKeyspace::default`]，行为与改动前一致。
+async fn finish_plan_env(
+    database: chenxing_auth::sqlx::PgPool,
+    database_url: String,
+    redis_url: String,
+    redis_keyspace: RedisKeyspace,
+) -> PlanTestEnv {
     clear_all_plans(&database).await;
     let default_plan_id = seed_default_plan(&database).await;
-    let key_directory = key_directory::isolated_key_directory("plans");
+    let key_directory = super::key_directory::isolated_key_directory("plans");
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
         3000,
@@ -99,6 +149,7 @@ pub async fn test_state_with_max_connections(max_connections: u32) -> PlanTestEn
     config.admin_token = ADMIN_TOKEN.to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
+    config.redis_keyspace = redis_keyspace;
     let mut state = AppState::new_with_pool(config, database.clone())
         .await
         .expect("test state");
@@ -267,172 +318,6 @@ pub async fn create_admin_client(router: &Router, suffix: &str) -> Value {
         .await
         .expect("admin client response");
     assert_eq!(response.status(), StatusCode::CREATED, "admin client");
-    json(response).await
-}
-
-pub async fn submit_plan(
-    router: &Router,
-    suffix: &str,
-    limits: serde_json::Map<String, Value>,
-) -> (StatusCode, Value) {
-    let mut body = serde_json::Map::new();
-    body.insert("code".to_owned(), Value::String(format!("plan-{suffix}")));
-    body.insert("name".to_owned(), Value::String(format!("Plan {suffix}")));
-    body.insert("description".to_owned(), Value::Null);
-    body.insert("is_default".to_owned(), Value::Bool(false));
-    body.extend(limits);
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/admin/plans")
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .header("content-type", "application/json")
-                .body(Body::from(Value::Object(body).to_string()))
-                .expect("create plan request"),
-        )
-        .await
-        .expect("create plan response");
-    (response.status(), json(response).await)
-}
-
-pub async fn create_plan(
-    router: &Router,
-    suffix: &str,
-    limits: serde_json::Map<String, Value>,
-) -> Value {
-    let (status, body) = submit_plan(router, suffix, limits).await;
-    assert_eq!(status, StatusCode::CREATED, "create plan: {body}");
-    body
-}
-
-/// 常用限额组合，省掉每个测试重复构造 `serde_json::Map`。
-pub fn plan_limits(
-    oauth_clients_limit: i64,
-    daily_auth_limit: i64,
-    monthly_auth_limit: Option<i64>,
-    max_qps: Option<i64>,
-) -> serde_json::Map<String, Value> {
-    let mut limits = serde_json::Map::new();
-    limits.insert(
-        "oauth_clients_limit".to_owned(),
-        Value::from(oauth_clients_limit),
-    );
-    limits.insert("daily_auth_limit".to_owned(), Value::from(daily_auth_limit));
-    limits.insert(
-        "monthly_auth_limit".to_owned(),
-        monthly_auth_limit.map_or(Value::Null, Value::from),
-    );
-    limits.insert(
-        "max_qps".to_owned(),
-        max_qps.map_or(Value::Null, Value::from),
-    );
-    limits
-}
-
-pub async fn update_plan(
-    router: &Router,
-    plan_id: i64,
-    code: &str,
-    is_default: bool,
-) -> (StatusCode, Value) {
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/admin/plans/{plan_id}"))
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "code": code,
-                        "name": "Updated plan",
-                        "description": null,
-                        "oauth_clients_limit": 2,
-                        "daily_auth_limit": 2500,
-                        "monthly_auth_limit": 50000,
-                        "max_qps": null,
-                        "is_default": is_default,
-                    })
-                    .to_string(),
-                ))
-                .expect("update plan request"),
-        )
-        .await
-        .expect("update plan response");
-    let status = response.status();
-    (status, json(response).await)
-}
-
-pub async fn archive_plan(router: &Router, plan_id: i64) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/admin/plans/{plan_id}/archive"))
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .body(Body::empty())
-                .expect("archive request"),
-        )
-        .await
-        .expect("archive response")
-}
-
-pub async fn restore_plan(router: &Router, plan_id: i64) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/admin/plans/{plan_id}/restore"))
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .body(Body::empty())
-                .expect("restore request"),
-        )
-        .await
-        .expect("restore response")
-}
-
-pub async fn assign_plan(
-    router: &Router,
-    user_id: i64,
-    plan_id: i64,
-    expires_at: Option<Value>,
-) -> StatusCode {
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/admin/users/{user_id}/plan"))
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({ "plan_id": plan_id, "expires_at": expires_at }).to_string(),
-                ))
-                .expect("assign plan request"),
-        )
-        .await
-        .expect("assign plan response");
-    response.status()
-}
-
-pub async fn list_plans(router: &Router) -> Value {
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/admin/plans")
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .body(Body::empty())
-                .expect("list plans request"),
-        )
-        .await
-        .expect("list plans response");
-    assert_eq!(response.status(), StatusCode::OK, "list plans");
     json(response).await
 }
 

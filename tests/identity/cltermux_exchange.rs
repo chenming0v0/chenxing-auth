@@ -35,7 +35,7 @@ use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::oauth_flow;
+use crate::{harness, http};
 
 const INBOUND_TOKEN: &str = "cltermux-inbound-token-0123456789abcdef";
 /// allowlist 固定 client id。per-test schema 隔离保证固定 id 不跨用例碰撞。
@@ -50,8 +50,19 @@ struct Env {
 }
 
 async fn setup(binary_name: &str) -> Env {
-    let (mut state, database, key_directory) = oauth_flow::test_state(binary_name).await;
-    state.config.cltermux = Some(cltermux_config());
+    let (mut state, database, key_directory, _admin_token, _suffix) =
+        harness::HarnessBuilder::new(binary_name)
+            // 原 `oauth_flow::test_state` 会放大 QPS 窗口，保持一致。
+            .qps_window_override()
+            .build_state()
+            .await;
+    let config = cltermux_config();
+    state
+        .settings
+        .import_legacy_account_provider(&config)
+        .await
+        .expect("import legacy cltermux provider");
+    state.config.cltermux = Some(config);
     let router = api::router(state.clone());
     Env {
         router,
@@ -241,7 +252,7 @@ async fn exchange_rejects_missing_bearer_with_401() {
     let env = setup("cltermux_exchange").await;
     let response = exchange_request(&env.router, None, valid_device_body()).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let body = oauth_flow::json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(error_code(&body), "invalid_chenxing_token");
 }
 
@@ -250,7 +261,7 @@ async fn exchange_rejects_malformed_token_with_401() {
     let env = setup("cltermux_exchange").await;
     let response = exchange_request(&env.router, Some("not-a-jwt"), valid_device_body()).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let body = oauth_flow::json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(error_code(&body), "invalid_chenxing_token");
 }
 
@@ -270,7 +281,7 @@ async fn exchange_rejects_expired_token_with_401() {
 
     let response = exchange_request(&env.router, Some(&token), valid_device_body()).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let body = oauth_flow::json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(error_code(&body), "invalid_chenxing_token");
 }
 
@@ -292,7 +303,7 @@ async fn exchange_rejects_audience_outside_allowlist_with_401() {
 
     let response = exchange_request(&env.router, Some(&token), valid_device_body()).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let body = oauth_flow::json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(error_code(&body), "invalid_chenxing_token");
 }
 
@@ -317,7 +328,7 @@ async fn exchange_rejects_revoked_token_with_401() {
 
     let response = exchange_request(&env.router, Some(&token), valid_device_body()).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let body = oauth_flow::json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(error_code(&body), "invalid_chenxing_token");
 }
 
@@ -332,7 +343,7 @@ async fn exchange_rejects_missing_scope_with_403() {
 
     let response = exchange_request(&env.router, Some(&token), valid_device_body()).await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let body = oauth_flow::json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(error_code(&body), "insufficient_scope");
 }
 
@@ -351,7 +362,7 @@ async fn exchange_without_binding_returns_account_not_linked() {
 
     let response = exchange_request(&env.router, Some(&token), valid_device_body()).await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let body = oauth_flow::json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(error_code(&body), "account_not_linked");
 }
 
@@ -371,7 +382,7 @@ async fn exchange_with_disabled_binding_returns_account_disabled() {
 
     let response = exchange_request(&env.router, Some(&token), valid_device_body()).await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let body = oauth_flow::json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(error_code(&body), "account_disabled");
 }
 
@@ -405,7 +416,7 @@ async fn exchange_rejects_oversized_device_id_with_invalid_request() {
         "oversized device_id must be 400/422, got {}",
         response.status()
     );
-    let body = oauth_flow::json_body(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(error_code(&body), "invalid_request");
 }
 
@@ -434,7 +445,7 @@ async fn exchange_success_returns_session_token_with_binding_claims() {
         "success response must be Cache-Control: no-store"
     );
 
-    let body: Value = oauth_flow::json_body(response).await;
+    let body: Value = http::json_body(response).await;
     // 契约：响应体恰好这三个键，且不得出现其他令牌类型。
     let keys = body
         .as_object()

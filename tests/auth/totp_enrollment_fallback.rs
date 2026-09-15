@@ -8,18 +8,16 @@
 
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
-use chenxing_auth::{
-    api, auth_factors::domain::LoginTicket, clock::SharedClock, config::Config, state::AppState,
-};
+use chenxing_auth::{api, auth_factors::domain::LoginTicket, clock::SharedClock};
 use time::{Duration, OffsetDateTime};
 use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow};
+use crate::{harness, http, oauth_flow};
 
 const ADMIN_TOKEN: &str = "totp-fallback-admin-token";
 
@@ -30,69 +28,16 @@ async fn setup() -> (
     std::path::PathBuf,
     String,
 ) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("totp_enrollment_fallback", &database_url).await;
-    let key_directory =
-        std::env::temp_dir().join(format!("chenxing-totp-fallback-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("test configuration");
-    config.admin_token = ADMIN_TOKEN.to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let email = format!("totp-fallback-{}@example.com", Uuid::new_v4().simple());
-    let fixed_now = fixed_totp_now();
-    let state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("test state")
-        .with_clock(SharedClock::fixed(fixed_now));
+    let (state, database, key_directory, _admin_token, binary_name) =
+        harness::HarnessBuilder::new("totp_enrollment_fallback")
+            .admin_token(ADMIN_TOKEN)
+            .build_state()
+            .await;
+    let state = state.with_clock(SharedClock::fixed(fixed_totp_now()));
     let router = api::router(state.clone());
-    oauth_flow::ensure_owner_bootstrapped(
-        &router,
-        &database,
-        "totp_enrollment_fallback",
-        "totp_enrollment_fallback",
-    )
-    .await;
-    db_isolation::isolate_user_ids(&database, "totp_enrollment_fallback").await;
+    oauth_flow::ensure_owner_bootstrapped(&router, &database, &binary_name, &binary_name).await;
+    let email = format!("totp-fallback-{}@example.com", Uuid::new_v4().simple());
     (router, state, database, key_directory, email)
-}
-
-async fn json_body(response: axum::response::Response) -> serde_json::Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body"),
-    )
-    .expect("JSON response")
-}
-
-async fn request(
-    router: &Router,
-    uri: &str,
-    payload: serde_json::Value,
-) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
-        )
-        .await
-        .expect("JSON response")
 }
 
 async fn create_user(router: &Router, username: &str, email: &str, password: &str) {
@@ -119,17 +64,6 @@ async fn create_user(router: &Router, username: &str, email: &str, password: &st
     assert_eq!(response.status(), StatusCode::CREATED);
 }
 
-fn pending_cookie(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .map(|value| value.split(';').next().expect("cookie pair"))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
 fn csrf(cookies: &str) -> &str {
     cookies
         .split(';')
@@ -143,19 +77,7 @@ async fn request_with_cookie(
     payload: serde_json::Value,
     cookie: &str,
 ) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("cookie", cookie)
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
-        )
-        .await
-        .expect("JSON response")
+    http::post_json_with_headers(router, uri, &[("cookie", cookie)], payload).await
 }
 
 async fn request_with_cookie_and_csrf(
@@ -165,20 +87,13 @@ async fn request_with_cookie_and_csrf(
     cookie: &str,
     csrf_token: &str,
 ) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("cookie", cookie)
-                .header("x-csrf-token", csrf_token)
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
-        )
-        .await
-        .expect("JSON response")
+    http::post_json_with_headers(
+        router,
+        uri,
+        &[("cookie", cookie), ("x-csrf-token", csrf_token)],
+        payload,
+    )
+    .await
 }
 
 /// 注册账号并完成 TOTP 首次注册，返回 TOTP 生成器。
@@ -191,18 +106,18 @@ async fn enroll_totp(
     now: OffsetDateTime,
 ) -> TOTP {
     create_user(router, username, email, password).await;
-    let login_response = request(
+    let login_response = http::post_json(
         router,
         "/api/v1/auth/login",
         serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
     assert_eq!(login_response.status(), StatusCode::OK);
-    let cookie = pending_cookie(&login_response);
+    let cookie = http::set_cookies(&login_response);
     let csrf_token = csrf(&cookie).to_owned();
-    let _login_body = json_body(login_response).await;
+    let _login_body = http::json_body(login_response).await;
 
-    let setup = json_body(
+    let setup = http::json_body(
         request_with_cookie_and_csrf(
             router,
             "/api/v1/auth/security/totp/enrollment/start",
@@ -259,14 +174,14 @@ fn previous_timestep_timestamp(now: OffsetDateTime) -> u64 {
 
 /// 取一张新的 login ticket。账号已有因子，因此状态是 `factor_required`。
 async fn factor_login_ticket(router: &Router, username: &str, password: &str) -> String {
-    let response = request(
+    let response = http::post_json(
         router,
         "/api/v1/auth/login",
         serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
-    let cookie = pending_cookie(&response);
-    let body = json_body(response).await;
+    let cookie = http::set_cookies(&response);
+    let body = http::json_body(response).await;
     assert_eq!(body["status"], "factor_required");
     assert!(body.get("login_ticket").is_none());
     cookie
@@ -402,7 +317,7 @@ async fn totp_login_ticket_expiry_is_driven_by_the_injected_clock() {
     )
     .await;
     assert_eq!(active.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(json_body(active).await["code"], "invalid_factor");
+    assert_eq!(http::json_body(active).await["code"], "invalid_factor");
 
     // 同一张 ticket，把注入时钟推到 TTL 之后：真实 Redis TTL 还剩约 5 分钟，
     // 基准时钟下依然有效，但未来时钟必须判它过期。
@@ -416,7 +331,10 @@ async fn totp_login_ticket_expiry_is_driven_by_the_injected_clock() {
     )
     .await;
     assert_eq!(expired.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json_body(expired).await["code"], "invalid_login_ticket");
+    assert_eq!(
+        http::json_body(expired).await["code"],
+        "invalid_login_ticket"
+    );
 
     // 过期判定不得消耗 ticket：回到基准时钟，同一张 ticket 用正确验证码仍能
     // 完成登录——证明上面的 400 纯粹是时钟判出的过期，不是 ticket 本身失效。

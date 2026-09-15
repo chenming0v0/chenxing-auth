@@ -12,7 +12,7 @@
 
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
 use chenxing_auth::{
@@ -27,7 +27,7 @@ use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow as key_directory, totp_time};
+use crate::{db_isolation, http, oauth_flow as key_directory, totp_time};
 
 const ADMIN_TOKEN: &str = "totp-key-retirement-admin-token";
 
@@ -132,68 +132,13 @@ impl Fixture {
     }
 }
 
-async fn json_body(response: axum::response::Response) -> serde_json::Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body"),
-    )
-    .expect("JSON response")
-}
-
-fn pending_cookie(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .map(|value| value.split(';').next().expect("cookie pair"))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn cookie_value(cookie: &str, name: &str) -> String {
-    cookie
-        .split(';')
-        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
-        .expect("cookie value")
-        .to_owned()
-}
-
-async fn post(router: &Router, uri: &str, payload: serde_json::Value) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
-        )
-        .await
-        .expect("JSON response")
-}
-
 async fn post_with_cookie(
     router: &Router,
     uri: &str,
     payload: serde_json::Value,
     cookie: &str,
 ) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("cookie", cookie)
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
-        )
-        .await
-        .expect("JSON response")
+    http::post_json_with_headers(router, uri, &[("cookie", cookie)], payload).await
 }
 
 async fn post_with_session(
@@ -203,24 +148,17 @@ async fn post_with_session(
     cookie: &str,
     csrf: &str,
 ) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("cookie", cookie)
-                .header("x-csrf-token", csrf)
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
-        )
-        .await
-        .expect("JSON response")
+    http::post_json_with_headers(
+        router,
+        uri,
+        &[("cookie", cookie), ("x-csrf-token", csrf)],
+        payload,
+    )
+    .await
 }
 
 async fn bootstrap_owner(router: &Router, suffix: &str) {
-    let response = post(
+    let response = http::post_json(
         router,
         "/api/v1/admin/bootstrap",
         serde_json::json!({
@@ -265,7 +203,7 @@ async fn create_user(
         .await
         .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    json_body(response).await["id"]
+    http::json_body(response).await["id"]
         .as_i64()
         .expect("created user id")
 }
@@ -277,16 +215,20 @@ async fn enroll_totp(
     password: &str,
     now: time::OffsetDateTime,
 ) -> TOTP {
-    let login = post(
+    let login = http::post_json(
         router,
         "/api/v1/auth/login",
         serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
     assert_eq!(login.status(), StatusCode::OK);
-    let cookie = pending_cookie(&login);
-    let csrf = cookie_value(&cookie, cookies::csrf_cookie_name(false));
-    assert!(json_body(login).await["expires_at"].as_str().is_some());
+    let cookie = http::set_cookies(&login);
+    let csrf = http::cookie_value(&cookie, cookies::csrf_cookie_name(false));
+    assert!(
+        http::json_body(login).await["expires_at"]
+            .as_str()
+            .is_some()
+    );
     let setup_response = post_with_session(
         router,
         "/api/v1/auth/security/totp/enrollment/start",
@@ -295,7 +237,7 @@ async fn enroll_totp(
         &csrf,
     )
     .await;
-    let setup = json_body(setup_response).await;
+    let setup = http::json_body(setup_response).await;
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
     assert_eq!(
         post_with_session(
@@ -337,7 +279,7 @@ async fn retired_encryption_kid_is_reported_as_unavailable_without_burning_quota
     let after = fixture.router(retired_ring.clone()).await;
 
     // 1. 正确的验证码也读不出种子：503 而不是 401，错误码明确指向密钥不可用。
-    let login = post(
+    let login = http::post_json(
         &after,
         "/api/v1/auth/login",
         serde_json::json!({
@@ -352,7 +294,7 @@ async fn retired_encryption_kid_is_reported_as_unavailable_without_burning_quota
         StatusCode::SERVICE_UNAVAILABLE,
         "an unreadable secret must not be reported as an invalid code"
     );
-    let body = json_body(login).await;
+    let body = http::json_body(login).await;
     assert_eq!(body["code"], "factor_key_unavailable");
     // 响应不得泄漏 kid 或种子。
     let rendered = body.to_string();
@@ -361,7 +303,7 @@ async fn retired_encryption_kid_is_reported_as_unavailable_without_burning_quota
 
     // 2. 反复触发也不烧失败额度：账户维度阈值是 10，这里触发 12 次。
     for attempt in 0..12 {
-        let response = post(
+        let response = http::post_json(
             &after,
             "/api/v1/auth/login",
             serde_json::json!({
@@ -378,7 +320,7 @@ async fn retired_encryption_kid_is_reported_as_unavailable_without_burning_quota
         );
     }
     // 不带 totp_code 的密码登录仍然可用：账号没有被推向限流。
-    let pending = post(
+    let pending = http::post_json(
         &after,
         "/api/v1/auth/login",
         serde_json::json!({"identifier": username, "password": password}),
@@ -391,8 +333,8 @@ async fn retired_encryption_kid_is_reported_as_unavailable_without_burning_quota
     );
 
     // 3. 通过 login ticket 的 TOTP 端点同样返回 503。
-    let ticket = pending_cookie(&pending);
-    assert_eq!(json_body(pending).await["status"], "factor_required");
+    let ticket = http::set_cookies(&pending);
+    assert_eq!(http::json_body(pending).await["status"], "factor_required");
     let response = post_with_cookie(
         &after,
         "/api/v1/auth/totp/login",
@@ -401,7 +343,10 @@ async fn retired_encryption_kid_is_reported_as_unavailable_without_burning_quota
     )
     .await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(json_body(response).await["code"], "factor_key_unavailable");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "factor_key_unavailable"
+    );
 
     fixture.cleanup();
 }
@@ -448,7 +393,7 @@ async fn owner_can_reset_a_locked_totp_factor_and_admin_cannot() {
         .await
         .expect("factor status response");
     assert_eq!(status.status(), StatusCode::OK);
-    let status = json_body(status).await;
+    let status = http::json_body(status).await;
     assert_eq!(status["totp"]["key_state"], "unavailable");
     assert_eq!(status["totp"]["readable"], false);
     assert!(status["totp"].get("kid").is_none());
@@ -466,7 +411,7 @@ async fn owner_can_reset_a_locked_totp_factor_and_admin_cannot() {
         .await
         .expect("key health response");
     assert_eq!(health.status(), StatusCode::OK);
-    let health = json_body(health).await;
+    let health = http::json_body(health).await;
     assert!(
         health["unavailable"].as_i64().expect("unavailable count") >= 1,
         "key health must surface unreadable secrets: {health}"
@@ -498,7 +443,7 @@ async fn owner_can_reset_a_locked_totp_factor_and_admin_cannot() {
         .await
         .expect("admin reset response");
     assert_eq!(denied.status(), StatusCode::FORBIDDEN);
-    assert_eq!(json_body(denied).await["code"], "admin_forbidden");
+    assert_eq!(http::json_body(denied).await["code"], "admin_forbidden");
 
     // 缺少 X-CSRF-Token 的浏览器写操作必须被拒，即使调用者是 Owner。
     let without_csrf = after
@@ -514,7 +459,7 @@ async fn owner_can_reset_a_locked_totp_factor_and_admin_cannot() {
         .await
         .expect("reset without CSRF response");
     assert_eq!(without_csrf.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json_body(without_csrf).await["code"], "csrf_invalid");
+    assert_eq!(http::json_body(without_csrf).await["code"], "csrf_invalid");
 
     // Owner 带齐 Session Cookie、CSRF Cookie 与头部：重置成功。
     let reset = after
@@ -531,13 +476,13 @@ async fn owner_can_reset_a_locked_totp_factor_and_admin_cannot() {
         .await
         .expect("owner reset response");
     assert_eq!(reset.status(), StatusCode::OK);
-    let reset = json_body(reset).await;
+    let reset = http::json_body(reset).await;
     assert_eq!(reset["previous_key_state"], "unavailable");
     assert_eq!(reset["credentials_revoked"], true);
 
     // 重置后账号回到「无因子」，可以重新绑定并完成登录。
     let totp = enroll_totp(&after, &username, password, fixture.now).await;
-    let login = post(
+    let login = http::post_json(
         &after,
         "/api/v1/auth/login",
         serde_json::json!({
@@ -568,7 +513,10 @@ async fn owner_can_reset_a_locked_totp_factor_and_admin_cannot() {
         .await
         .expect("repeat reset response");
     assert_eq!(repeat.status(), StatusCode::NOT_FOUND);
-    assert_eq!(json_body(repeat).await["code"], "totp_factor_not_found");
+    assert_eq!(
+        http::json_body(repeat).await["code"],
+        "totp_factor_not_found"
+    );
 
     // 重置动作必须留下可检索的审计记录，且元数据不含 kid 或种子。
     let audit: Option<serde_json::Value> = chenxing_auth::sqlx::query_scalar(

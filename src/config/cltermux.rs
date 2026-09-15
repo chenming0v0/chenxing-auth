@@ -139,7 +139,7 @@ fn parse_allowed_client_ids(raw: &str) -> Result<Vec<String>, ConfigError> {
     Ok(ids)
 }
 
-fn validate_interop_token(token: &str, name: &'static str) -> Result<(), ConfigError> {
+pub(crate) fn validate_interop_token(token: &str, name: &'static str) -> Result<(), ConfigError> {
     let normalized = token.to_ascii_lowercase();
     let is_common_weak_value = COMMON_WEAK_VALUES.contains(&normalized.as_str());
     let is_public_placeholder = PUBLIC_PLACEHOLDER_MARKERS

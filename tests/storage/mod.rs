@@ -4,6 +4,14 @@
 
 #[path = "../support/db_isolation.rs"]
 mod db_isolation;
+#[path = "../support/harness.rs"]
+mod harness;
+#[path = "../support/http.rs"]
+mod http;
+#[path = "../support/key_directory.rs"]
+mod key_directory;
+#[path = "../support/oauth_flow.rs"]
+mod oauth_flow;
 #[path = "../support/plans.rs"]
 mod plans_support;
 

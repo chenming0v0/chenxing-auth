@@ -28,6 +28,7 @@ pub struct SecretManager {
 pub enum SecretContext {
     Provider(i64),
     Smtp,
+    AccountProvider(uuid::Uuid),
 }
 
 impl SecretContext {
@@ -39,6 +40,10 @@ impl SecretContext {
                 aad.extend_from_slice(&provider_id.to_be_bytes());
             }
             Self::Smtp => aad.extend_from_slice(b"smtp\0app_settings.smtp"),
+            Self::AccountProvider(id) => {
+                aad.extend_from_slice(b"account-provider\0");
+                aad.extend_from_slice(id.as_bytes());
+            }
         }
         aad
     }

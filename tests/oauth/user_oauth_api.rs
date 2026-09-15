@@ -1,11 +1,8 @@
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode, header::SET_COOKIE},
-    response::Response,
 };
-use chenxing_auth::{api, config::Config, state::AppState};
-use serde_json::Value;
 use totp_rs::TOTP;
 use tower::ServiceExt;
 use url::Url;
@@ -13,7 +10,8 @@ use uuid::Uuid;
 
 // 迁移不再种子默认套餐：自助创建 Client 的用例必须自己给用户挂套餐，
 // 否则会被自助接入闸门拒绝（403 self_service_disabled）。
-use crate::db_isolation;
+use crate::harness::HarnessBuilder;
+use crate::http;
 use crate::oauth_flow;
 use crate::plan_fixtures;
 
@@ -31,57 +29,18 @@ fn resolve_location(location: &str) -> Url {
 /// schema 隔离替代了跨测试套餐锁：每个测试用例在自己的 schema 里跑，
 /// `DELETE FROM plans` 只删自己的 schema，不会破坏其他二进制的套餐。
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("user_oauth_api", &database_url).await;
-    let key_directory = std::env::temp_dir().join(format!("chenxing-user-ui-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
+    let harness = HarnessBuilder::new("user_oauth_api")
+        .admin_token("user-ui-admin-token")
+        .build()
+        .await;
+    ensure_owner_bootstrapped(
+        &harness.router,
+        &harness.database,
+        "user_oauth_api",
+        "user-oauth-api",
     )
-    .expect("config");
-    config.admin_token = "user-ui-admin-token".to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("state");
-    let router = api::router(state);
-    ensure_owner_bootstrapped(&router, &database, "user_oauth_api", "user-oauth-api").await;
-    (router, database, key_directory)
-}
-
-async fn json(response: Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body"),
-    )
-    .expect("JSON")
-}
-
-fn cookies(response: &Response) -> String {
-    response
-        .headers()
-        .get_all(SET_COOKIE)
-        .iter()
-        .map(|value| {
-            value
-                .to_str()
-                .expect("cookie")
-                .split(';')
-                .next()
-                .unwrap()
-                .to_owned()
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
+    .await;
+    (harness.router, harness.database, harness.key_directory)
 }
 
 fn csrf(cookies: &str) -> &str {
@@ -144,7 +103,7 @@ async fn register_and_login_without_plan(router: &Router, suffix: &str) -> (Stri
         .await
         .expect("login response");
     assert_eq!(response.status(), StatusCode::OK);
-    let cookie_header = cookies(&response);
+    let cookie_header = http::set_cookies(&response);
     let csrf_token = csrf(&cookie_header).to_owned();
     assert!(cookie_header.contains("chenxing_session="));
     let response = router
@@ -162,7 +121,7 @@ async fn register_and_login_without_plan(router: &Router, suffix: &str) -> (Stri
         .await
         .expect("TOTP setup response");
     assert_eq!(response.status(), StatusCode::OK);
-    let setup = json(response).await;
+    let setup = http::json_body(response).await;
     let enrollment_id = setup["enrollment_id"].as_str().expect("TOTP enrollment ID");
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
     let response = router
@@ -219,7 +178,7 @@ async fn normal_user_can_create_only_two_owned_oauth_projects() {
             .await
             .expect("create client response");
         assert_eq!(response.status(), StatusCode::CREATED);
-        let created = json(response).await;
+        let created = http::json_body(response).await;
         assert!(created["client_secret"].as_str().is_some());
     }
     let response = router
@@ -237,7 +196,10 @@ async fn normal_user_can_create_only_two_owned_oauth_projects() {
         .await
         .expect("third client response");
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(json(response).await["code"], "oauth_client_quota_exceeded");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "oauth_client_quota_exceeded"
+    );
 
     let response = router
         .clone()
@@ -251,7 +213,7 @@ async fn normal_user_can_create_only_two_owned_oauth_projects() {
         .await
         .expect("list clients response");
     assert_eq!(response.status(), StatusCode::OK);
-    let clients = json(response).await;
+    let clients = http::json_body(response).await;
     assert_eq!(clients["items"].as_array().expect("client items").len(), 2);
     assert_eq!(clients["items"][0]["quota"]["daily_limit"], 2_500);
     assert_eq!(clients["items"][0]["quota"]["monthly_limit"], 50_000);
@@ -280,7 +242,7 @@ async fn normal_user_can_create_only_two_owned_oauth_projects() {
         )
         .await
         .expect("status response");
-    assert_eq!(json(response).await["authenticated"], true);
+    assert_eq!(http::json_body(response).await["authenticated"], true);
     let response = router
         .clone()
         .oneshot(
@@ -321,7 +283,7 @@ async fn normal_user_cannot_read_or_mutate_another_users_oauth_project() {
         )
         .await
         .expect("owner client response");
-    let client_id = json(response).await["client_id"]
+    let client_id = http::json_body(response).await["client_id"]
         .as_str()
         .expect("client id")
         .to_owned();
@@ -340,7 +302,7 @@ async fn normal_user_cannot_read_or_mutate_another_users_oauth_project() {
         .await
         .expect("other list response");
     assert!(
-        json(response).await["items"]
+        http::json_body(response).await["items"]
             .as_array()
             .expect("other items")
             .is_empty()
@@ -401,7 +363,7 @@ async fn owned_client_mutations_require_user_csrf() {
         .await
         .expect("missing csrf response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json(response).await["code"], "csrf_invalid");
+    assert_eq!(http::json_body(response).await["code"], "csrf_invalid");
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE email = $1")
         .bind(format!("ui-{suffix}@example.com"))
@@ -437,7 +399,7 @@ async fn authorized_apps_are_user_scoped_and_consent_revoke_is_audited() {
         .await
         .expect("client response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    let client_id = json(response).await["client_id"]
+    let client_id = http::json_body(response).await["client_id"]
         .as_str()
         .expect("client id")
         .to_owned();
@@ -482,7 +444,7 @@ async fn authorized_apps_are_user_scoped_and_consent_revoke_is_audited() {
         .await
         .expect("authorized apps response");
     assert_eq!(response.status(), StatusCode::OK);
-    let apps = json(response).await;
+    let apps = http::json_body(response).await;
     assert_eq!(apps["items"].as_array().expect("authorized items").len(), 1);
     let app = &apps["items"][0];
     assert_eq!(app["client_id"], client_id);
@@ -505,7 +467,7 @@ async fn authorized_apps_are_user_scoped_and_consent_revoke_is_audited() {
         .await
         .expect("missing csrf revoke response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json(response).await["code"], "csrf_invalid");
+    assert_eq!(http::json_body(response).await["code"], "csrf_invalid");
 
     let response = router
         .clone()
@@ -600,7 +562,7 @@ async fn authorized_apps_are_user_scoped_and_consent_revoke_is_audited() {
         .expect("other authorized apps response");
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        json(response).await["items"]
+        http::json_body(response).await["items"]
             .as_array()
             .expect("other items")
             .len(),
@@ -640,7 +602,7 @@ async fn owned_oauth_authorization_consumes_daily_and_monthly_quota() {
         )
         .await
         .expect("create client response");
-    let client_id = json(response).await["client_id"]
+    let client_id = http::json_body(response).await["client_id"]
         .as_str()
         .expect("client id")
         .to_owned();
@@ -686,7 +648,7 @@ async fn owned_oauth_authorization_consumes_daily_and_monthly_quota() {
         .await
         .expect("approve consent response");
     assert_eq!(response.status(), StatusCode::OK);
-    let decision = json(response).await;
+    let decision = http::json_body(response).await;
     assert_eq!(decision["decision"].as_str(), Some("approve"));
     let redirect = resolve_location(
         decision["redirect_to"]
@@ -709,7 +671,7 @@ async fn owned_oauth_authorization_consumes_daily_and_monthly_quota() {
         )
         .await
         .expect("list clients response");
-    let clients = json(response).await;
+    let clients = http::json_body(response).await;
     let project = clients["items"]
         .as_array()
         .expect("items")

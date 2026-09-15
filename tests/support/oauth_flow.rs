@@ -2,30 +2,35 @@
 
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode, header::SET_COOKIE},
 };
-use chenxing_auth::{api, config::Config, redis_keyspace::RedisKeyspace, state::AppState};
-use serde_json::Value;
+use chenxing_auth::{api, redis_keyspace::RedisKeyspace, state::AppState};
 use tower::ServiceExt;
-
-#[path = "key_directory.rs"]
-mod key_directory;
-
-pub fn isolated_key_directory(label: &str) -> std::path::PathBuf {
-    key_directory::isolated_key_directory(label)
-}
 
 #[path = "qps_window.rs"]
 pub mod qps_window;
 
+/// 转发到每个测试目标在 crate 根声明的唯一 `key_directory` 实例，保留历史公开入口。
+/// 目标 `mod.rs` 必须以 `#[path = "../support/key_directory.rs"] mod key_directory;`
+/// 声明该实例，本模块再通过 `super::key_directory` 使用它。
+pub fn isolated_key_directory(label: &str) -> std::path::PathBuf {
+    super::key_directory::isolated_key_directory(label)
+}
+
+/// 读取响应体并解析为 JSON；实现委托给 [`super::http::json_body`]，保留本模块
+/// 的历史公开入口名。
+pub use super::http::json_body;
+
 /// `binary_name` 决定 schema 隔离边界，必须传调用方使用的稳定隔离标签
 /// （见 `support/db_isolation.rs`）。共享同一个名字的测试会共享数据库状态。
 ///
-/// 调用方必须同时声明 `db_isolation` 模块：
+/// 调用方必须同时声明 `db_isolation` 与 crate 根的 `key_directory` 模块：
 /// ```rust,ignore
 /// #[path = "../support/db_isolation.rs"]
 /// mod db_isolation;
+/// #[path = "../support/key_directory.rs"]
+/// mod key_directory;
 /// #[path = "../support/oauth_flow.rs"]
 /// mod oauth_flow;
 /// ```
@@ -50,40 +55,23 @@ pub async fn test_state_with_max_connections(
 }
 
 /// Test-state variant with an explicit Redis isolation boundary.
+///
+/// 委托给 [`super::harness::HarnessBuilder`]，避免各入口重复拼装 Config / AppState。
+/// 保留历史语义：`flow-admin-token`、`cookie_secure = false`、并注入测试用 QPS 大窗口
+/// （见 `qps_window`）。需要关闭窗口注入的用例请直接用 `HarnessBuilder`，不要经过本入口。
 pub async fn test_state_with_max_connections_and_keyspace(
     binary_name: &str,
     max_connections: u32,
     redis_keyspace: RedisKeyspace,
 ) -> (AppState, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = super::db_isolation::isolated_pool_with_max_connections(
-        binary_name,
-        &database_url,
-        max_connections,
-    )
-    .await;
-    let key_directory = key_directory::isolated_key_directory("flow");
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("test configuration");
-    config.admin_token = "flow-admin-token".to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    config.redis_keyspace = redis_keyspace;
-    let mut state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("test state");
-    // QPS 窗口放大到 60s，限流断言不再依赖请求跑得够快（见 `qps_window`）。
-    qps_window::override_qps_window(&mut state);
+    let (state, database, key_directory, _admin_token, _binary_name) =
+        super::harness::HarnessBuilder::new(binary_name)
+            .admin_token("flow-admin-token")
+            .max_connections(max_connections)
+            .redis_keyspace(redis_keyspace)
+            .qps_window_override()
+            .build_state()
+            .await;
     (state, database, key_directory)
 }
 
@@ -92,13 +80,6 @@ pub async fn test_router(
 ) -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let (state, database, key_directory) = test_state(binary_name).await;
     (api::router(state), database, key_directory)
-}
-
-pub async fn json_body(response: axum::response::Response) -> Value {
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("response body");
-    serde_json::from_slice(&body).expect("JSON response")
 }
 
 pub fn cookie_header(response: &axum::response::Response) -> String {

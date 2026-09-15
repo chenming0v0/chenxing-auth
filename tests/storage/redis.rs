@@ -13,3 +13,4 @@ mod oauth_quota_refund;
 mod oauth_rate_limit;
 mod oauth_request_store;
 mod oauth_request_store_ttl;
+mod refund_namespace;

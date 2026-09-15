@@ -14,6 +14,38 @@ fn normalize_migration_sql(sql: &'static str) -> Cow<'static, str> {
     }
 }
 
+/// The repository's current forward-only migration version sequence, read from
+/// the migration filenames on disk.
+///
+/// This is independent of the database ledger being asserted: an upgraded
+/// ledger must match every version the repository ships, so appending a
+/// migration can never be silently skipped and the test never has to be
+/// re-pinned with a hard-coded total.
+fn repository_migration_versions() -> Vec<i64> {
+    let mut versions = std::fs::read_dir("migrations")
+        .expect("migrations directory")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "sql"))
+        .map(|entry| {
+            entry.file_name().to_string_lossy()[..4]
+                .parse::<i64>()
+                .expect("migration filename starts with a version prefix")
+        })
+        .collect::<Vec<_>>();
+    versions.sort_unstable();
+    assert!(
+        !versions.is_empty(),
+        "the forward-only history must contain at least one migration"
+    );
+    let contiguous = (1..=i64::try_from(versions.len()).expect("migration count fits in i64"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        versions, contiguous,
+        "repository migration versions must be contiguous and forward-only"
+    );
+    versions
+}
+
 fn published_migrator() -> Migrator {
     let migrations: Vec<_> = [
         (
@@ -318,8 +350,12 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     // 回收、access-token 撤销、JSONB shape CHECK、签发时 idle 窗口、
     // auth_method 与 secret 哈希配对 CHECK、client 展示字段、钱包与套餐定价、
     // 兑换码、配额加购和钱包购买幂等。0052 是 #706 的外部身份快照列，
-    // 0053 是 #706 的 CLtermux 业务账号绑定表。
-    assert_eq!(applied, (1_i64..=53).collect::<Vec<_>>());
+    // 0053 是 #706 的 CLtermux 业务账号绑定表；0054 是账户 provider registry
+    // 的 app_settings 种子。
+    //
+    // 期望值来自仓库迁移目录而不是数据库自身，也不是写死的总数：目录一旦
+    // 新增迁移，升级后的账本必须包含该版本，漏跑即失败。
+    assert_eq!(applied, repository_migration_versions());
 
     // A v1.1.16 database may already have the 0047 schema change while its
     // ledger stops at 0046. The compatibility repair must record 0047 from
@@ -502,7 +538,7 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .fetch_all(&pool)
     .await
     .expect("read repaired v1.1.2 migration history");
-    assert_eq!(repaired, (1_i64..=53).collect::<Vec<_>>());
+    assert_eq!(repaired, repository_migration_versions());
 
     let preserved: (i64, i64, i64) = chenxing_auth::sqlx::query_as(
         "SELECT \

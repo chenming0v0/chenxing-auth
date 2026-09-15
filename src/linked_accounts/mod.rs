@@ -9,12 +9,16 @@
 //! 一致性的权威来源：仓储层靠唯一冲突的约束名区分"同一用户重复提交同一 uid"
 //! 与"uid 被他人占用"，不做 check-then-insert。
 
+mod error;
 pub mod exchange;
 pub mod handlers;
 mod pagination;
+mod provider;
 pub mod repository;
 mod response;
 pub mod service;
+mod views;
 
+pub use error::LinkedAccountServiceError;
 pub use repository::{LinkedAccountRepository, LinkedAccountRow, StoreBindingError};
-pub use service::{LinkedAccountService, LinkedAccountServiceError, LinkedAccountView};
+pub use service::{LinkedAccountService, LinkedAccountView};

@@ -2,56 +2,39 @@ use std::collections::BTreeSet;
 
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
 use chenxing_auth::{
-    api,
-    config::Config,
     sessions::{cookies, domain::Session, store::SessionStore},
     state::AppState,
 };
-use serde_json::Value;
 use tower::ServiceExt;
 
-use crate::{db_isolation, oauth_flow as key_directory};
+use crate::{harness, http};
 
 struct TestApp {
     router: Router,
+    state: AppState,
     database: chenxing_auth::sqlx::PgPool,
     key_directory: std::path::PathBuf,
 }
 
-fn database_url() -> String {
-    std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned())
-}
-
-fn redis_url() -> String {
-    std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned())
-}
-
 async fn setup() -> TestApp {
-    let database_url = database_url();
-    let redis_url = redis_url();
-    let database = db_isolation::isolated_pool("security_events_api", &database_url).await;
-    let key_directory = key_directory::isolated_key_directory("security-events-api");
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("state");
+    let harness::Harness {
+        router,
+        state,
+        database,
+        key_directory,
+        ..
+    } = harness::HarnessBuilder::new("security_events_api")
+        // 原 raw Config 未设置 admin token，保持禁用管理 bearer。
+        .admin_token("")
+        .build()
+        .await;
     TestApp {
-        router: api::router(state),
+        router,
+        state,
         database,
         key_directory,
     }
@@ -71,9 +54,9 @@ async fn seed_user(database: &chenxing_auth::sqlx::PgPool, name: &str) -> i64 {
     .expect("seed user")
 }
 
-async fn browser_session(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -> String {
-    let redis = redis::Client::open(redis_url()).expect("Redis");
-    let store = SessionStore::with_metadata_and_key(redis, database.clone(), [0; 32]);
+async fn browser_session(app: &TestApp, user_id: i64) -> String {
+    let redis = redis::Client::open(app.state.config.redis_url.clone()).expect("Redis");
+    let store = SessionStore::with_metadata_and_key(redis, app.database.clone(), [0; 32]);
     let mut session = Session::new(user_id.to_string(), std::time::Duration::from_secs(3600))
         .expect("browser session");
     store
@@ -81,15 +64,6 @@ async fn browser_session(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -
         .await
         .expect("save browser session");
     format!("{}={}", cookies::session_cookie_name(false), session.token)
-}
-
-async fn json(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body"),
-    )
-    .expect("JSON response")
 }
 
 async fn get(router: &Router, uri: &str, cookie: Option<&str>) -> axum::response::Response {
@@ -114,7 +88,7 @@ async fn security_events_require_a_session_cookie() {
     let response = get(&app.router, "/api/v1/auth/security-events", None).await;
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(json(response).await["code"], "login_required");
+    assert_eq!(http::json_body(response).await["code"], "login_required");
 
     let _ = std::fs::remove_dir_all(app.key_directory);
 }
@@ -123,7 +97,7 @@ async fn security_events_require_a_session_cookie() {
 async fn security_events_reject_invalid_pagination() {
     let app = setup().await;
     let user_id = seed_user(&app.database, "security-pagination").await;
-    let cookie = browser_session(&app.database, user_id).await;
+    let cookie = browser_session(&app, user_id).await;
 
     for query in [
         "page=0",
@@ -142,7 +116,7 @@ async fn security_events_reject_invalid_pagination() {
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}");
         assert_eq!(
-            json(response).await["code"],
+            http::json_body(response).await["code"],
             "invalid_pagination",
             "{query}"
         );
@@ -156,7 +130,7 @@ async fn security_events_are_user_scoped_archived_paged_and_whitelisted() {
     let app = setup().await;
     let user_id = seed_user(&app.database, "security-events-owner").await;
     let other_user_id = seed_user(&app.database, "security-events-other").await;
-    let cookie = browser_session(&app.database, user_id).await;
+    let cookie = browser_session(&app, user_id).await;
     let client_id = "cx_security_events";
     chenxing_auth::sqlx::query(
         "INSERT INTO oauth_clients
@@ -227,7 +201,7 @@ async fn security_events_are_user_scoped_archived_paged_and_whitelisted() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let first_page = json(response).await;
+    let first_page = http::json_body(response).await;
     assert_eq!(first_page["page"], 1);
     assert_eq!(first_page["page_size"], 2);
     assert_eq!(first_page["total"], 3);
@@ -272,7 +246,7 @@ async fn security_events_are_user_scoped_archived_paged_and_whitelisted() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let second_page = json(response).await;
+    let second_page = http::json_body(response).await;
     assert_eq!(second_page["total"], 3);
     assert_eq!(
         second_page["items"].as_array().expect("archive page").len(),
@@ -292,7 +266,7 @@ async fn security_event_detail_requires_a_session_cookie() {
     let response = get(&app.router, "/api/v1/auth/security-events/1", None).await;
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(json(response).await["code"], "login_required");
+    assert_eq!(http::json_body(response).await["code"], "login_required");
 
     let _ = std::fs::remove_dir_all(app.key_directory);
 }
@@ -304,7 +278,7 @@ async fn security_event_detail_is_user_scoped_and_not_found_is_indistinguishable
     let app = setup().await;
     let user_id = seed_user(&app.database, "security-detail-owner").await;
     let other_user_id = seed_user(&app.database, "security-detail-other").await;
-    let cookie = browser_session(&app.database, user_id).await;
+    let cookie = browser_session(&app, user_id).await;
     let client_id = "cx_security_detail";
     chenxing_auth::sqlx::query(
         "INSERT INTO oauth_clients
@@ -363,7 +337,7 @@ async fn security_event_detail_is_user_scoped_and_not_found_is_indistinguishable
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let detail = json(response).await;
+    let detail = http::json_body(response).await;
     let expected_fields = BTreeSet::from([
         "action",
         "category",
@@ -414,7 +388,7 @@ async fn security_event_detail_is_user_scoped_and_not_found_is_indistinguishable
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let archived = json(response).await;
+    let archived = http::json_body(response).await;
     assert_eq!(archived["id"].as_i64(), Some(9000000002));
     assert_eq!(archived["action"], "login");
     assert_eq!(archived["category"], "auth");
@@ -437,7 +411,7 @@ async fn security_event_detail_is_user_scoped_and_not_found_is_indistinguishable
         let response = get(&app.router, &uri, Some(&cookie)).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{label}");
         assert_eq!(
-            json(response).await["code"],
+            http::json_body(response).await["code"],
             "security_event_not_found",
             "{label}"
         );
@@ -451,7 +425,7 @@ async fn security_event_detail_is_user_scoped_and_not_found_is_indistinguishable
 async fn security_event_detail_returns_null_client_when_oauth_client_is_deleted() {
     let app = setup().await;
     let user_id = seed_user(&app.database, "security-detail-deleted-client").await;
-    let cookie = browser_session(&app.database, user_id).await;
+    let cookie = browser_session(&app, user_id).await;
     let event_id: i64 = chenxing_auth::sqlx::query_scalar(
         "INSERT INTO audit_events
          (actor_type, actor_user_id, action, resource_type, resource_id, metadata, created_at)
@@ -470,7 +444,7 @@ async fn security_event_detail_returns_null_client_when_oauth_client_is_deleted(
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let detail = json(response).await;
+    let detail = http::json_body(response).await;
     assert_eq!(detail["action"], "consent_revoke");
     assert_eq!(detail["category"], "authorization");
     assert_eq!(detail["severity"], "warning");

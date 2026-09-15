@@ -1,60 +1,24 @@
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
 use base64::Engine;
-use chenxing_auth::{
-    api,
-    config::Config,
-    sessions::{cookies, domain::Session, store::SessionStore},
-    state::AppState,
-};
+use chenxing_auth::sessions::{cookies, domain::Session, store::SessionStore};
 use serde_json::Value;
 use sha2::Digest;
 use tower::ServiceExt;
 use uuid::Uuid;
 
 // 「默认套餐回退」用例需要一个 active 默认套餐；测试显式播种它。
-use crate::{db_isolation, oauth_flow as key_directory, plan_fixtures};
+use crate::{http, plan_fixtures};
 
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("admin_ui_api", &database_url).await;
-    let key_directory = key_directory::isolated_key_directory("admin-ui");
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.admin_token = "admin-ui-token".to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(
-            AppState::new_with_pool(config, database.clone())
-                .await
-                .expect("state"),
-        ),
-        database,
-        key_directory,
-    )
-}
-
-async fn json(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body"),
-    )
-    .expect("JSON")
+    let harness = crate::harness::HarnessBuilder::new("admin_ui_api")
+        .admin_token("admin-ui-token")
+        .build()
+        .await;
+    (harness.router, harness.database, harness.key_directory)
 }
 
 async fn browser_session(
@@ -126,7 +90,10 @@ async fn owner_can_use_admin_ui_queries_but_normal_user_cannot() {
         .await
         .expect("register response");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(json(response).await["code"], "registration_disabled");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "registration_disabled"
+    );
 
     let public_registration_count: i64 = chenxing_auth::sqlx::query_scalar(
         "SELECT COUNT(*) FROM users WHERE username = $1 OR email = $2",
@@ -159,7 +126,7 @@ async fn owner_can_use_admin_ui_queries_but_normal_user_cannot() {
         .await
         .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    let user = json(response).await;
+    let user = http::json_body(response).await;
     let user_id = user["id"].as_i64().expect("admin-created user id");
     assert_eq!(user["role"], "user");
 
@@ -182,7 +149,7 @@ async fn owner_can_use_admin_ui_queries_but_normal_user_cannot() {
             .await
             .expect("admin UI response");
         assert_eq!(response.status(), StatusCode::OK, "{uri}");
-        let body = json(response).await;
+        let body = http::json_body(response).await;
         if uri.ends_with("/me") {
             assert_eq!(body["role"], "owner");
         } else if uri.ends_with("overview") {
@@ -266,7 +233,7 @@ async fn admin_query_rejects_an_offset_that_would_overflow() {
         .await
         .expect("overflow response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = json(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(body["code"], "invalid_pagination");
     assert_eq!(
         body["message"],
@@ -303,7 +270,7 @@ async fn admin_queries_reject_out_of_range_pagination() {
             .await
             .expect("invalid pagination response");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
-        let body = json(response).await;
+        let body = http::json_body(response).await;
         assert_eq!(body["code"], "invalid_pagination", "{path}");
         assert_eq!(
             body["message"],
@@ -348,7 +315,7 @@ async fn admin_audit_query_pages_beyond_the_previous_two_hundred_event_limit() {
         .await
         .expect("audit page response");
     assert_eq!(response.status(), StatusCode::OK);
-    let page = json(response).await;
+    let page = http::json_body(response).await;
     assert_eq!(page["total"], 205);
     assert_eq!(page["items"].as_array().expect("audit items").len(), 5);
 
@@ -425,7 +392,7 @@ async fn admin_user_and_client_queries_filter_and_page_in_the_database() {
         .await
         .expect("filtered user response");
     assert_eq!(response.status(), StatusCode::OK);
-    let users = json(response).await;
+    let users = http::json_body(response).await;
     assert_eq!(users["total"], 1);
     assert_eq!(users["items"].as_array().expect("user items").len(), 1);
     assert_eq!(users["items"][0]["username"], active_username);
@@ -443,7 +410,7 @@ async fn admin_user_and_client_queries_filter_and_page_in_the_database() {
         )
         .await
         .expect("empty user page response");
-    let empty_page = json(response).await;
+    let empty_page = http::json_body(response).await;
     assert_eq!(empty_page["page"], 2);
     assert_eq!(empty_page["page_size"], 1);
     assert_eq!(empty_page["total"], 1);
@@ -467,7 +434,7 @@ async fn admin_user_and_client_queries_filter_and_page_in_the_database() {
         )
         .await
         .expect("filtered client response");
-    let clients = json(response).await;
+    let clients = http::json_body(response).await;
     assert_eq!(clients["total"], 1);
     assert_eq!(clients["items"][0]["client_name"], disabled_client);
 
@@ -483,7 +450,10 @@ async fn admin_user_and_client_queries_filter_and_page_in_the_database() {
         .await
         .expect("invalid client response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json(response).await["code"], "invalid_pagination");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "invalid_pagination"
+    );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE username LIKE $1")
         .bind(format!("query-%-{suffix}"))
@@ -557,7 +527,7 @@ async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() 
         .await
         .expect("effective plan query response");
     assert_eq!(response.status(), StatusCode::OK);
-    let body = json(response).await;
+    let body = http::json_body(response).await;
     let items = body["items"].as_array().expect("query items");
     let user = |username: &str| {
         items
@@ -626,7 +596,7 @@ async fn admin_me_session_path_returns_identity_and_keeps_401_for_missing_accoun
         .await
         .expect("owner bootstrap response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    let owner_id = json(response).await["id"]
+    let owner_id = http::json_body(response).await["id"]
         .as_i64()
         .expect("bootstrapped owner id");
 
@@ -646,7 +616,7 @@ async fn admin_me_session_path_returns_identity_and_keeps_401_for_missing_accoun
         .await
         .expect("owner session admin me response");
     assert_eq!(response.status(), StatusCode::OK);
-    let body = json(response).await;
+    let body = http::json_body(response).await;
     assert_eq!(body["user_id"], owner_id);
     assert_eq!(body["username"], owner_username);
     assert_eq!(body["role"], "owner");
@@ -712,7 +682,10 @@ async fn admin_client_registration_rejects_bounded_input_with_stable_bad_request
         .await
         .expect("bounded admin client response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json(response).await["code"], "invalid_client_registration");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "invalid_client_registration"
+    );
 
     let _ = std::fs::remove_dir_all(key_directory);
 }

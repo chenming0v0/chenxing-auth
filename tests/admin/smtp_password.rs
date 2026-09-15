@@ -1,56 +1,22 @@
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, state::AppState};
 use serde_json::{Value, json};
 use tower::ServiceExt;
-use uuid::Uuid;
 
-use crate::db_isolation;
+use crate::http;
 
 const ADMIN: &str = "admin-smtp-password-token";
 const SECRET: &str = "super-secret-smtp";
 
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("admin_smtp_password", &database_url).await;
-    let key_directory =
-        std::env::temp_dir().join(format!("chenxing-admin-smtp-password-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.admin_token = ADMIN.to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(
-            AppState::new_with_pool(config, database.clone())
-                .await
-                .expect("state"),
-        ),
-        database,
-        key_directory,
-    )
-}
-
-async fn json_body(response: axum::response::Response) -> Value {
-    serde_json::from_slice(
-        &to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body"),
-    )
-    .expect("JSON")
+    let harness = crate::harness::HarnessBuilder::new("admin_smtp_password")
+        .admin_token(ADMIN)
+        .build()
+        .await;
+    (harness.router, harness.database, harness.key_directory)
 }
 
 fn smtp_body(password_action: Option<&str>, password: Option<&str>) -> String {
@@ -132,13 +98,13 @@ async fn smtp_password_update_is_explicit_keep_set_clear() {
 
     let response = get_smtp(&router).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let smtp = json_body(response).await;
+    let smtp = http::json_body(response).await;
     assert_eq!(smtp["password_configured"], false);
     assert_redacted(&smtp);
 
     let response = put_smtp(&router, Some("set"), Some(SECRET)).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let smtp = json_body(response).await;
+    let smtp = http::json_body(response).await;
     assert_eq!(smtp["password_configured"], true);
     assert_redacted(&smtp);
     let after_set = stored_smtp(&database).await;
@@ -151,7 +117,7 @@ async fn smtp_password_update_is_explicit_keep_set_clear() {
 
     let response = put_smtp(&router, Some("keep"), None).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let smtp = json_body(response).await;
+    let smtp = http::json_body(response).await;
     assert_eq!(smtp["password_configured"], true);
     assert_redacted(&smtp);
     assert_eq!(
@@ -161,7 +127,7 @@ async fn smtp_password_update_is_explicit_keep_set_clear() {
 
     let response = put_smtp(&router, None, None).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(json_body(response).await["password_configured"], true);
+    assert_eq!(http::json_body(response).await["password_configured"], true);
     assert_eq!(
         stored_smtp(&database).await["password_ciphertext"],
         ciphertext
@@ -169,7 +135,7 @@ async fn smtp_password_update_is_explicit_keep_set_clear() {
 
     let response = put_smtp(&router, Some("clear"), None).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let smtp = json_body(response).await;
+    let smtp = http::json_body(response).await;
     assert_eq!(smtp["password_configured"], false);
     assert_redacted(&smtp);
     let after_clear = stored_smtp(&database).await;
@@ -180,7 +146,7 @@ async fn smtp_password_update_is_explicit_keep_set_clear() {
 
     let response = get_smtp(&router).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let smtp = json_body(response).await;
+    let smtp = http::json_body(response).await;
     assert_eq!(smtp["password_configured"], false);
     assert_redacted(&smtp);
 
@@ -209,7 +175,7 @@ async fn smtp_password_rejects_conflicts_and_empty_string_keep() {
     ] {
         let response = put_smtp(&router, action, password).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{action:?}");
-        let error = json_body(response).await;
+        let error = http::json_body(response).await;
         assert_eq!(error["code"], "invalid_smtp_setting", "{action:?}");
         assert!(
             error["message"]

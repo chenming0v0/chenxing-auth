@@ -1,0 +1,176 @@
+#![allow(dead_code)]
+
+//! 共享 HTTP 请求 / 响应助手，纯内存调用，不触碰数据库。
+//!
+//! 请求经 `tower::ServiceExt::oneshot` 直接打进 Router，响应按需要提取 JSON、
+//! Set-Cookie、`Location`。助手只做机械提取：遇到不符合预期的响应结构直接 panic，
+//! 不静默降级，让测试在错误位置早失败。
+//!
+//! 调用方须在目标的 `mod.rs` 声明：
+//!
+//! ```rust,ignore
+//! #[path = "../support/http.rs"]
+//! mod http;
+//! ```
+
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    http::{
+        Request,
+        header::{LOCATION, SET_COOKIE},
+    },
+    response::Response,
+};
+use serde_json::Value;
+use tower::ServiceExt;
+
+/// 读取响应体并解析为 JSON。非 JSON 或非法 JSON 会 panic，测试应当早失败。
+pub async fn json_body(response: Response) -> Value {
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    serde_json::from_slice(&body).expect("JSON response")
+}
+
+/// 把每个 `Set-Cookie` 头的首个 `name=value` 段拼成可直接回填的 Cookie 请求头。
+///
+/// 头值必须能转成可见 ASCII 文本：测试响应里出现不可打印的 `Set-Cookie` 属于
+/// 被测代码的问题，这里直接 panic，而不是把该 cookie 静默过滤掉。
+pub fn set_cookies(response: &Response) -> String {
+    response
+        .headers()
+        .get_all(SET_COOKIE)
+        .iter()
+        .map(|value| {
+            let value = value
+                .to_str()
+                .expect("Set-Cookie header must be valid visible-ASCII text");
+            value.split(';').next().expect("cookie pair")
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// 从 Cookie 请求头中取出指定名字的值。
+pub fn cookie_value(cookie_header: &str, name: &str) -> String {
+    cookie_header
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
+        .expect("cookie present")
+        .to_owned()
+}
+
+/// 读取重定向响应的 `Location` 头。
+pub fn location(response: &Response) -> String {
+    response
+        .headers()
+        .get(LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("redirect location")
+        .to_owned()
+}
+
+/// `POST` JSON 负载。
+pub async fn post_json(router: &Router, uri: &str, payload: Value) -> Response {
+    post_json_with_headers(router, uri, &[], payload).await
+}
+
+/// 带自定义请求头的 `POST` JSON 负载。`content-type` 由本函数补齐。
+pub async fn post_json_with_headers(
+    router: &Router,
+    uri: &str,
+    headers: &[(&str, &str)],
+    payload: Value,
+) -> Response {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json");
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    router
+        .clone()
+        .oneshot(
+            builder
+                .body(Body::from(payload.to_string()))
+                .expect("JSON request"),
+        )
+        .await
+        .expect("JSON response")
+}
+
+/// `GET`，可带自定义请求头。
+pub async fn get(router: &Router, uri: &str, headers: &[(&str, &str)]) -> Response {
+    let mut builder = Request::builder().method("GET").uri(uri);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    router
+        .clone()
+        .oneshot(builder.body(Body::empty()).expect("request"))
+        .await
+        .expect("response")
+}
+
+/// 发送任意已构建的请求。
+pub async fn send(router: &Router, request: Request<Body>) -> Response {
+    router.clone().oneshot(request).await.expect("response")
+}
+
+/// Cookie / 响应头提取的纯内存回归：不启动 Router，也不触碰数据库。
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn response_with_set_cookies(values: &[&str]) -> Response {
+        let mut builder = Response::builder();
+        for value in values {
+            builder = builder.header(SET_COOKIE, *value);
+        }
+        builder.body(Body::empty()).expect("response")
+    }
+
+    #[test]
+    fn set_cookies_extracts_each_cookie_pair_in_header_order() {
+        let response = response_with_set_cookies(&[
+            "chenxing_session=token-abc; Path=/; HttpOnly; SameSite=Lax",
+            "chenxing_csrf=csrf-def; Path=/; SameSite=Lax",
+        ]);
+
+        assert_eq!(
+            set_cookies(&response),
+            "chenxing_session=token-abc; chenxing_csrf=csrf-def"
+        );
+    }
+
+    #[test]
+    fn cookie_value_matches_the_exact_cookie_name_only() {
+        let header = "chenxing_session_extra=wrong; chenxing_csrf=csrf-def";
+
+        assert_eq!(cookie_value(header, "chenxing_csrf"), "csrf-def");
+        assert_eq!(cookie_value(header, "chenxing_session_extra"), "wrong");
+    }
+
+    #[test]
+    #[should_panic(expected = "cookie present")]
+    fn cookie_value_does_not_accept_a_longer_cookie_name() {
+        let _ = cookie_value("chenxing_session_extra=wrong", "chenxing_session");
+    }
+
+    #[test]
+    #[should_panic(expected = "Set-Cookie")]
+    fn set_cookies_panics_on_non_text_header_value() {
+        // 合法但不可见 ASCII 的头字节（obs-text）：`to_str()` 必须让它失败，而不是
+        // 被 `filter_map` 静默丢弃。
+        let opaque = HeaderValue::from_bytes(b"\xff\xfe").expect("opaque header value");
+        let response = Response::builder()
+            .header(SET_COOKIE, opaque)
+            .body(Body::empty())
+            .expect("response");
+
+        let _ = set_cookies(&response);
+    }
+}

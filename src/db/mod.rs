@@ -14,6 +14,8 @@ mod migration_preflight;
 mod migration_state;
 mod pool;
 mod roles;
+#[doc(hidden)]
+pub mod test_timing;
 
 pub use audit_boundary::{
     AuditBoundaryError, AuditPrivileges, AuditRoleSeparation, verify_audit_append_only_boundary,
@@ -404,6 +406,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             53,
             "cltermux linked accounts",
             include_str!("../../migrations/0053_cltermux_linked_accounts.sql"),
+        ),
+        (
+            54,
+            "account provider registry",
+            include_str!("../../migrations/0054_account_provider_registry.sql"),
         ),
     ]
     .into_iter()

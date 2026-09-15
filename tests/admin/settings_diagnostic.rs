@@ -5,47 +5,18 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, state::AppState};
 use serde_json::Value;
 use tower::ServiceExt;
-use uuid::Uuid;
-
-use crate::db_isolation;
 
 const DIAGNOSTIC_HEADER: &str = "x-chenxing-setting-diagnostic";
 const ADMIN: &str = "Bearer admin-settings-diagnostic-token";
 
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("admin_settings_diagnostic", &database_url).await;
-    let key_directory = std::env::temp_dir().join(format!(
-        "chenxing-admin-settings-diagnostic-{}",
-        Uuid::new_v4()
-    ));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("config");
-    config.admin_token = "admin-settings-diagnostic-token".to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(
-            AppState::new_with_pool(config, database.clone())
-                .await
-                .expect("state"),
-        ),
-        database,
-        key_directory,
-    )
+    let harness = crate::harness::HarnessBuilder::new("admin_settings_diagnostic")
+        .admin_token("admin-settings-diagnostic-token")
+        .build()
+        .await;
+    (harness.router, harness.database, harness.key_directory)
 }
 
 async fn store_setting(database: &chenxing_auth::sqlx::PgPool, key: &str, value: &str) {

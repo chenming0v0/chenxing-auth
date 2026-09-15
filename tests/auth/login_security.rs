@@ -1,15 +1,15 @@
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Request, StatusCode},
 };
-use chenxing_auth::{api, clock::SharedClock, config::Config, state::AppState};
+use chenxing_auth::{api, clock::SharedClock};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use crate::{db_isolation, oauth_flow, totp_time};
+use crate::{harness, http, oauth_flow, totp_time};
 
 const ADMIN_TOKEN: &str = "login-security-admin-token";
 
@@ -19,66 +19,17 @@ async fn setup() -> (
     std::path::PathBuf,
     time::OffsetDateTime,
 ) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("login_security", &database_url).await;
-    let key_directory = std::env::temp_dir().join(format!("chenxing-login-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("test configuration");
-    config.admin_token = ADMIN_TOKEN.to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
+    let (state, database, key_directory, _admin_token, _binary_name) =
+        harness::HarnessBuilder::new("login_security")
+            .admin_token(ADMIN_TOKEN)
+            .build_state()
+            .await;
     let now = totp_time::centered_now();
-    let state = AppState::new_with_pool(config, database.clone())
-        .await
-        .expect("test state")
-        .with_clock(SharedClock::fixed(now));
+    let state = state.with_clock(SharedClock::fixed(now));
     let router = api::router(state);
     oauth_flow::ensure_owner_bootstrapped(&router, &database, "login_security", "login-security")
         .await;
     (router, database, key_directory, now)
-}
-
-async fn json(response: axum::response::Response) -> Value {
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("response body");
-    serde_json::from_slice(&body).expect("JSON response")
-}
-
-async fn request(router: &Router, uri: &str, payload: Value) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
-        )
-        .await
-        .expect("JSON response")
-}
-
-fn pending_cookie(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .map(|value| value.split(';').next().expect("cookie pair"))
-        .collect::<Vec<_>>()
-        .join("; ")
 }
 
 async fn request_with_cookie(
@@ -87,27 +38,7 @@ async fn request_with_cookie(
     payload: Value,
     cookie: &str,
 ) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("cookie", cookie)
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
-        )
-        .await
-        .expect("JSON response")
-}
-
-fn cookie_value(cookie: &str, name: &str) -> String {
-    cookie
-        .split(';')
-        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
-        .expect("cookie value")
-        .to_owned()
+    http::post_json_with_headers(router, uri, &[("cookie", cookie)], payload).await
 }
 
 async fn request_with_session(
@@ -117,20 +48,13 @@ async fn request_with_session(
     cookie: &str,
     csrf: &str,
 ) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("cookie", cookie)
-                .header("x-csrf-token", csrf)
-                .body(Body::from(payload.to_string()))
-                .expect("JSON request"),
-        )
-        .await
-        .expect("JSON response")
+    http::post_json_with_headers(
+        router,
+        uri,
+        &[("cookie", cookie), ("x-csrf-token", csrf)],
+        payload,
+    )
+    .await
 }
 
 #[tokio::test]
@@ -141,14 +65,17 @@ async fn password_success_does_not_reset_mfa_account_failures() {
     let email = format!("security-{suffix}@example.com");
     let password = "correct horse battery";
 
-    let response = request(
+    let response = http::post_json(
         &router,
         "/api/v1/users",
         serde_json::json!({"username": username, "email": email, "password": password}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(json(response).await["code"], "registration_disabled");
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "registration_disabled"
+    );
 
     let response = router
         .clone()
@@ -172,17 +99,21 @@ async fn password_success_does_not_reset_mfa_account_failures() {
         .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
 
-    let login_response = request(
+    let login_response = http::post_json(
         &router,
         "/api/v1/auth/login",
         serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
     assert_eq!(login_response.status(), StatusCode::OK);
-    let session_cookie = pending_cookie(&login_response);
-    let csrf = cookie_value(&session_cookie, "chenxing_csrf");
-    assert!(json(login_response).await["expires_at"].as_str().is_some());
-    let setup = json(
+    let session_cookie = http::set_cookies(&login_response);
+    let csrf = http::cookie_value(&session_cookie, "chenxing_csrf");
+    assert!(
+        http::json_body(login_response).await["expires_at"]
+            .as_str()
+            .is_some()
+    );
+    let setup = http::json_body(
         request_with_session(
             &router,
             "/api/v1/auth/security/totp/enrollment/start",
@@ -209,7 +140,7 @@ async fn password_success_does_not_reset_mfa_account_failures() {
     assert_eq!(response.status(), StatusCode::OK);
 
     for _ in 0..9 {
-        let response = request(
+        let response = http::post_json(
             &router,
             "/api/v1/auth/login",
             serde_json::json!({
@@ -222,15 +153,15 @@ async fn password_success_does_not_reset_mfa_account_failures() {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    let pending = request(
+    let pending = http::post_json(
         &router,
         "/api/v1/auth/login",
         serde_json::json!({"identifier": email, "password": password}),
     )
     .await;
     assert_eq!(pending.status(), StatusCode::ACCEPTED);
-    let pending_cookie_header = pending_cookie(&pending);
-    let pending_body = json(pending).await;
+    let pending_cookie_header = http::set_cookies(&pending);
+    let pending_body = http::json_body(pending).await;
     assert!(pending_body.get("login_ticket").is_none());
     let response = request_with_cookie(
         &router,
@@ -241,14 +172,14 @@ async fn password_success_does_not_reset_mfa_account_failures() {
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    let blocked = request(
+    let blocked = http::post_json(
         &router,
         "/api/v1/auth/login",
         serde_json::json!({"identifier": email, "password": password}),
     )
     .await;
     assert_eq!(blocked.status(), StatusCode::UNAUTHORIZED);
-    assert!(json(blocked).await.get("login_ticket").is_none());
+    assert!(http::json_body(blocked).await.get("login_ticket").is_none());
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE email = $1")
         .bind(email)
@@ -325,7 +256,7 @@ async fn missing_session_lifetime_row_honors_configured_ttl() {
         "fixture must not persist a session_lifetime row"
     );
 
-    let login_response = request(
+    let login_response = http::post_json(
         &router,
         "/api/v1/auth/login",
         serde_json::json!({"identifier": username, "password": password}),
@@ -336,7 +267,7 @@ async fn missing_session_lifetime_row_honors_configured_ttl() {
     assert_eq!(cookie_max_age(&login_response, "chenxing_csrf"), 3600);
 
     let expires_at = time::OffsetDateTime::parse(
-        json(login_response).await["expires_at"]
+        http::json_body(login_response).await["expires_at"]
             .as_str()
             .expect("expires_at"),
         &Rfc3339,

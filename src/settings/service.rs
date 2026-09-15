@@ -19,6 +19,8 @@ use crate::{
 
 use thiserror::Error;
 
+#[path = "service_account_providers.rs"]
+mod account_provider_operations;
 #[path = "service_persisted.rs"]
 mod persisted_reads;
 #[path = "service_smtp.rs"]
