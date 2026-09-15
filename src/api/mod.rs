@@ -11,6 +11,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::{config::TrustedProxies, state::AppState};
 
+mod assetlinks;
 mod discovery;
 pub mod extract;
 mod health;
@@ -57,7 +58,9 @@ pub fn router(state: AppState) -> Router {
                 "/api/v1/admin/settings/issuer",
                 get(crate::admin::issuer_settings_handlers::get_issuer_setting)
                     .put(crate::admin::issuer_settings_handlers::update_issuer_setting),
-            ),
+            )
+            // Android App Links 声明：从已登记 Client 派生，Issuer 未就绪时也必须可抓取。
+            .route("/.well-known/assetlinks.json", get(assetlinks::assetlinks)),
         request_timeout,
     );
     let health = Router::new()

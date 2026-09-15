@@ -152,7 +152,7 @@ describe('ConsoleLayout 移动端导航可达性（#197）', () => {
 
     // 管理区：Client 管理、审计日志、邀请码曾被白名单裁掉；admin 看不到 ownerOnly 的套餐管理
     remountAt('/admin/users')
-    expect(hrefsIn(bottomNav())).toEqual(['/admin', '/admin/users', '/admin/clients', '/admin/audit', '/admin/invitations'])
+    expect(hrefsIn(bottomNav())).toEqual(['/admin', '/admin/users', '/admin/clients', '/admin/app-links', '/admin/audit', '/admin/invitations'])
     expect(bottomNav().getByRole('link', { name: '用户管理' }).getAttribute('aria-current')).toBe('page')
   })
 

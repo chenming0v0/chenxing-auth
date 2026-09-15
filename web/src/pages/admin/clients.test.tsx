@@ -17,6 +17,7 @@ const CLIENT = {
   redirect_uris: ['https://client.example/callback'],
   scopes: ['openid'],
   client_id: 'cx-client',
+  numeric_app_id: 1,
   status: 'active',
   owner_user_id: 1,
   auth_method: 'client_secret_basic',
@@ -90,5 +91,31 @@ describe('ClientsTable 页码收敛（#672）', () => {
       '/admin/clients?search=star&page=2',
     )
     await waitFor(() => expect(screen.getByText('辰星应用')).toBeTruthy())
+  })
+})
+
+describe('ClientsTable App ID 回调路径（#711）', () => {
+  it('有数字 App ID 时在单元格显示可抄的回调路径', async () => {
+    vi.stubGlobal('fetch', () => Promise.resolve(jsonResponse({
+      items: [CLIENT], page: 1, page_size: 20, total: 1,
+    })))
+
+    render(<ClientsTable access={ACCESS} />)
+
+    expect(await screen.findByText('辰星应用')).toBeTruthy()
+    expect(screen.getByText('/app/1/oauth/callback')).toBeTruthy()
+  })
+
+  it('缺数字 App ID 时只显示 —，不渲染假路径', async () => {
+    vi.stubGlobal('fetch', () => Promise.resolve(jsonResponse({
+      items: [{ ...CLIENT, numeric_app_id: undefined }], page: 1, page_size: 20, total: 1,
+    })))
+
+    render(<ClientsTable access={ACCESS} />)
+
+    expect(await screen.findByText('辰星应用')).toBeTruthy()
+    expect(screen.getByText('—')).toBeTruthy()
+    expect(screen.queryByText('/app/1/oauth/callback')).toBeNull()
+    expect(screen.queryByText(/\/app\/.*\/oauth\/callback/)).toBeNull()
   })
 })

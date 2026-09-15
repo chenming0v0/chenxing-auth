@@ -14,7 +14,7 @@ export function AdminClients() {
   const access = useAdminAccess()
   return (
     <ConsoleLayout>
-      <PageIntro eyebrow="// Admin · Clients" title="OAuth 客户端" description="服务端分页查询全局 Client，不展示 Secret 或 Secret 哈希。" />
+      <PageIntro eyebrow="// Admin · Clients" title="认证链接" description="OAuth Client 注册。回调地址填这里。数字 App ID 用于 /app/<id>/oauth/callback，改名字不影响 Android 端。" />
       <AdminGate access={access} permission="manage_clients"><ClientsTable access={access} /></AdminGate>
     </ConsoleLayout>
   )
@@ -107,13 +107,19 @@ export function ClientsTable({ access }: { access: AdminAccess }) {
     >
       <DataTable
         minWidth={920}
-        columns={['Client', 'Owner', 'Redirect URI', '状态', { label: '操作', align: 'right' }]}
+        columns={['App ID', 'Client', 'Owner', 'Redirect URI', '状态', { label: '操作', align: 'right' }]}
         empty={result?.items.length ? null : result ? (
           <EmptyState icon="layout-grid" title="没有匹配的 Client" description="调整搜索关键词后重试。" />
         ) : error ? null : '正在加载 Client。'}
       >
         {result?.items.map((client) => (
           <tr key={client.client_id}>
+            <td>
+              <p className="chenxing-mono text-sm">{client.numeric_app_id ?? '—'}</p>
+              {typeof client.numeric_app_id === 'number' ? (
+                <p className="chenxing-caption chenxing-mono">/app/{client.numeric_app_id}/oauth/callback</p>
+              ) : null}
+            </td>
             <td>
               <p className="chenxing-body text-sm font-semibold">{client.client_name}</p>
               <p className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{client.client_id}</p>

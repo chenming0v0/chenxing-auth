@@ -32,6 +32,7 @@ pub enum ClientIdempotencyError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PersistedClientCreateResult {
     pub id: i64,
+    pub numeric_app_id: i64,
     pub client_id: String,
     pub client_name: String,
     pub redirect_uris: Vec<String>,
@@ -43,6 +44,8 @@ pub(crate) struct PersistedClientCreateResult {
     pub client_uri: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub android_asset_link: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

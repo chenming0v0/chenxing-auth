@@ -14,6 +14,7 @@ mod key_directory;
 mod oauth_flow;
 
 mod api;
+mod assetlinks;
 mod build_logic;
 mod config;
 mod config_examples;

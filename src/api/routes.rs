@@ -4,6 +4,7 @@ use axum::{
 };
 
 use crate::{
+    admin::app_link_handlers as admin_app_link_handlers,
     admin::auth_handlers::create_admin,
     admin::factor_handlers::{auth_factor_key_health, reset_user_totp_factor, user_auth_factors},
     admin::handlers::{
@@ -444,6 +445,16 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
         .route(
             "/api/v1/admin/clients/{client_id}/rotate-secret",
             axum::routing::post(rotate_secret),
+        )
+        // App Links 管理面：Owner 用 Client ID 挂包名+指纹（不是用 numeric_app_id）。
+        .route(
+            "/api/v1/admin/app-links",
+            axum::routing::get(admin_app_link_handlers::list_app_links),
+        )
+        .route(
+            "/api/v1/admin/app-links/{client_id}",
+            axum::routing::put(admin_app_link_handlers::upsert_app_link)
+                .delete(admin_app_link_handlers::delete_app_link),
         )
         .route(
             "/api/v1/admin/keys/rotate",

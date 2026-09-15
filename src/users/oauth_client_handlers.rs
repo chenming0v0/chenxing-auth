@@ -234,7 +234,8 @@ pub async fn create_owned_client(
         Err(
             ClientServiceError::SecretHash
             | ClientServiceError::InvalidData
-            | ClientServiceError::SecretRotationConflict,
+            | ClientServiceError::SecretRotationConflict
+            | ClientServiceError::AndroidLink(_),
         ) => error::internal(),
         Err(ClientServiceError::IdempotencyKeyInvalid) => {
             error::bad_request("invalid_idempotency_key", "idempotency key is invalid")
@@ -279,7 +280,8 @@ pub async fn update_owned_client(
             ClientServiceError::SecretHash
             | ClientServiceError::InvalidData
             | ClientServiceError::QuotaExceeded
-            | ClientServiceError::SecretRotationConflict,
+            | ClientServiceError::SecretRotationConflict
+            | ClientServiceError::AndroidLink(_),
         ) => error::internal(),
         Err(
             ClientServiceError::IdempotencyKeyInvalid
@@ -334,7 +336,8 @@ async fn set_owned_client_status(
             ClientServiceError::Validation(_)
             | ClientServiceError::SecretHash
             | ClientServiceError::QuotaExceeded
-            | ClientServiceError::SecretRotationConflict,
+            | ClientServiceError::SecretRotationConflict
+            | ClientServiceError::AndroidLink(_),
         ) => error::internal(),
         Err(
             ClientServiceError::IdempotencyKeyInvalid
@@ -432,7 +435,8 @@ pub async fn rotate_owned_client_secret(
         Err(
             ClientServiceError::SecretHash
             | ClientServiceError::Validation(_)
-            | ClientServiceError::QuotaExceeded,
+            | ClientServiceError::QuotaExceeded
+            | ClientServiceError::AndroidLink(_),
         ) => error::internal(),
         Err(ClientServiceError::IdempotencyKeyInvalid) => {
             error::bad_request("invalid_idempotency_key", "idempotency key is invalid")
@@ -463,6 +467,7 @@ async fn add_quota(
             .map_err(|_| error::internal())?;
         items.push(OwnedClientResponse {
             id: client.id,
+            numeric_app_id: client.numeric_app_id,
             client_id: client.client_id,
             client_name: client.client_name,
             redirect_uris: client.redirect_uris,
@@ -473,6 +478,7 @@ async fn add_quota(
             logo_uri: client.logo_uri,
             client_uri: client.client_uri,
             description: client.description,
+            android_asset_link: client.android_asset_link,
         });
     }
     Ok(items)

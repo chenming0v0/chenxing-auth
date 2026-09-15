@@ -248,6 +248,7 @@ impl ClientService {
         };
         Ok(RegisteredClientSecret {
             id: persisted.value.id,
+            numeric_app_id: persisted.value.numeric_app_id,
             client_id: persisted.value.client_id,
             client_name: persisted.value.client_name,
             redirect_uris: persisted.value.redirect_uris,
@@ -257,6 +258,10 @@ impl ClientService {
             logo_uri: persisted.value.logo_uri,
             client_uri: persisted.value.client_uri,
             description: persisted.value.description,
+            android_asset_link: persisted
+                .value
+                .android_asset_link
+                .and_then(|value| serde_json::from_value(value).ok()),
         })
     }
 }
@@ -294,6 +299,7 @@ fn registered_client_secret(
 ) -> RegisteredClientSecret {
     RegisteredClientSecret {
         id: client.id,
+        numeric_app_id: client.numeric_app_id,
         client_id: client.client_id,
         client_secret,
         client_name: client.client_name,
@@ -303,5 +309,6 @@ fn registered_client_secret(
         logo_uri: client.logo_uri,
         client_uri: client.client_uri,
         description: client.description,
+        android_asset_link: client.android_asset_link,
     }
 }

@@ -102,7 +102,7 @@ where
             }
 
             let created_at = OffsetDateTime::now_utc();
-            let id = insert_client_row(
+            let (id, numeric_app_id) = insert_client_row(
                 &mut *transaction,
                 &registration,
                 &client_id,
@@ -113,6 +113,7 @@ where
             .await?;
             let client = NewClient {
                 id,
+                numeric_app_id,
                 client_id,
                 client_name: registration.client_name,
                 redirect_uris: registration.redirect_uris,
@@ -123,10 +124,12 @@ where
                 logo_uri: registration.logo_uri,
                 client_uri: registration.client_uri,
                 description: registration.description,
+                android_asset_link: None,
             };
             crate::audit::repository::insert_with(&mut *transaction, &audit_event(&client)).await?;
             let value = PersistedClientCreateResult {
                 id: client.id,
+                numeric_app_id: client.numeric_app_id,
                 client_id: client.client_id,
                 client_name: client.client_name,
                 redirect_uris: client.redirect_uris,
@@ -135,6 +138,9 @@ where
                 logo_uri: client.logo_uri,
                 client_uri: client.client_uri,
                 description: client.description,
+                android_asset_link: client
+                    .android_asset_link
+                    .map(|link| serde_json::to_value(link).expect("serializable")),
             };
             complete_operation(&mut transaction, context, &value).await?;
             transaction.commit().await?;

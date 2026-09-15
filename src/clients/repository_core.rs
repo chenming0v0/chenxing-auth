@@ -3,6 +3,7 @@ use std::fmt;
 use thiserror::Error;
 use time::OffsetDateTime;
 
+use crate::clients::android_link::AndroidAssetLink;
 use crate::clients::domain::{ClientAuthMethod, ValidatedClientRegistration};
 use crate::plans::domain::AuthQuotaLimits;
 use crate::users::domain::UserId;
@@ -52,6 +53,7 @@ impl ClientCredential {
 #[derive(Debug)]
 pub struct NewClient {
     pub id: i64,
+    pub numeric_app_id: i64,
     pub client_id: String,
     pub client_name: String,
     pub redirect_uris: Vec<String>,
@@ -62,6 +64,7 @@ pub struct NewClient {
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
     pub description: Option<String>,
+    pub android_asset_link: Option<AndroidAssetLink>,
 }
 
 #[derive(Debug)]
@@ -73,6 +76,7 @@ pub struct NewOwnedClient {
 #[derive(Debug)]
 pub struct StoredClient {
     pub client_id: String,
+    pub numeric_app_id: i64,
     pub client_name: String,
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
@@ -81,11 +85,13 @@ pub struct StoredClient {
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
     pub description: Option<String>,
+    pub android_asset_link: Option<AndroidAssetLink>,
 }
 
 #[derive(Debug)]
 pub struct ListedClient {
     pub id: i64,
+    pub numeric_app_id: i64,
     pub client_id: String,
     pub client_name: String,
     pub redirect_uris: Vec<String>,
@@ -96,6 +102,7 @@ pub struct ListedClient {
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
     pub description: Option<String>,
+    pub android_asset_link: Option<AndroidAssetLink>,
 }
 
 #[derive(Debug, Error)]
@@ -119,6 +126,7 @@ pub enum AuditedClientInsertError {
 /// 列表查询的行元组。SELECT 列顺序与 `to_listed_client` 必须保持一致。
 type ClientRow = (
     i64,
+    i64,
     String,
     String,
     Json<Vec<String>>,
@@ -129,13 +137,15 @@ type ClientRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<Json<AndroidAssetLink>>,
 );
 
-const LIST_COLUMNS: &str = "id, client_id, client_name, redirect_uris, scopes, status, owner_user_id, auth_method, logo_uri, client_uri, description";
+const LIST_COLUMNS: &str = "id, numeric_app_id, client_id, client_name, redirect_uris, scopes, status, owner_user_id, auth_method, logo_uri, client_uri, description, android_asset_link";
 
 fn to_listed_client(row: ClientRow) -> ListedClient {
     let (
         id,
+        numeric_app_id,
         client_id,
         client_name,
         redirect_uris,
@@ -146,9 +156,11 @@ fn to_listed_client(row: ClientRow) -> ListedClient {
         logo_uri,
         client_uri,
         description,
+        android_asset_link,
     ) = row;
     ListedClient {
         id,
+        numeric_app_id,
         client_id,
         client_name,
         redirect_uris: redirect_uris.0,
@@ -160,6 +172,7 @@ fn to_listed_client(row: ClientRow) -> ListedClient {
         logo_uri,
         client_uri,
         description,
+        android_asset_link: android_asset_link.map(|link| link.0),
     }
 }
 
@@ -172,15 +185,15 @@ pub(super) async fn insert_client_row<'executor, E>(
     credential: &ClientCredential,
     created_at: OffsetDateTime,
     owner_user_id: Option<UserId>,
-) -> Result<i64, crate::sqlx::Error>
+) -> Result<(i64, i64), crate::sqlx::Error>
 where
     E: crate::sqlx::Executor<'executor, Database = crate::sqlx::Postgres>,
 {
-    crate::sqlx::query_scalar(
+    crate::sqlx::query_as::<_, (i64, i64)>(
         "INSERT INTO oauth_clients
           (client_id, client_name, client_secret_hash, redirect_uris, scopes, auth_method, status, created_at, owner_user_id, logo_uri, client_uri, description)
           VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11)
-          RETURNING id",
+          RETURNING id, numeric_app_id",
     )
     .bind(client_id)
     .bind(&registration.client_name)
@@ -206,7 +219,7 @@ pub async fn insert_client(
     // 保留墙钟（Issue #299 的明确例外）：Client 行的创建时间，不是凭据有效期。
     // Client Secret 本身没有过期语义，撤销通过 `revoke_client_tokens` 表达。
     let created_at = OffsetDateTime::now_utc();
-    let id = insert_client_row(
+    let (id, numeric_app_id) = insert_client_row(
         pool,
         &registration,
         &client_id,
@@ -217,6 +230,7 @@ pub async fn insert_client(
     .await?;
     Ok(NewClient {
         id,
+        numeric_app_id,
         client_id,
         client_name: registration.client_name,
         redirect_uris: registration.redirect_uris,
@@ -227,6 +241,7 @@ pub async fn insert_client(
         logo_uri: registration.logo_uri,
         client_uri: registration.client_uri,
         description: registration.description,
+        android_asset_link: None,
     })
 }
 
@@ -242,7 +257,7 @@ where
 {
     let mut transaction = pool.begin().await?;
     let created_at = OffsetDateTime::now_utc();
-    let id = insert_client_row(
+    let (id, numeric_app_id) = insert_client_row(
         &mut *transaction,
         &registration,
         &client_id,
@@ -253,6 +268,7 @@ where
     .await?;
     let client = NewClient {
         id,
+        numeric_app_id,
         client_id,
         client_name: registration.client_name,
         redirect_uris: registration.redirect_uris,
@@ -263,6 +279,7 @@ where
         logo_uri: registration.logo_uri,
         client_uri: registration.client_uri,
         description: registration.description,
+        android_asset_link: None,
     };
     crate::audit::repository::insert_with(&mut *transaction, &audit_event(&client))
         .await
@@ -275,15 +292,16 @@ pub async fn find_client_by_id(
     pool: &PgPool,
     client_id: &str,
 ) -> Result<Option<StoredClient>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (String, String, Json<Vec<String>>, Json<Vec<String>>, String, Option<UserId>, Option<String>, Option<String>, Option<String>)>(
-        "SELECT client_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri, description FROM oauth_clients WHERE client_id = $1",
+    crate::sqlx::query_as::<_, (String, i64, String, Json<Vec<String>>, Json<Vec<String>>, String, Option<UserId>, Option<String>, Option<String>, Option<String>, Option<Json<AndroidAssetLink>>)>(
+        "SELECT client_id, numeric_app_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri, description, android_asset_link FROM oauth_clients WHERE client_id = $1",
     )
     .bind(client_id)
     .fetch_optional(pool)
     .await
     .map(|record| {
-        record.map(|(client_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri, description)| StoredClient {
+        record.map(|(client_id, numeric_app_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri, description, android_asset_link)| StoredClient {
             client_id,
+            numeric_app_id,
             client_name,
             redirect_uris: redirect_uris.0,
             scopes: scopes.0,
@@ -292,6 +310,7 @@ pub async fn find_client_by_id(
             logo_uri,
             client_uri,
             description,
+            android_asset_link: android_asset_link.map(|link| link.0),
         })
     })
 }

@@ -129,7 +129,7 @@ where
     }
     // 保留墙钟（Issue #299 的明确例外）：行创建时间。
     let created_at = OffsetDateTime::now_utc();
-    let id = insert_client_row(
+    let (id, numeric_app_id) = insert_client_row(
         &mut **transaction,
         &registration,
         &client_id,
@@ -140,6 +140,7 @@ where
     .await?;
     let client = NewClient {
         id,
+        numeric_app_id,
         client_id,
         client_name: registration.client_name,
         redirect_uris: registration.redirect_uris,
@@ -150,6 +151,7 @@ where
         logo_uri: registration.logo_uri,
         client_uri: registration.client_uri,
         description: registration.description,
+        android_asset_link: None,
     };
     if let Some(audit_event) = audit_event {
         crate::audit::repository::insert_with(&mut **transaction, &audit_event(&client))

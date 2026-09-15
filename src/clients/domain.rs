@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use thiserror::Error;
+
 use url::{Host, Url};
 
 pub const DEFAULT_MAX_REDIRECT_URIS: usize = 10;

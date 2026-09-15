@@ -62,6 +62,7 @@ pub struct RegisteredClient {
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
     pub description: Option<String>,
+    pub numeric_app_id: i64,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -280,6 +281,9 @@ pub fn validate_authorization_request_with_allowlist(
     {
         return Err(AuthorizationRequestError::RedirectUriNotAllowed);
     }
+    if !numeric_app_callback_allowed(&canonical_redirect_uri, client.numeric_app_id) {
+        return Err(AuthorizationRequestError::RedirectUriNotAllowed);
+    }
     if request.response_type != "code" {
         return Err(AuthorizationRequestError::UnsupportedResponseType);
     }
@@ -334,6 +338,28 @@ pub fn validate_authorization_request_with_allowlist(
         // 会话绑定由持有会话的调用方回填，见字段文档。
         session_token_hash: None,
     })
+}
+
+/// Mobile App Link callbacks are `/app/<numeric_app_id>/oauth/callback`.
+/// Query and fragment are ignored because `Url::path()` already strips them.
+/// Paths that do not match this exact shape, including ordinary and loopback
+/// URIs, skip the check. A registered URI with the wrong id is still rejected.
+fn numeric_app_callback_allowed(canonical_redirect_uri: &str, numeric_app_id: i64) -> bool {
+    let Ok(url) = Url::parse(canonical_redirect_uri) else {
+        return false;
+    };
+    let Some(digits) = url.path().strip_prefix("/app/").and_then(|rest| {
+        rest.strip_suffix("/oauth/callback").filter(|digits| {
+            !digits.is_empty()
+                && !digits.contains('/')
+                && digits.bytes().all(|b| b.is_ascii_digit())
+        })
+    }) else {
+        return true;
+    };
+    digits
+        .parse::<i64>()
+        .is_ok_and(|parsed| parsed == numeric_app_id)
 }
 
 /// RFC 8252 section 7.3 permits native apps using a literal loopback address

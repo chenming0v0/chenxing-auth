@@ -202,10 +202,22 @@ export type AdminCreateUserInput = {
 export type Paged<T> = { items: T[]; page: number; page_size: number; total: number }
 export type ClientSummary = ClientInput & {
   id?: number
+  numeric_app_id?: number
   client_id: string
   status: string
   owner_user_id?: number | null
   auth_method: ClientAuthMethod
+  android_asset_link?: {
+    package_name: string
+    sha256_cert_fingerprints: string[]
+  } | null
+}
+export type AppLinkResponse = {
+  client_id: string
+  numeric_app_id: number
+  client_name: string
+  package_name: string
+  sha256_cert_fingerprints: string[]
 }
 export type AuditEvent = {
   id?: number

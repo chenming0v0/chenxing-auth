@@ -8,7 +8,7 @@ import { AuthPage, BootstrapPage } from './pages/auth'
 import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './pages/oauth'
 import { ConsoleOverview, ConsolePlans, ConsoleProfile, ConsoleWallet, AuthorizedApps, OAuthIdentitiesPage, SecurityLogsPage } from './pages/console/account'
 import { IntegratePage, PlaygroundPage } from './pages/console/developer'
-import { AdminAudit, AdminClients, AdminDashboard, AdminInvitations, AdminOAuthProviders, AdminPlans, AdminUsers, AdminSettings } from './pages/admin'
+import { AdminAppLinks, AdminAudit, AdminClients, AdminDashboard, AdminInvitations, AdminOAuthProviders, AdminPlans, AdminUsers, AdminSettings } from './pages/admin'
 import { AuthPanel, AuthShell } from './components/shells'
 import { Button, Notice } from '@chenxing/ui'
 
@@ -98,6 +98,7 @@ function AppContent() {
     '/admin/users': <AdminUsers />,
     '/admin/plans': <AdminPlans />,
     '/admin/clients': <AdminClients />,
+    '/admin/app-links': <AdminAppLinks />,
     '/admin/audit': <AdminAudit />,
     '/admin/invitations': <AdminInvitations />,
     '/admin/oauth-providers': <AdminOAuthProviders />,

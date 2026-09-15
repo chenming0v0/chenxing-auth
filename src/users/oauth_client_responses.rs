@@ -9,6 +9,7 @@ use crate::{
 #[derive(Debug, Serialize)]
 pub(super) struct OwnedClientResponse {
     pub(super) id: i64,
+    pub(super) numeric_app_id: i64,
     pub(super) client_id: String,
     pub(super) client_name: String,
     pub(super) redirect_uris: Vec<String>,
@@ -19,6 +20,7 @@ pub(super) struct OwnedClientResponse {
     pub(super) logo_uri: Option<String>,
     pub(super) client_uri: Option<String>,
     pub(super) description: Option<String>,
+    pub(super) android_asset_link: Option<crate::clients::android_link::AndroidAssetLink>,
 }
 
 #[derive(Serialize)]
@@ -73,6 +75,7 @@ pub(super) async fn owned_registered_response(
     Ok(RegisteredOwnedClientResponse {
         client: OwnedClientResponse {
             id: client.id,
+            numeric_app_id: client.numeric_app_id,
             client_id: client.client_id,
             client_name: client.client_name,
             redirect_uris: client.redirect_uris,
@@ -83,6 +86,7 @@ pub(super) async fn owned_registered_response(
             logo_uri: client.logo_uri,
             client_uri: client.client_uri,
             description: client.description,
+            android_asset_link: client.android_asset_link,
         },
         client_secret: client.client_secret,
     })
