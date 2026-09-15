@@ -151,7 +151,7 @@ where
         logo_uri: registration.logo_uri,
         client_uri: registration.client_uri,
         description: registration.description,
-        android_asset_link: registration.android_asset_link,
+        android_asset_link: None,
     };
     if let Some(audit_event) = audit_event {
         crate::audit::repository::insert_with(&mut **transaction, &audit_event(&client))

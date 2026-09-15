@@ -191,8 +191,8 @@ where
 {
     crate::sqlx::query_as::<_, (i64, i64)>(
         "INSERT INTO oauth_clients
-          (client_id, client_name, client_secret_hash, redirect_uris, scopes, auth_method, status, created_at, owner_user_id, logo_uri, client_uri, description, android_asset_link)
-          VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11, $12)
+          (client_id, client_name, client_secret_hash, redirect_uris, scopes, auth_method, status, created_at, owner_user_id, logo_uri, client_uri, description)
+          VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11)
           RETURNING id, numeric_app_id",
     )
     .bind(client_id)
@@ -206,7 +206,6 @@ where
     .bind(&registration.logo_uri)
     .bind(&registration.client_uri)
     .bind(&registration.description)
-    .bind(serde_json::to_value(&registration.android_asset_link).expect("asset link is serializable"))
     .fetch_one(executor)
     .await
 }
@@ -242,7 +241,7 @@ pub async fn insert_client(
         logo_uri: registration.logo_uri,
         client_uri: registration.client_uri,
         description: registration.description,
-        android_asset_link: registration.android_asset_link,
+        android_asset_link: None,
     })
 }
 
@@ -280,7 +279,7 @@ where
         logo_uri: registration.logo_uri,
         client_uri: registration.client_uri,
         description: registration.description,
-        android_asset_link: registration.android_asset_link,
+        android_asset_link: None,
     };
     crate::audit::repository::insert_with(&mut *transaction, &audit_event(&client))
         .await
