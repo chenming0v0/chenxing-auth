@@ -1,5 +1,6 @@
 //! OAuth/OIDC Client registration and lifecycle boundaries.
 
+pub mod android_link;
 pub mod credentials;
 pub mod domain;
 pub mod idempotency;

@@ -59,7 +59,7 @@ pub fn router(state: AppState) -> Router {
                 get(crate::admin::issuer_settings_handlers::get_issuer_setting)
                     .put(crate::admin::issuer_settings_handlers::update_issuer_setting),
             )
-            // Android App Links 声明：静态配置内容，Issuer 未就绪时也必须可抓取。
+            // Android App Links 声明：从已登记 Client 派生，Issuer 未就绪时也必须可抓取。
             .route("/.well-known/assetlinks.json", get(assetlinks::assetlinks)),
         request_timeout,
     );

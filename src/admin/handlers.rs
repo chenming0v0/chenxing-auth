@@ -39,6 +39,7 @@ pub struct ClientListQuery {
 #[derive(Serialize)]
 struct RegisteredClientResponse {
     id: i64,
+    numeric_app_id: i64,
     client_id: String,
     client_name: String,
     redirect_uris: Vec<String>,
@@ -51,6 +52,7 @@ struct RegisteredClientResponse {
     logo_uri: Option<String>,
     client_uri: Option<String>,
     description: Option<String>,
+    android_asset_link: Option<crate::clients::android_link::AndroidAssetLink>,
 }
 
 impl fmt::Debug for RegisteredClientResponse {
@@ -76,6 +78,7 @@ impl fmt::Debug for RegisteredClientResponse {
 #[derive(Debug, Serialize)]
 struct ClientSummary {
     id: i64,
+    numeric_app_id: i64,
     client_id: String,
     client_name: String,
     redirect_uris: Vec<String>,
@@ -86,6 +89,7 @@ struct ClientSummary {
     logo_uri: Option<String>,
     client_uri: Option<String>,
     description: Option<String>,
+    android_asset_link: Option<crate::clients::android_link::AndroidAssetLink>,
 }
 
 pub async fn create_client(
@@ -151,6 +155,7 @@ pub async fn create_client(
             axum::http::StatusCode::CREATED,
             Json(RegisteredClientResponse {
                 id: client.id,
+                numeric_app_id: client.numeric_app_id,
                 client_id: client.client_id,
                 client_name: client.client_name,
                 redirect_uris: client.redirect_uris,
@@ -160,6 +165,7 @@ pub async fn create_client(
                 logo_uri: client.logo_uri,
                 client_uri: client.client_uri,
                 description: client.description,
+                android_asset_link: client.android_asset_link,
             }),
         )
             .into_response(),
@@ -200,6 +206,7 @@ pub async fn list_clients(
                     .into_iter()
                     .map(|client| ClientSummary {
                         id: client.id,
+                        numeric_app_id: client.numeric_app_id,
                         client_id: client.client_id,
                         client_name: client.client_name,
                         redirect_uris: client.redirect_uris,
@@ -210,6 +217,7 @@ pub async fn list_clients(
                         logo_uri: client.logo_uri,
                         client_uri: client.client_uri,
                         description: client.description,
+                        android_asset_link: client.android_asset_link,
                     })
                     .collect::<Vec<_>>(),
             ),

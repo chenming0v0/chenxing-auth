@@ -2,9 +2,19 @@
 
 use super::{ClientService, ClientServiceError};
 use crate::clients::repository;
+use crate::clients::repository::StoredClient;
 use crate::oauth::authorization::RegisteredClient as OAuthRegisteredClient;
 
 impl ClientService {
+    pub async fn find_stored(
+        &self,
+        client_id: &str,
+    ) -> Result<Option<StoredClient>, ClientServiceError> {
+        repository::find_client_by_id(&self.pool, client_id)
+            .await
+            .map_err(Into::into)
+    }
+
     pub async fn find_registered(
         &self,
         client_id: &str,

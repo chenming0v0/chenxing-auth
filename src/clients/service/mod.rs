@@ -18,6 +18,7 @@ use crate::{
 use crate::{sqlx::PgPool, users::domain::UserId};
 
 mod administration;
+mod asset_links;
 mod authentication;
 mod lookup;
 mod registration;
@@ -85,6 +86,7 @@ impl AuthenticatedClient {
 
 pub struct RegisteredClientSecret {
     pub id: i64,
+    pub numeric_app_id: i64,
     pub client_id: String,
     /// 明文 secret；若为公开客户端（`auth_method = none`）则为 `None`。
     pub client_secret: Option<String>,
@@ -95,6 +97,7 @@ pub struct RegisteredClientSecret {
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
     pub description: Option<String>,
+    pub android_asset_link: Option<crate::clients::android_link::AndroidAssetLink>,
 }
 
 impl fmt::Debug for RegisteredClientSecret {
@@ -127,6 +130,7 @@ pub struct RegisteredOwnedClient {
 #[derive(Debug, Serialize)]
 pub struct ClientSummary {
     pub id: i64,
+    pub numeric_app_id: i64,
     pub client_id: String,
     pub client_name: String,
     pub redirect_uris: Vec<String>,
@@ -137,6 +141,7 @@ pub struct ClientSummary {
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
     pub description: Option<String>,
+    pub android_asset_link: Option<crate::clients::android_link::AndroidAssetLink>,
 }
 
 #[derive(Serialize)]

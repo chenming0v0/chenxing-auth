@@ -112,17 +112,20 @@ paths:
       summary: Android App Links 声明
       operationId: androidAssetLinks
       description: |
-        返回 Digital Asset Links 语句数组，供 Android 校验"以本 Issuer 域名为回调落地链接的移动端 OAuth 客户端"
-        （例如 `https://<issuer>/app/<app-name>/oauth/callback`）确实归指定 App 所有。内容完全由启动配置
-        `ANDROID_ASSETLINKS`（`包名:SHA-256签名指纹`，逗号或空白分隔，同一包名可重复以声明多套签名）生成，
-        不读取请求上下文，不经 Issuer 门禁；未配置时返回 404 `assetlinks_not_configured`。
-        响应携带 `Cache-Control: public, max-age=3600, must-revalidate`。
+        返回 Digital Asset Links 语句数组，供 Android 校验「以本 Issuer 域名为回调落地链接的移动端 OAuth 客户端」
+        （例如 `https://<issuer>/app/<numeric_app_id>/oauth/callback`）确实归指定 App 所有。
+        内容从管理面「软件链接」登记的 Client 声明派生，同包名指纹合并；不读取请求上下文，不经 Issuer 门禁。
+        未登记任何声明时返回 404 `assetlinks_not_configured`。
+        响应携带 `Cache-Control: public, max-age=3600, must-revalidate` 与内容哈希 ETag。
       responses:
         '200':
           description: Digital Asset Links 语句数组
           headers:
             Cache-Control:
               description: '`public, max-age=3600, must-revalidate`'
+              schema: { type: string }
+            ETag:
+              description: 声明正文的短哈希，内容变化时改变
               schema: { type: string }
           content:
             application/json:
@@ -135,6 +138,7 @@ paths:
                     package_name: com.chengming.termux
                     sha256_cert_fingerprints: ['14:6D:E9:83:C5:73:06:50:D8:EE:B9:95:2F:34:FC:64:16:A0:83:42:E6:1D:BE:A8:8A:04:96:B2:3F:CF:44:E5']
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /.well-known/openid-configuration:
     get:
       tags: [OAuth/OIDC]
@@ -2829,6 +2833,74 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/app-links:
+    get:
+      tags: [Admin Clients]
+      summary: App Link 声明列表
+      operationId: listAppLinks
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 已登记 App Link 的 Client 列表（不含 Client Secret）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AppLinkResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/app-links/{client_id}:
+    put:
+      tags: [Admin Clients]
+      summary: 登记 Android App Link 声明
+      operationId: upsertAppLink
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAppLinkInput'
+      responses:
+        '200':
+          description: 已登记的 App Link
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppLinkResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    delete:
+      tags: [Admin Clients]
+      summary: 清除 App Link 声明
+      operationId: deleteAppLink
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204':
+          description: App Link 已清除
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/admins:
     get:
       tags: [Admin Auth]
@@ -4498,6 +4570,28 @@ components:
         name:
           type: string
           description: "scope 含 profile 时签发（用户显示名称）"
+    UpdateAppLinkInput:
+      type: object
+      required: [package_name, sha256_cert_fingerprints]
+      properties:
+        package_name:
+          type: string
+          maxLength: 255
+          description: Android 包名（至少两段，点分隔的 Java 标识符）
+        sha256_cert_fingerprints:
+          type: array
+          items: { type: string }
+          maxItems: 8
+          description: SHA-256 签名指纹，支持 AA:BB 和 aabb 两种写法，服务端统一为大写冒号分隔；同包名允许多条（调试 / 发布 / 上传密钥轮换）
+    AppLinkResponse:
+      type: object
+      required: [client_id, numeric_app_id, client_name, package_name, sha256_cert_fingerprints]
+      properties:
+        client_id: { type: string }
+        numeric_app_id: { type: integer, format: int64, minimum: 1 }
+        client_name: { type: string }
+        package_name: { type: string }
+        sha256_cert_fingerprints: { type: array, items: { type: string } }
     AndroidAssetLinks:
       type: array
       description: Digital Asset Links 语句数组（https://developers.google.com/digital-asset-links）
@@ -5325,9 +5419,14 @@ components:
       allOf:
         - $ref: '#/components/schemas/ClientInput'
         - type: object
-          required: [id, client_id, status, auth_method]
+          required: [id, numeric_app_id, client_id, status, auth_method]
           properties:
             id: { type: integer, format: int64, minimum: 1 }
+            numeric_app_id:
+              type: integer
+              format: int64
+              minimum: 1
+              description: 系统分配的全局递增数字 App ID，用于回调路径（/app/<id>/oauth/callback）；与 client_id 分离，改名字不影响 Android 端配置
             client_id: { type: string }
             status: { type: string }
             owner_user_id: { type: integer, format: int64, minimum: 1, nullable: true }
@@ -5337,6 +5436,13 @@ components:
             logo_uri: { type: string, format: uri, nullable: true }
             client_uri: { type: string, format: uri, nullable: true }
             description: { type: string, nullable: true, maxLength: 512 }
+            android_asset_link:
+              type: object
+              nullable: true
+              description: Android App Links 声明；只有把回调地址登记在辰星域名下时才会被公开。package_name 和 sha256_cert_fingerprints 由 `/.well-known/assetlinks.json` 派生，不在这里直接填。
+              properties:
+                package_name: { type: string }
+                sha256_cert_fingerprints: { type: array, items: { type: string } }
     RegisteredClient:
       allOf:
         - $ref: '#/components/schemas/ClientSummary'

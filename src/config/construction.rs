@@ -6,7 +6,6 @@ use crate::redis_keyspace::RedisKeyspace;
 use crate::web_dist::{DEFAULT_WEB_DIST_DIR, WEB_DIST_DIR_ENV};
 
 use super::admin::admin_token_from_env;
-use super::assetlinks::{AndroidAssetLinks, android_assetlinks_from_env};
 use super::audit::{AuditRetentionConfig, audit_retention_from_env};
 use super::cltermux::{CltermuxConfig, cltermux_config_from_env};
 use super::limits::{
@@ -70,7 +69,6 @@ struct ConfigValues {
     security_limits: SecurityLimits,
     audit_retention: AuditRetentionConfig,
     cltermux: Option<CltermuxConfig>,
-    android_assetlinks: Option<AndroidAssetLinks>,
 }
 
 impl Config {
@@ -215,7 +213,6 @@ impl Config {
         let security_limits = security_limits_from_env()?;
         let audit_retention = audit_retention_from_env()?;
         let cltermux = cltermux_config_from_env()?;
-        let android_assetlinks = android_assetlinks_from_env()?;
 
         Self::from_validated_values(ConfigValues {
             host,
@@ -256,7 +253,6 @@ impl Config {
             security_limits,
             audit_retention,
             cltermux,
-            android_assetlinks,
         })
     }
 
@@ -300,7 +296,6 @@ impl Config {
             security_limits,
             audit_retention,
             cltermux,
-            android_assetlinks,
         } = values;
         if host.trim().is_empty() {
             return Err(ConfigError::InvalidValue("APP_HOST"));
@@ -400,7 +395,6 @@ impl Config {
             security_limits,
             audit_retention,
             cltermux,
-            android_assetlinks,
         })
     }
 

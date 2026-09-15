@@ -233,6 +233,7 @@ impl ClientService {
 fn to_summary(client: repository::ListedClient) -> ClientSummary {
     ClientSummary {
         id: client.id,
+        numeric_app_id: client.numeric_app_id,
         client_id: client.client_id,
         client_name: client.client_name,
         redirect_uris: client.redirect_uris,
@@ -243,6 +244,7 @@ fn to_summary(client: repository::ListedClient) -> ClientSummary {
         logo_uri: client.logo_uri,
         client_uri: client.client_uri,
         description: client.description,
+        android_asset_link: client.android_asset_link,
     }
 }
 

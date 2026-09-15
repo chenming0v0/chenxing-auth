@@ -17,6 +17,7 @@ const CLIENT = {
   redirect_uris: ['https://client.example/callback'],
   scopes: ['openid'],
   client_id: 'cx-client',
+  numeric_app_id: 1,
   status: 'active',
   owner_user_id: 1,
   auth_method: 'client_secret_basic',

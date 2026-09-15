@@ -463,6 +463,7 @@ async fn add_quota(
             .map_err(|_| error::internal())?;
         items.push(OwnedClientResponse {
             id: client.id,
+            numeric_app_id: client.numeric_app_id,
             client_id: client.client_id,
             client_name: client.client_name,
             redirect_uris: client.redirect_uris,
@@ -473,6 +474,7 @@ async fn add_quota(
             logo_uri: client.logo_uri,
             client_uri: client.client_uri,
             description: client.description,
+            android_asset_link: client.android_asset_link,
         });
     }
     Ok(items)

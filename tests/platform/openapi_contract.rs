@@ -413,6 +413,7 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
         ("get", "/api/v1/admin/auth-factors/key-health"),
         ("get", "/api/v1/admin/plans"),
         ("get", "/api/v1/admin/clients"),
+        ("get", "/api/v1/admin/app-links"),
         ("get", "/api/v1/admin/admins"),
         ("get", "/api/v1/admin/audit"),
         ("get", "/api/v1/admin/overview"),
@@ -451,6 +452,8 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
         ("post", "/api/v1/admin/clients/{client_id}/disable"),
         ("post", "/api/v1/admin/clients/{client_id}/enable"),
         ("post", "/api/v1/admin/clients/{client_id}/rotate-secret"),
+        ("put", "/api/v1/admin/app-links/{client_id}"),
+        ("delete", "/api/v1/admin/app-links/{client_id}"),
         ("post", "/api/v1/admin/admins"),
         ("put", "/api/v1/admin/settings/registration-email"),
         ("put", "/api/v1/admin/settings/issuer"),
@@ -528,12 +531,12 @@ fn openapi_paths_match_all_static_axum_routes() {
     let paths = openapi_paths();
     assert_eq!(
         routes.len(),
-        126,
+        128,
         "route inventory changed; review contract"
     );
     assert_eq!(
         paths.len(),
-        126,
+        128,
         "OpenAPI path inventory changed; review contract"
     );
     assert_eq!(routes, paths, "Axum and OpenAPI path inventories diverged");

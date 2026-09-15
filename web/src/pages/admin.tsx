@@ -1,6 +1,7 @@
 export { AdminDashboard } from './admin/dashboard'
 export { AdminUsers } from './admin/users'
 export { AdminClients } from './admin/clients'
+export { AdminAppLinks } from './admin/app-links'
 export { AdminAudit } from './admin/audit'
 export { AdminInvitations } from './admin/invitations'
 export { AdminOAuthProviders } from './admin/oauth-providers'

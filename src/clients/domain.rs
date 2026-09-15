@@ -1,5 +1,7 @@
 use serde::Deserialize;
 use thiserror::Error;
+
+use super::android_link::{AndroidAssetLink, AndroidAssetLinkInput, validate_android_asset_link};
 use url::{Host, Url};
 
 pub const DEFAULT_MAX_REDIRECT_URIS: usize = 10;
@@ -126,6 +128,9 @@ pub struct ClientRegistrationInput {
     pub client_uri: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// Android App Links 声明；只有回调地址登记在辰星域名下时才会被公开。
+    #[serde(default)]
+    pub android_asset_link: Option<AndroidAssetLinkInput>,
 }
 
 pub type ClientUpdateInput = ClientRegistrationInput;
@@ -138,6 +143,7 @@ pub struct ValidatedClientRegistration {
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
     pub description: Option<String>,
+    pub android_asset_link: Option<AndroidAssetLink>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -172,6 +178,10 @@ pub enum ClientRegistrationError {
     InvalidClientUri,
     #[error("description is invalid")]
     InvalidDescription,
+    #[error("Android package name is invalid")]
+    InvalidAndroidPackageName,
+    #[error("Android SHA-256 certificate fingerprint is invalid")]
+    InvalidAndroidFingerprint,
 }
 
 pub fn validate_client_registration(
@@ -234,6 +244,7 @@ pub fn validate_client_registration_with_limits(
     let logo_uri = crate::clients::presentation::validate_logo_uri(input.logo_uri)?;
     let client_uri = crate::clients::presentation::validate_client_uri(input.client_uri)?;
     let description = crate::clients::presentation::validate_description(input.description)?;
+    let android_asset_link = validate_android_asset_link(input.android_asset_link)?;
 
     Ok(ValidatedClientRegistration {
         client_name,
@@ -242,6 +253,7 @@ pub fn validate_client_registration_with_limits(
         logo_uri,
         client_uri,
         description,
+        android_asset_link,
     })
 }
 
