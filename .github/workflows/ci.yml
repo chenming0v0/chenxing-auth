@@ -78,7 +78,7 @@ jobs:
           set -euo pipefail
           bash -n test_sh/test_database.sh
           bash test_sh/test_database_contract.sh
-          python3 -m unittest discover -s test_sh -p 'test_db_timing*.py'
+          python3 -m unittest discover -s test_sh -p 'test_*.py'
       - name: Verify Redis credential state survives a crash
         shell: bash
         timeout-minutes: 5
@@ -340,41 +340,3 @@ jobs:
         with:
           name: rust-coverage
           path: lcov.info
-
-  apifox-sync:
-    name: Sync OpenAPI to Apifox
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-    needs: [quality, coverage]
-    runs-on: ubuntu-latest
-    environment: apifox
-    # Apifox 的导入 API 会 504。这是文档同步副作用，不是质量门；
-    # 重试之后仍失败时不挡住 dev CI，否则 coverage 已经绿的提交合不进去。
-    continue-on-error: true
-    steps:
-      - name: Import OpenAPI specification
-        env:
-          API_FOX_KEY: ${{ secrets.API_FOX_KEY }}
-        run: |
-          set -euo pipefail
-          test -n "$API_FOX_KEY"
-          curl --fail-with-body --silent --show-error \
-            --retry 3 \
-            --retry-delay 20 \
-            --retry-all-errors \
-            --request POST \
-            --url "https://api.apifox.com/v1/projects/8642631/import-openapi?locale=zh-CN" \
-            --header "Authorization: Bearer $API_FOX_KEY" \
-            --header "X-Apifox-Api-Version: 2024-03-28" \
-            --header "Content-Type: application/json" \
-            --data '{
-              "input": {
-                "url": "https://raw.githubusercontent.com/chenming0v0/chenxing-auth/dev/openapi.yaml"
-              },
-              "options": {
-                "endpointOverwriteBehavior": "AUTO_MERGE",
-                "schemaOverwriteBehavior": "AUTO_MERGE",
-                "updateFolderOfChangedEndpoint": true,
-                "prependBasePath": false,
-                "deleteUnmatchedResources": true
-              }
-            }'
