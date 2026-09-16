@@ -225,4 +225,4 @@ CHENXING_TEST_ROLE=orchestrator ./test_sh/test.sh --full
 - 纯内部实现变化（例如 service/repository 重构、SQL 优化、事务实现调整或存储层替换），只要外部 HTTP 契约完全不变，就不需要同步 `openapi.yaml`。
 - 更新后必须验证 YAML/OpenAPI 基础结构，并确认接口分组、`operationId`、Security Scheme、请求体和响应模型没有遗漏。
 - Apifox 导入建议开启“自动生成调试用例”“导入 Security Scheme”和“将 Servers 导入为环境”；无 Security 的接口保持无需鉴权。
-- GitHub Actions 的 `apifox-sync` Job 在 `dev` 质量检查通过后，使用仓库 Environment Secret `API_FOX_KEY` 将 `openapi.yaml` 自动导入 Apifox 项目 `8642631`；不要在工作流、日志或提交中写入该密钥。
+- GitHub Actions 的 `apifox-sync` 是独立工作流（`.github/workflows/apifox-sync.yml`），在 `dev` 的 `openapi.yaml`（或该工作流自身）变更时由 `push` 触发，使用仓库 Environment Secret `API_FOX_KEY` 将 `openapi.yaml` 导入 Apifox 项目 `8642631`；不要在工作流、日志或提交中写入该密钥。禁止把它加回 `CI` 工作流：Apifox 导入会 504，留在 CI 里会把重试时间算进质量检查墙钟。也不能改成 `workflow_run`：该事件只认默认分支 `releases` 上的工作流文件，`dev` 上新增的 YAML 不会被触发。

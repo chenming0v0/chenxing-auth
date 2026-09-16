@@ -28,8 +28,9 @@ STAGE 0–3 的逐批 template 化**没有让 CI 变快**，反而让关键路�
 
 注意关键路径已经改变：转向后 `coverage` job 只做合并（约 10s），真正的长板是**最慢
 的那个分片 job**（8 路预计各跑约 239 个用例，收益待 CI 实测）。质量检查完成时间取
-`quality` 和「全部分片 + coverage 合并」两条路径较晚者；workflow 总时长还包含排队、
-调度和 Apifox 同步，必须分开记录，不能用质量检查完成时间代替总时长。
+`quality` 和「全部分片 + coverage 合并」两条路径较晚者；workflow 总时长还包含排队和
+调度，但不再包含 Apifox 同步（独立工作流 `.github/workflows/apifox-sync.yml`）。
+必须分开记录，不能用质量检查完成时间代替总时长。
 
 **禁止**再用「聚合相位和下降」或单次运行作为提速证据（相位和是并行样本，
 不是墙钟）。
@@ -227,7 +228,7 @@ fixture 行、固定 binary 标签 `integration_storage`、`outcome=ok`。缺失
 
 ## CI 接线
 
-四个 job（`.github/workflows/ci.yml`）：
+三个 job（`.github/workflows/ci.yml`）：
 
 - **`quality`（静态检查，不碰数据库）**：Action pin 校验、web 构建与测试、
   OpenAPI 校验、部署/运行器/模板 wrapper 契约、Redis 崩溃恢复、迁移 checksum、
@@ -246,7 +247,9 @@ fixture 行、固定 binary 标签 `integration_storage`、`outcome=ok`。缺失
   summary → 上传 `db-timing-diagnostics` 与 `rust-coverage`。这个 job **不装
   Rust 工具链、不用 rust-cache、不 prepare/cleanup 模板、不跑测试**：它只是
   合并与判定，避免在关键路径上再叠一次编译。
-- **`apifox-sync`**：`needs: [quality, coverage]`，仅 dev push，语义不变。
+
+Apifox 导入不在这个工作流里。`.github/workflows/apifox-sync.yml` 在 `dev` 的
+`openapi.yaml` 变更时单独跑，失败只红那一次同步，不再拖 CI 墙钟。
 
 报告只在合并成功后渲染；合并步骤失败时报告步只写一行摘要并成功退出，不把一次
 合并失败级联成第二个更含糊的红步。合并成功即代表 tests 跑过且 JUnit 齐全，因此
@@ -318,7 +321,7 @@ NaN/Infinity、负时长、未知事件/相位、缺失必需相位、多余字�
 
 - **主 KPI**：**工作流总时长 ≤ 8 分钟**。基线 14m37s
   （`f644df5`，run 34755328667）。按同一配置的**连续 3 次成功 run 的中位数**判定，
-  不能只计已经缩短为合并步骤的 `coverage` job，也不能排除 Apifox 尾部耗时。
+  不能只计已经缩短为合并步骤的 `coverage` job。Apifox 已拆到独立工作流，不再计入 CI 墙钟。
 - 次 KPI：`quality` job 墙钟；基线 12m54s（静态检查去掉整套测试后应显著下降）。
 - 正确性门槛：**1909/1909 passed**、合并后行覆盖率 ≥ 75%、失败能定位到具体用例。
 - **禁止**再用聚合相位和、或用两个候选用例的耗时声称整套提速

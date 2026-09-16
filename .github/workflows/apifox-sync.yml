@@ -1,0 +1,65 @@
+name: Apifox Sync
+
+# 独立工作流，禁止加回 CI。
+#
+# Apifox 导入 API 会 504，重试一次就要好几分钟。以前挂在 CI 最后、
+# `needs: [quality, coverage]`，即使 `continue-on-error: true` 也会把整次
+# CI 卡住等到导入结束——实测 7m16s 的尾部把 7 分钟的质量检查拖成 14 分钟。
+#
+# 不能用 `workflow_run` / 从 CI 里 `workflow_dispatch`：这两个事件只认默认
+# 分支 `releases` 上的工作流文件，`dev` 上新增的 YAML 不会被触发。
+# `push` 用的是被推送 commit 里的文件，这是唯一能在 `dev` 立刻生效、
+# 又不把同步算进 CI 墙钟的 GitHub 原生触发器。
+#
+# 只在契约文件（或本工作流自身）变化时跑：无关 commit 不必再烧 7 分钟
+# 去导入同一份 spec。504 之后在 Actions 里重跑该次 run 即可。
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - openapi.yaml
+      - .github/workflows/apifox-sync.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apifox-sync
+  cancel-in-progress: true
+
+jobs:
+  apifox-sync:
+    name: Sync OpenAPI to Apifox
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    environment: apifox
+    steps:
+      - name: Import OpenAPI specification
+        env:
+          API_FOX_KEY: ${{ secrets.API_FOX_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$API_FOX_KEY"
+          curl --fail-with-body --silent --show-error \
+            --retry 3 \
+            --retry-delay 20 \
+            --retry-all-errors \
+            --request POST \
+            --url "https://api.apifox.com/v1/projects/8642631/import-openapi?locale=zh-CN" \
+            --header "Authorization: Bearer $API_FOX_KEY" \
+            --header "X-Apifox-Api-Version: 2024-03-28" \
+            --header "Content-Type: application/json" \
+            --data '{
+              "input": {
+                "url": "https://raw.githubusercontent.com/chenming0v0/chenxing-auth/dev/openapi.yaml"
+              },
+              "options": {
+                "endpointOverwriteBehavior": "AUTO_MERGE",
+                "schemaOverwriteBehavior": "AUTO_MERGE",
+                "updateFolderOfChangedEndpoint": true,
+                "prependBasePath": false,
+                "deleteUnmatchedResources": true
+              }
+            }'
