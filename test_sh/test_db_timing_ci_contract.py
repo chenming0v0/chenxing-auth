@@ -313,7 +313,9 @@ class WorkflowContractTest(unittest.TestCase):
         text = "\n".join(self.block(contract))
         self.assertIn("bash -n test_sh/test_database.sh", text)
         self.assertIn("bash test_sh/test_database_contract.sh", text)
-        self.assertIn("python3 -m unittest discover -s test_sh -p 'test_db_timing*.py'", text)
+        # Broad glob on purpose: db timing plus other quality-job Python
+        # contracts (Apifox sync, etc.) must run before any Rust compile.
+        self.assertIn("python3 -m unittest discover -s test_sh -p 'test_*.py'", text)
 
 
 class NextestJunitConfigTest(unittest.TestCase):

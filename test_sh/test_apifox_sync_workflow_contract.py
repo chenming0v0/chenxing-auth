@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "apifox-sync.yml"
+CI = ROOT / ".github" / "workflows" / "ci.yml"
 
 
 class ApifoxSyncWorkflowContractTest(unittest.TestCase):
@@ -15,6 +16,7 @@ class ApifoxSyncWorkflowContractTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.text = WORKFLOW.read_text(encoding="utf-8")
         cls.lines = cls.text.splitlines()
+        cls.ci = CI.read_text(encoding="utf-8")
 
     def test_workflow_exists_and_is_named(self) -> None:
         self.assertTrue(WORKFLOW.is_file())
@@ -67,6 +69,20 @@ class ApifoxSyncWorkflowContractTest(unittest.TestCase):
     def test_does_not_checkout_or_use_unpinned_actions(self) -> None:
         # Import is by URL; a checkout would only add supply-chain surface.
         self.assertFalse(any(re.match(r"^\s+uses:", line) for line in self.lines))
+
+    def test_deletes_resources_removed_from_openapi(self) -> None:
+        self.assertIn('"deleteUnmatchedResources": true', self.text)
+        self.assertNotIn('"deleteUnmatchedResources": false', self.text)
+
+    def test_ci_validates_openapi_without_importing_to_apifox(self) -> None:
+        self.assertIn("Validate OpenAPI", self.ci)
+        self.assertIn(
+            "python .codex/skills/sync-openapi/scripts/validate_openapi.py",
+            self.ci,
+        )
+        self.assertNotIn("import-openapi", self.ci)
+        self.assertNotIn("API_FOX_KEY", self.ci)
+        self.assertNotIn("apifox-sync", self.ci)
 
 
 if __name__ == "__main__":

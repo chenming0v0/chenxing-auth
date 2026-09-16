@@ -26,6 +26,7 @@ use std::collections::BTreeSet;
 use time::OffsetDateTime;
 use tower::ServiceExt;
 
+const APIFOX_SYNC_WORKFLOW: &str = include_str!("../../.github/workflows/apifox-sync.yml");
 const CI_WORKFLOW: &str = include_str!("../../.github/workflows/ci.yml");
 const OPENAPI: &str = include_str!("../../openapi.yaml");
 const ROUTE_SOURCES: &str = concat!(
@@ -275,12 +276,16 @@ fn openapi_declares_security_event_client_as_required_but_nullable() {
 #[test]
 fn apifox_import_removes_resources_absent_from_openapi() {
     assert!(
-        CI_WORKFLOW.contains(r#""deleteUnmatchedResources": true"#),
+        APIFOX_SYNC_WORKFLOW.contains(r#""deleteUnmatchedResources": true"#),
         "Apifox import must delete endpoints and schemas removed from openapi.yaml"
     );
     assert!(
-        !CI_WORKFLOW.contains(r#""deleteUnmatchedResources": false"#),
+        !APIFOX_SYNC_WORKFLOW.contains(r#""deleteUnmatchedResources": false"#),
         "Apifox import must not preserve stale resources"
+    );
+    assert!(
+        !CI_WORKFLOW.contains("import-openapi"),
+        "Apifox import must stay out of CI so 504 retries do not stall the quality wall"
     );
 }
 
