@@ -1295,6 +1295,23 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
+    delete:
+      tags: [User Auth/OAuth Clients]
+      summary: 删除当前用户拥有的 OAuth 项目
+      operationId: deleteOwnedOAuthClient
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204':
+          description: |
+            删除成功。同意记录随行级联删除，Refresh Token 立即吊销，占用的应用额度释放。
+            数字 App ID 不回收。
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/oauth-clients/{client_id}/disable:
     post:
       tags: [User Auth/OAuth Clients]
@@ -2768,6 +2785,28 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    delete:
+      tags: [Admin Clients]
+      summary: 删除 Client
+      operationId: deleteClient
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204':
+          description: |
+            删除成功。同意记录随行级联删除，Refresh Token 立即吊销。
+            数字 App ID 不回收。
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/clients/{client_id}/disable:
     post:

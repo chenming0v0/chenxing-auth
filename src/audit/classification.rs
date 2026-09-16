@@ -108,6 +108,7 @@ audit_actions! {
     TokenRefreshFailure => "token_refresh_failure" => (Authorization, Warning),
     TokenRevoke => "token_revoke" => (Authorization, Warning),
     ClientDisabled => "client_disabled" => (Authorization, Warning),
+    ClientDelete => "client_delete" => (Authorization, Critical),
     ClientSecretRotateConflict => "client_secret_rotate_conflict" => (Authorization, Warning),
     AuthorizationDenied => "authorization_denied" => (Authorization, Info),
     ClientUpdate => "client_update" => (Authorization, Critical),

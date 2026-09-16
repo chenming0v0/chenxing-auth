@@ -16,6 +16,7 @@ export const ACTION_PRESENTATION: Record<string, { label: string; tone: 'success
   client_create: { label: '创建 OAuth 应用', tone: 'success' },
   client_update: { label: '更新 OAuth 应用', tone: 'neutral' },
   client_disabled: { label: '禁用 OAuth 应用', tone: 'warning' },
+  client_delete: { label: '删除 OAuth 应用', tone: 'warning' },
   external_identity_link: { label: '绑定外部身份', tone: 'success' },
   external_identity_unlink: { label: '解绑外部身份', tone: 'warning' },
   user_email_change: { label: '修改邮箱', tone: 'warning' },

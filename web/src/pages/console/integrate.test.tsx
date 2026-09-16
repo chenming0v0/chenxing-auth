@@ -147,6 +147,24 @@ describe('IntegratePage 加载期间不闪空态（Issue #371）', () => {
     expect(screen.queryByText('暂无 OAuth 项目')).toBeNull()
     expect(screen.queryByText('正在加载接入应用。')).toBeNull()
   })
+
+  it('确认删除后发送 DELETE 并刷新列表', async () => {
+    apiFetchMock
+      .mockResolvedValueOnce({ items: [CLIENT] })
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ items: [] })
+    vi.stubGlobal('confirm', () => true)
+    render(<IntegratePage />)
+    expect(await screen.findByText('演示应用')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '删除' }))
+
+    await waitFor(() => {
+      expect(apiFetchMock.mock.calls.some(([path, init]) =>
+        path === `/api/v1/auth/oauth-clients/${CLIENT.client_id}` && init?.method === 'DELETE')).toBe(true)
+    })
+    expect(await screen.findByText('暂无 OAuth 项目')).toBeTruthy()
+  })
 })
 
 describe('IntegratePage 并发列表加载（Issue #486）', () => {

@@ -21,6 +21,7 @@ use crate::{sqlx::PgPool, users::domain::UserId};
 mod administration;
 mod asset_links;
 mod authentication;
+mod deletion;
 mod lookup;
 mod registration;
 mod rotation;

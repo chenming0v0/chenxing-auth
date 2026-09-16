@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use super::client_errors::{
-    create_client_error_response, rotate_secret_error_response, set_client_status_error_response,
-    update_client_error_response,
+    create_client_error_response, delete_client_error_response, rotate_secret_error_response,
+    set_client_status_error_response, update_client_error_response,
 };
 use crate::{
     admin::domain::AdminPermission,
@@ -335,6 +335,47 @@ pub async fn enable_client(
     Path(client_id): Path<String>,
 ) -> Response {
     set_client_status(state, admin, client_id, "active").await
+}
+
+pub async fn delete_client(
+    State(state): State<AppState>,
+    admin: AdminWrite,
+    Path(client_id): Path<String>,
+) -> Response {
+    let authorization = match super::authorization::authorize_admin_write(
+        &state,
+        &admin,
+        AdminPermission::ManageClients,
+    )
+    .await
+    {
+        Ok(authorization) => authorization,
+        Err(response) => return response,
+    };
+    let actor = authorization.actor();
+    match state
+        .clients
+        .delete_with_audit(
+            &client_id,
+            AuditEvent::new(
+                actor.actor_type().to_owned(),
+                actor.user_id().map(|id| id.to_string()),
+                crate::audit::AuditAction::ClientDelete,
+                "oauth_client".to_owned(),
+                Some(client_id.clone()),
+                serde_json::json!({"result": "success"}),
+            ),
+        )
+        .await
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => error::not_found("client_not_found", "client was not found"),
+        Err(ClientServiceError::AuditUnavailable) => error::service_unavailable(
+            "audit_unavailable",
+            "the operation was rolled back because its audit record could not be written; retry later",
+        ),
+        Err(error_value) => delete_client_error_response(&error_value),
+    }
 }
 
 pub async fn rotate_secret(

@@ -290,6 +290,7 @@ fn map_idempotency_crypto_error(error: ClientIdempotencyError) -> ClientServiceE
 pub(super) enum RefreshTokenCleanupReason {
     SecretRotation,
     ClientDisabled,
+    ClientDeleted,
 }
 
 impl RefreshTokenCleanupReason {
@@ -297,6 +298,7 @@ impl RefreshTokenCleanupReason {
         match self {
             Self::SecretRotation => "secret_rotation",
             Self::ClientDisabled => "client_disabled",
+            Self::ClientDeleted => "client_deleted",
         }
     }
 }

@@ -21,6 +21,9 @@ use crate::{
 #[path = "oauth_client_responses.rs"]
 mod oauth_client_responses;
 use oauth_client_responses::{OwnedClientResponse, owned_registered_response};
+#[path = "oauth_client_delete.rs"]
+mod oauth_client_delete;
+pub use oauth_client_delete::delete_owned_client;
 
 #[derive(Debug, Serialize)]
 struct OwnedClientListResponse {

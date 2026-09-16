@@ -69,6 +69,22 @@ export function ClientsTable({ access }: { access: AdminAccess }) {
     return () => { active = false }
   }, [location.search, page, refreshKey])
 
+  async function deleteClient(client: ClientSummary) {
+    if (!access.data?.permissions.includes('manage_clients')) return
+    if (busy.has(client.client_id)) return
+    if (!window.confirm(`确认删除 ${client.client_name} 吗？\n删除后无法恢复：已签发的 Refresh Token 立即失效。数字 App ID 不会回收。`)) return
+    setBusy((prev) => new Set(prev).add(client.client_id))
+    setError('')
+    try {
+      await apiFetch<void>(`/api/v1/admin/clients/${encodeURIComponent(client.client_id)}`, { method: 'DELETE' })
+      setRefreshKey((value) => value + 1)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Client 删除失败。')
+    } finally {
+      setBusy((prev) => { const next = new Set(prev); next.delete(client.client_id); return next })
+    }
+  }
+
   async function setClientStatus(client: ClientSummary) {
     if (!access.data?.permissions.includes('manage_clients')) return
     // 请求在途时按钮已 disabled，这里兜底拦截：双击的第二个 click 若在 re-render 前被派发，也不会发出并发请求。
@@ -130,6 +146,9 @@ export function ClientsTable({ access }: { access: AdminAccess }) {
             <RowActions>
               <RowAction tone={client.status === 'active' ? 'danger' : 'default'} onClick={() => void setClientStatus(client)} disabled={busy.has(client.client_id)}>
                 {client.status === 'active' ? '禁用' : '启用'}
+              </RowAction>
+              <RowAction tone="danger" onClick={() => void deleteClient(client)} disabled={busy.has(client.client_id)}>
+                删除
               </RowAction>
             </RowActions>
           </tr>

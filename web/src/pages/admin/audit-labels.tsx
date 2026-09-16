@@ -43,6 +43,7 @@ export const ACTION_CATALOG: Record<string, ActionInfo> = {
   token_refresh_failure: { label: '刷新令牌失败', severity: 'warning' },
   token_revoke: { label: '撤销令牌', severity: 'warning' },
   client_disabled: { label: '禁用 OAuth 客户端', severity: 'warning' },
+  client_delete: { label: '删除 OAuth 客户端', severity: 'critical' },
   client_secret_rotate_conflict: { label: '轮换 Client Secret 冲突', severity: 'warning' },
   authorization_denied: { label: '拒绝授权', severity: 'info' },
   client_update: { label: '更新 OAuth 客户端', severity: 'critical' },

@@ -61,6 +61,30 @@ pub async fn set_client_status_with_audit(
     Ok(true)
 }
 
+pub async fn delete_client_with_audit(
+    pool: &PgPool,
+    owner_user_id: Option<UserId>,
+    client_id: &str,
+    audit_event: crate::audit::AuditEvent,
+) -> Result<bool, AuditedClientMutationError> {
+    let mut transaction = pool.begin().await?;
+    let result = crate::sqlx::query(
+        "DELETE FROM oauth_clients
+         WHERE client_id = $1 AND ($2::bigint IS NULL OR owner_user_id = $2)",
+    )
+    .bind(client_id)
+    .bind(owner_user_id)
+    .execute(&mut *transaction)
+    .await?;
+    if result.rows_affected() != 1 {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
+    transaction.commit().await?;
+    Ok(true)
+}
+
 pub async fn update_client(
     pool: &PgPool,
     owner_user_id: Option<UserId>,
