@@ -8,7 +8,8 @@ use crate::{
     admin::auth_handlers::create_admin,
     admin::factor_handlers::{auth_factor_key_health, reset_user_totp_factor, user_auth_factors},
     admin::handlers::{
-        create_client, disable_client, enable_client, list_clients, rotate_secret, update_client,
+        create_client, delete_client, disable_client, enable_client, list_clients, rotate_secret,
+        update_client,
     },
     admin::invitation_code_handlers::{
         create_invitation_codes, disable_invitation_code, get_invitation_code,
@@ -77,8 +78,9 @@ use crate::{
     users::entitlements_handlers::current_entitlements,
     users::handlers::{login_user, register_user, registration_status, revoke_session},
     users::oauth_client_handlers::{
-        create_owned_client, disable_owned_client, enable_owned_client, list_authorized_apps,
-        list_owned_clients, revoke_authorized_app, rotate_owned_client_secret, update_owned_client,
+        create_owned_client, delete_owned_client, disable_owned_client, enable_owned_client,
+        list_authorized_apps, list_owned_clients, revoke_authorized_app,
+        rotate_owned_client_secret, update_owned_client,
     },
     users::security_event_handlers::{get_security_event, list_security_events},
     users::ui_handlers::{
@@ -412,7 +414,7 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
         )
         .route(
             "/api/v1/auth/oauth-clients/{client_id}",
-            axum::routing::put(update_owned_client),
+            axum::routing::put(update_owned_client).delete(delete_owned_client),
         )
         .route(
             "/api/v1/auth/oauth-clients/{client_id}/disable",
@@ -432,7 +434,7 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
         )
         .route(
             "/api/v1/admin/clients/{client_id}",
-            axum::routing::put(update_client),
+            axum::routing::put(update_client).delete(delete_client),
         )
         .route(
             "/api/v1/admin/clients/{client_id}/disable",

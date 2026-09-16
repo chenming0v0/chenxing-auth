@@ -1,7 +1,7 @@
 //! `client_errors` 的单元测试（Issue #288）。
 //!
 //! 这里断言的是「哪些 `ClientServiceError` 变体算业务状态、哪些算内部故障」这条
-//! 边界。四个映射函数是纯函数，因此不需要数据库、Redis 或 HTTP 栈；
+//! 边界。映射函数是纯函数，因此不需要数据库、Redis 或 HTTP 栈；
 //! `QuotaExceeded` 在管理端注册路径上目前不可达（管理端 Client 无 owner，
 //! 不走配额分支），正是这一点让集成测试无法覆盖它——回归只能由这里守住。
 
@@ -12,11 +12,12 @@ use axum::http::StatusCode;
 
 type Mapper = fn(&ClientServiceError) -> Response;
 
-const MAPPERS: [Mapper; 4] = [
+const MAPPERS: [Mapper; 5] = [
     create_client_error_response,
     update_client_error_response,
     set_client_status_error_response,
     rotate_secret_error_response,
+    delete_client_error_response,
 ];
 
 async fn parts(response: Response) -> (StatusCode, serde_json::Value) {
@@ -30,7 +31,7 @@ async fn parts(response: Response) -> (StatusCode, serde_json::Value) {
     )
 }
 
-/// 配额超限是调用方可预期、可恢复的业务状态，四个管理端点都不得回 500。
+/// 配额超限是调用方可预期、可恢复的业务状态，管理端 Client 端点都不得回 500。
 #[tokio::test]
 async fn quota_exceeded_maps_to_conflict_on_every_admin_client_endpoint() {
     for mapper in MAPPERS {
@@ -153,6 +154,22 @@ async fn rotate_secret_keeps_internal_failures_as_internal_error() {
         ClientServiceError::Database(crate::sqlx::Error::PoolClosed),
     ] {
         let (status, body) = parts(rotate_secret_error_response(&error_value)).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["code"], "internal_error");
+    }
+}
+
+#[tokio::test]
+async fn delete_client_keeps_internal_failures_as_internal_error() {
+    for error_value in [
+        ClientServiceError::SecretHash,
+        ClientServiceError::InvalidData,
+        ClientServiceError::SecretRotationConflict,
+        ClientServiceError::Validation(ClientRegistrationError::MissingScope),
+        ClientServiceError::Database(crate::sqlx::Error::PoolClosed),
+    ] {
+        let (status, body) = parts(delete_client_error_response(&error_value)).await;
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body["code"], "internal_error");

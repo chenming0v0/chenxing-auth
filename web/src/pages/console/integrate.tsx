@@ -16,6 +16,8 @@ export function IntegratePage() {
   const rotationIdempotencyKeysRef = useRef(new Map<string, string>())
   const [statusChangingClientIds, setStatusChangingClientIds] = useState<Set<string>>(() => new Set())
   const statusChangingClientIdsRef = useRef(new Set<string>())
+  const [deletingClientIds, setDeletingClientIds] = useState<Set<string>>(() => new Set())
+  const deletingClientIdsRef = useRef(new Set<string>())
   const loadRequestIdRef = useRef(0)
   const mountedRef = useRef(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -128,6 +130,23 @@ export function IntegratePage() {
     }
   }
 
+  async function remove(client: OwnedOAuthClient) {
+    if (deletingClientIdsRef.current.has(client.client_id)) return
+    if (!window.confirm(`确认删除“${client.client_name}”吗？\n删除后无法恢复：已签发的 Refresh Token 立即失效，占用的应用额度会被释放。数字 App ID 不会回收。`)) return
+    deletingClientIdsRef.current.add(client.client_id)
+    setDeletingClientIds(new Set(deletingClientIdsRef.current))
+    setMessage('')
+    try {
+      await apiFetch<void>(`/api/v1/auth/oauth-clients/${encodeURIComponent(client.client_id)}`, { method: 'DELETE' })
+      load()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '应用删除失败。')
+    } finally {
+      deletingClientIdsRef.current.delete(client.client_id)
+      setDeletingClientIds(new Set(deletingClientIdsRef.current))
+    }
+  }
+
   return (
     <ConsoleLayout>
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -231,6 +250,14 @@ export function IntegratePage() {
                       : client.status === 'active' ? '禁用' : '启用'}
                   </Button>
                   <Button variant="ghost" icon="pencil" onClick={() => openEdit(client)}>编辑</Button>
+                  <Button
+                    variant="danger"
+                    icon="trash-2"
+                    disabled={deletingClientIds.has(client.client_id)}
+                    onClick={() => void remove(client)}
+                  >
+                    {deletingClientIds.has(client.client_id) ? '删除中…' : '删除'}
+                  </Button>
                   {client.auth_method === 'none' ? null : (
                     <Button variant="ghost" icon="refresh-cw" disabled={rotatingClientIds.has(client.client_id)} onClick={() => void rotate(client.client_id)}>
                       {rotatingClientIds.has(client.client_id) ? '轮换中…' : '轮换'}

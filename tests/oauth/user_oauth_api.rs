@@ -310,6 +310,7 @@ async fn normal_user_cannot_read_or_mutate_another_users_oauth_project() {
 
     for (method, suffix) in [
         ("PUT", ""),
+        ("DELETE", ""),
         ("POST", "/disable"),
         ("POST", "/enable"),
         ("POST", "/rotate-secret"),
@@ -370,6 +371,219 @@ async fn owned_client_mutations_require_user_csrf() {
         .execute(&database)
         .await
         .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn owned_client_delete_frees_quota_cascades_consents_and_requires_csrf() {
+    let (router, database, key_directory) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let (cookies, csrf_token) = register_and_login(&router, &database, &suffix).await;
+
+    let mut client_ids = Vec::new();
+    for index in 0..2 {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/oauth-clients")
+                    .header("cookie", &cookies)
+                    .header("x-csrf-token", &csrf_token)
+                    .header("content-type", "application/json")
+                    .body(Body::from(client_input(index)))
+                    .expect("create client request"),
+            )
+            .await
+            .expect("create client response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        client_ids.push(
+            http::json_body(response).await["client_id"]
+                .as_str()
+                .expect("client id")
+                .to_owned(),
+        );
+    }
+
+    let user_id: i64 =
+        chenxing_auth::sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+            .bind(format!("ui-{suffix}"))
+            .fetch_one(&database)
+            .await
+            .expect("user id");
+    chenxing_auth::sqlx::query(
+        "INSERT INTO user_consents (user_id, client_id, scopes, updated_at)
+         SELECT $1, id, $3, $4 FROM oauth_clients WHERE client_id = $2",
+    )
+    .bind(user_id)
+    .bind(&client_ids[0])
+    .bind(serde_json::json!(["openid"]))
+    .bind(time::OffsetDateTime::now_utc())
+    .execute(&database)
+    .await
+    .expect("consent insert");
+
+    let missing_csrf = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/auth/oauth-clients/{}", client_ids[0]))
+                .header("cookie", &cookies)
+                .body(Body::empty())
+                .expect("delete without csrf"),
+        )
+        .await
+        .expect("delete without csrf response");
+    assert_eq!(missing_csrf.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(http::json_body(missing_csrf).await["code"], "csrf_invalid");
+
+    let deleted = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/auth/oauth-clients/{}", client_ids[0]))
+                .header("cookie", &cookies)
+                .header("x-csrf-token", &csrf_token)
+                .body(Body::empty())
+                .expect("delete client request"),
+        )
+        .await
+        .expect("delete client response");
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+
+    let remaining: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(&client_ids[0])
+    .fetch_one(&database)
+    .await
+    .expect("deleted client count");
+    assert_eq!(remaining, 0);
+
+    let consents: i64 =
+        chenxing_auth::sqlx::query_scalar("SELECT COUNT(*) FROM user_consents WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&database)
+            .await
+            .expect("cascaded consent count");
+    assert_eq!(consents, 0);
+
+    let audits: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_events WHERE action = 'client_delete' AND resource_id = $1",
+    )
+    .bind(&client_ids[0])
+    .fetch_one(&database)
+    .await
+    .expect("delete audit count");
+    assert_eq!(audits, 1);
+
+    let missing = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/auth/oauth-clients/{}", client_ids[0]))
+                .header("cookie", &cookies)
+                .header("x-csrf-token", &csrf_token)
+                .body(Body::empty())
+                .expect("second delete request"),
+        )
+        .await
+        .expect("second delete response");
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        http::json_body(missing).await["code"],
+        "oauth_client_not_found"
+    );
+
+    let replacement = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/oauth-clients")
+                .header("cookie", &cookies)
+                .header("x-csrf-token", &csrf_token)
+                .header("content-type", "application/json")
+                .body(Body::from(client_input(2)))
+                .expect("replacement client request"),
+        )
+        .await
+        .expect("replacement client response");
+    assert_eq!(replacement.status(), StatusCode::CREATED);
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE email = $1")
+        .bind(format!("ui-{suffix}@example.com"))
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn admin_can_delete_oauth_client() {
+    let (router, database, key_directory) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let created = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/clients")
+                .header("authorization", "Bearer user-ui-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "client_name": format!("Admin Delete {suffix}"),
+                        "redirect_uris": ["https://admin-delete.example/callback"],
+                        "scopes": ["openid"]
+                    })
+                    .to_string(),
+                ))
+                .expect("admin create client request"),
+        )
+        .await
+        .expect("admin create client response");
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let client_id = http::json_body(created).await["client_id"]
+        .as_str()
+        .expect("client id")
+        .to_owned();
+
+    let deleted = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/admin/clients/{client_id}"))
+                .header("authorization", "Bearer user-ui-admin-token")
+                .body(Body::empty())
+                .expect("admin delete client request"),
+        )
+        .await
+        .expect("admin delete client response");
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+
+    let remaining: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(&client_id)
+    .fetch_one(&database)
+    .await
+    .expect("deleted admin client count");
+    assert_eq!(remaining, 0);
+
+    let audits: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_events WHERE action = 'client_delete' AND resource_id = $1",
+    )
+    .bind(&client_id)
+    .fetch_one(&database)
+    .await
+    .expect("admin delete audit count");
+    assert_eq!(audits, 1);
+
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

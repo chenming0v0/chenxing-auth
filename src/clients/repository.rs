@@ -18,7 +18,8 @@ pub use core::{
 #[path = "repository_mutation.rs"]
 mod mutation;
 pub use mutation::{
-    set_client_status, set_client_status_with_audit, update_client, update_client_with_audit,
+    delete_client_with_audit, set_client_status, set_client_status_with_audit, update_client,
+    update_client_with_audit,
 };
 
 #[path = "repository_credentials.rs"]

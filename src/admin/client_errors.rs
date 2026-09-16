@@ -1,8 +1,8 @@
 //! 管理端 Client 端点的 [`ClientServiceError`] → HTTP 响应映射。
 //!
-//! 四个端点对同一个错误枚举的解读并不相同（例如 `InvalidData` 在
+//! 五个端点对同一个错误枚举的解读并不相同（例如 `InvalidData` 在
 //! `set_client_status` 是「状态值非法」的 400，在 `rotate_secret` 是「Client
-//! 不存在」的 404），因此这里保留四个独立的映射函数，而不是一个带分支的通用
+//! 不存在」的 404），因此这里保留独立的映射函数，而不是一个带分支的通用
 //! 映射器。把映射从 async handler 里拆出来是为了让它成为纯函数：可以直接断言
 //! 状态码与错误码，不需要数据库。
 //!
@@ -10,7 +10,7 @@
 //! （`clients::repository` 在配额检查处抛出），必须映射成带明确错误码的 4xx；
 //! 只有真正的内部故障才允许收敛成 500（Issue #288）。
 //!
-//! 四个函数都逐个列出变体、不写 `_ =>` 兜底：新增错误变体时必须在这里显式表态，
+//! 映射函数都逐个列出变体、不写 `_ =>` 兜底：新增错误变体时必须在这里显式表态，
 //! 否则编译失败，避免又一个业务状态被静默归入 500。
 
 use axum::response::Response;
@@ -106,6 +106,23 @@ pub(super) fn update_client_error_response(error_value: &ClientServiceError) -> 
         | ClientServiceError::IdempotencyConflict
         | ClientServiceError::IdempotencyKeyInvalid
         | ClientServiceError::AndroidLink(_) => internal(error_value, "update_client"),
+    }
+}
+
+pub(super) fn delete_client_error_response(error_value: &ClientServiceError) -> Response {
+    match error_value {
+        ClientServiceError::QuotaExceeded => quota_exceeded(),
+        ClientServiceError::Database(_)
+        | ClientServiceError::Validation(_)
+        | ClientServiceError::SecretHash
+        | ClientServiceError::InvalidData
+        | ClientServiceError::SecretRotationConflict
+        | ClientServiceError::AuditUnavailable
+        | ClientServiceError::IdempotencyCorruptResult
+        | ClientServiceError::IdempotencyKeyUnavailable
+        | ClientServiceError::IdempotencyConflict
+        | ClientServiceError::IdempotencyKeyInvalid
+        | ClientServiceError::AndroidLink(_) => internal(error_value, "delete_client"),
     }
 }
 

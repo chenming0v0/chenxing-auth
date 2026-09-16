@@ -454,6 +454,7 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
         ("post", "/api/v1/admin/plans/{id}/restore"),
         ("post", "/api/v1/admin/clients"),
         ("put", "/api/v1/admin/clients/{client_id}"),
+        ("delete", "/api/v1/admin/clients/{client_id}"),
         ("post", "/api/v1/admin/clients/{client_id}/disable"),
         ("post", "/api/v1/admin/clients/{client_id}/enable"),
         ("post", "/api/v1/admin/clients/{client_id}/rotate-secret"),

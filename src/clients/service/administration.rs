@@ -159,15 +159,31 @@ impl ClientService {
         audit_event: crate::audit::AuditEvent,
     ) -> Result<bool, ClientServiceError> {
         validate_status(status)?;
-        repository::set_client_status_with_audit(&self.pool, None, client_id, status, audit_event)
-            .await
-            .map_err(|error| match error {
-                repository::AuditedClientMutationError::Database(error) => ClientServiceError::Database(error),
-                repository::AuditedClientMutationError::Audit(error) => {
-                    tracing::error!(event = "client_status_update.audit_unavailable", error = %error);
-                    ClientServiceError::AuditUnavailable
-                }
-            })
+        let updated = repository::set_client_status_with_audit(
+            &self.pool,
+            None,
+            client_id,
+            status,
+            audit_event,
+        )
+        .await
+        .map_err(|error| match error {
+            repository::AuditedClientMutationError::Database(error) => {
+                ClientServiceError::Database(error)
+            }
+            repository::AuditedClientMutationError::Audit(error) => {
+                tracing::error!(event = "client_status_update.audit_unavailable", error = %error);
+                ClientServiceError::AuditUnavailable
+            }
+        })?;
+        if updated && status == "disabled" {
+            self.revoke_refresh_tokens_best_effort(
+                client_id,
+                super::rotation::RefreshTokenCleanupReason::ClientDisabled,
+            )
+            .await;
+        }
+        Ok(updated)
     }
 
     pub async fn update(
