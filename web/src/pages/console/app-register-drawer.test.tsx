@@ -26,6 +26,8 @@ const CLIENT: OwnedOAuthClient = {
   logo_uri: null,
   client_uri: null,
   description: null,
+  numeric_app_id: 1,
+  android_asset_link: null,
 }
 
 beforeEach(() => {
@@ -107,6 +109,13 @@ describe('AppRegisterDrawer 创建', () => {
     submitCreate()
 
     await waitFor(() => expect(createBody()?.auth_method).toBe('none'))
+  })
+
+  it('创建时不出现 Android 包名输入，公开客户端提示创建后登记', () => {
+    renderCreate()
+    expect(screen.queryByLabelText('Android 包名')).toBeNull()
+    fireEvent.click(screen.getByRole('radio', { name: /公开客户端/ }))
+    expect(screen.getByText(/创建后可在编辑里登记 Android 包名和签名指纹/)).toBeTruthy()
   })
 
   it('机密客户端可改为 client_secret_post', async () => {
@@ -238,6 +247,82 @@ describe('AppRegisterDrawer 编辑', () => {
     const put = apiFetchMock.mock.calls.find(([path, init]) =>
       typeof path === 'string' && path.includes('/oauth-clients/') && init?.method === 'PUT')
     expect(JSON.parse(String(put?.[1]?.body)).description).toBe('演示用应用')
+    expect(JSON.parse(String(put?.[1]?.body)).android_asset_link).toBeUndefined()
+  })
+
+  it('编辑保存包名和指纹时先更新应用再 PUT app-link', async () => {
+    const onUpdated = vi.fn()
+    apiFetchMock.mockResolvedValue(undefined)
+    render(
+      <AppRegisterDrawer
+        editing={CLIENT}
+        onClose={() => {}}
+        onCreated={() => {}}
+        onUpdated={onUpdated}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText('Android 包名'), { target: { value: 'com.example.app' } })
+    fireEvent.change(screen.getByLabelText('SHA-256 签名指纹'), {
+      target: { value: '14:6D:E9:83:C5:73:06:50:D8:EE:B9:95:2F:34:FC:64:16:A0:83:42:E6:1D:BE:A8:8A:04:96:B2:3F:CF:44:E5' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '保存更新' }))
+    await waitFor(() => expect(onUpdated).toHaveBeenCalled())
+    const calls = apiFetchMock.mock.calls.map(([path, init]) => ({ path, method: init?.method, body: init?.body }))
+    expect(calls[0]).toMatchObject({
+      path: '/api/v1/auth/oauth-clients/cx-client-demo',
+      method: 'PUT',
+    })
+    expect(JSON.parse(String(calls[0]?.body)).android_asset_link).toBeUndefined()
+    expect(calls[1]).toMatchObject({
+      path: '/api/v1/auth/oauth-clients/cx-client-demo/app-link',
+      method: 'PUT',
+    })
+    expect(JSON.parse(String(calls[1]?.body))).toEqual({
+      package_name: 'com.example.app',
+      sha256_cert_fingerprints: ['14:6D:E9:83:C5:73:06:50:D8:EE:B9:95:2F:34:FC:64:16:A0:83:42:E6:1D:BE:A8:8A:04:96:B2:3F:CF:44:E5'],
+    })
+  })
+
+  it('清空已有软件链接时 DELETE app-link', async () => {
+    const onUpdated = vi.fn()
+    apiFetchMock.mockResolvedValue(undefined)
+    render(
+      <AppRegisterDrawer
+        editing={{
+          ...CLIENT,
+          android_asset_link: {
+            package_name: 'com.example.app',
+            sha256_cert_fingerprints: ['AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99'],
+          },
+        }}
+        onClose={() => {}}
+        onCreated={() => {}}
+        onUpdated={onUpdated}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText('Android 包名'), { target: { value: '' } })
+    fireEvent.change(screen.getByLabelText('SHA-256 签名指纹'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存更新' }))
+    await waitFor(() => expect(onUpdated).toHaveBeenCalled())
+    expect(apiFetchMock.mock.calls.some(([path, init]) =>
+      path === '/api/v1/auth/oauth-clients/cx-client-demo/app-link' && init?.method === 'DELETE')).toBe(true)
+  })
+
+  it('软件链接未改动时不打 app-link 接口', async () => {
+    const onUpdated = vi.fn()
+    apiFetchMock.mockResolvedValue(undefined)
+    render(
+      <AppRegisterDrawer
+        editing={CLIENT}
+        onClose={() => {}}
+        onCreated={() => {}}
+        onUpdated={onUpdated}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '保存更新' }))
+    await waitFor(() => expect(onUpdated).toHaveBeenCalled())
+    expect(apiFetchMock.mock.calls.some(([path]) =>
+      typeof path === 'string' && path.endsWith('/app-link'))).toBe(false)
   })
 
   it('编辑时列出已有 Redirect URI', () => {

@@ -30,6 +30,7 @@ async fn concurrent_secret_writes_have_one_compare_and_swap_winner() {
         },
         client_id.clone(),
         ClientCredential::SecretBasic("initial-hash".to_owned()),
+        None,
     )
     .await
     .expect("insert client");
@@ -128,6 +129,7 @@ async fn disabled_client_secret_rotation_is_rejected_without_side_effects() {
         },
         client_id.clone(),
         ClientCredential::SecretBasic("initial-hash".to_owned()),
+        None,
     )
     .await
     .expect("insert client");

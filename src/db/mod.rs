@@ -417,6 +417,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "client numeric app id",
             include_str!("../../migrations/0055_client_numeric_app_id.sql"),
         ),
+        (
+            56,
+            "client owner backfill",
+            include_str!("../../migrations/0056_client_owner_backfill.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

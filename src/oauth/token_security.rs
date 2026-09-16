@@ -80,7 +80,7 @@ pub(crate) async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Res
         }
     };
     let Some(owner_user_id) = client.owner_user_id else {
-        // Admin-created clients without an owner are not bound to user plan QPS.
+        // 没有 owner 的存量行不绑套餐 QPS；有 owner 但没有生效套餐时下面同样跳过。
         return None;
     };
     let effective = match state.plans.effective_plan_for_user(owner_user_id).await {

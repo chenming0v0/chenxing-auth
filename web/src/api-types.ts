@@ -118,6 +118,11 @@ export type OwnedOAuthClient = {
   logo_uri: string | null
   client_uri: string | null
   description?: string | null
+  numeric_app_id: number
+  android_asset_link?: {
+    package_name: string
+    sha256_cert_fingerprints: string[]
+  } | null
 }
 
 export type OwnedOAuthClientList = { items: OwnedOAuthClient[]; total?: number }

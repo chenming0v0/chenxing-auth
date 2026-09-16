@@ -84,6 +84,7 @@ async fn seed_user_and_client(
         },
         client_id.clone(),
         ClientCredential::SecretBasic("client-secret-hash".to_owned()),
+        None,
     )
     .await
     .expect("insert client");

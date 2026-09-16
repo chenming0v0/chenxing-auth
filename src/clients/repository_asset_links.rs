@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::clients::android_link::AndroidAssetLink;
 use crate::sqlx::PgPool;
+use crate::users::domain::UserId;
 use serde_json::Value;
 
 pub struct DeclaredAppLinkRow {
@@ -21,14 +22,18 @@ pub struct DeclaredAppLinkRow {
 pub async fn upsert_client_app_link(
     pool: &PgPool,
     client_id: &str,
+    owner_user_id: Option<UserId>,
     link: &AndroidAssetLink,
 ) -> Result<bool, crate::sqlx::Error> {
-    let result =
-        crate::sqlx::query("UPDATE oauth_clients SET android_asset_link = $2 WHERE client_id = $1")
-            .bind(client_id)
-            .bind(serde_json::to_value(link).expect("asset link is serializable"))
-            .execute(pool)
-            .await?;
+    let result = crate::sqlx::query(
+        "UPDATE oauth_clients SET android_asset_link = $3
+         WHERE client_id = $1 AND ($2::bigint IS NULL OR owner_user_id = $2)",
+    )
+    .bind(client_id)
+    .bind(owner_user_id)
+    .bind(serde_json::to_value(link).expect("asset link is serializable"))
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -36,11 +41,14 @@ pub async fn upsert_client_app_link(
 pub async fn delete_client_app_link(
     pool: &PgPool,
     client_id: &str,
+    owner_user_id: Option<UserId>,
 ) -> Result<bool, crate::sqlx::Error> {
     let result = crate::sqlx::query(
-        "UPDATE oauth_clients SET android_asset_link = NULL WHERE client_id = $1",
+        "UPDATE oauth_clients SET android_asset_link = NULL
+         WHERE client_id = $1 AND ($2::bigint IS NULL OR owner_user_id = $2)",
     )
     .bind(client_id)
+    .bind(owner_user_id)
     .execute(pool)
     .await?;
     Ok(result.rows_affected() == 1)

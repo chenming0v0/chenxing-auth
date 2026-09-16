@@ -18,6 +18,15 @@ import {
   newIdempotencyKey,
   REDIRECT_URI_RULE_MESSAGE,
 } from './developer-shared'
+import {
+  ANDROID_APP_LINK_FIELD_ID,
+  AndroidAppLinkPanel,
+  formFromAndroidAppLink,
+  syncOwnedAndroidAppLink,
+  validateAndroidAppLink,
+  type AndroidAppLinkErrors,
+  type AndroidAppLinkValue,
+} from './android-app-link-panel'
 import { PermissionChecklist } from './permission-checklist'
 import { RedirectUriList, type RedirectUriListHandle } from './redirect-uri-list'
 
@@ -141,7 +150,9 @@ export function AppRegisterDrawer({
 }) {
   const creating = editing === null
   const [form, setForm] = useState<FormState>(() => (editing ? formFromClient(editing) : emptyForm()))
+  const [appLink, setAppLink] = useState<AndroidAppLinkValue>(() => formFromAndroidAppLink(editing?.android_asset_link))
   const [errors, setErrors] = useState<FieldErrors>({})
+  const [linkErrors, setLinkErrors] = useState<AndroidAppLinkErrors>({})
   const [message, setMessage] = useState('')
   const [logoFailed, setLogoFailed] = useState(false)
   const createIdempotencyRef = useRef<{ fingerprint: string; key: string } | null>(null)
@@ -171,14 +182,24 @@ export function AppRegisterDrawer({
     const redirectUris = flushed?.uris ?? form.redirectUris
     const nextForm = { ...form, redirectUris }
     const nextErrors = validate(nextForm)
+    const nextLinkErrors = creating ? {} : validateAndroidAppLink(appLink)
     if (flushed?.error) {
       setErrors({ ...nextErrors, redirectUris: undefined })
+      setLinkErrors(nextLinkErrors)
       document.getElementById(FIELD_ID.redirectUris)?.focus()
       return
     }
     setErrors(nextErrors)
+    setLinkErrors(nextLinkErrors)
     if (Object.values(nextErrors).some(Boolean)) {
       focusFirstError(nextErrors)
+      return
+    }
+    if (Object.values(nextLinkErrors).some(Boolean)) {
+      const first = nextLinkErrors.packageName
+        ? ANDROID_APP_LINK_FIELD_ID.packageName
+        : ANDROID_APP_LINK_FIELD_ID.fingerprints
+      document.getElementById(first)?.focus()
       return
     }
 
@@ -197,6 +218,7 @@ export function AppRegisterDrawer({
             method: 'PUT',
             body: JSON.stringify(input),
           })
+          await syncOwnedAndroidAppLink(editing.client_id, editing.android_asset_link, appLink)
           onUpdated()
           return
         }
@@ -334,16 +356,21 @@ export function AppRegisterDrawer({
             </button>
           </div>
           {form.kind === 'confidential' ? (
-            <SelectField
-              label="令牌端点认证"
-              icon="key-round"
-              value={form.authMethod}
-              onChange={(value) => update('authMethod', value as Exclude<ClientAuthMethod, 'none'>)}
-              options={CONFIDENTIAL_AUTH_OPTIONS}
-              hint="机密客户端在令牌端点出示 Secret 的方式。公开客户端固定为 none。"
-            />
+            <>
+              <SelectField
+                label="令牌端点认证"
+                icon="key-round"
+                value={form.authMethod}
+                onChange={(value) => update('authMethod', value as Exclude<ClientAuthMethod, 'none'>)}
+                options={CONFIDENTIAL_AUTH_OPTIONS}
+                hint="机密客户端在令牌端点出示 Secret 的方式。公开客户端固定为 none。"
+              />
+              <p className="chenxing-caption">创建后如需接入 Android，到编辑里登记包名和指纹。</p>
+            </>
           ) : (
-            <Notice tone="info">公开客户端不签发 Client Secret，换令牌时必须使用 PKCE。</Notice>
+            <Notice tone="info">
+              公开客户端不签发 Client Secret，换令牌时必须使用 PKCE。创建后可在编辑里登记 Android 包名和签名指纹，系统才会把 {'/app/<数字ID>/oauth/callback'} 交给 App。
+            </Notice>
           )}
         </HudPanel>
       ) : (
@@ -371,6 +398,19 @@ export function AppRegisterDrawer({
           errorText={errors.scopes}
         />
       </HudPanel>
+
+      {creating ? null : (
+        <AndroidAppLinkPanel
+          numericAppId={editing.numeric_app_id}
+          value={appLink}
+          errors={linkErrors}
+          disabled={busy}
+          onChange={(next) => {
+            setAppLink(next)
+            setLinkErrors({})
+          }}
+        />
+      )}
     </Drawer>
   )
 }

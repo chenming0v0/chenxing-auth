@@ -4,9 +4,10 @@
 //! Android 只有在链接域名下取到列有 App 包名和签名指纹的 Digital Asset Links 声明后，
 //! 才会把回调链接交给 App 而不是浏览器。
 //!
-//! 包名和签名指纹由软件链接管理面（`/api/v1/admin/app-links`）显式登记，不是
-//! Client 注册/更新入参。公开端点只发布已登记声明；同包名多 Client 的指纹合并到
-//! 同一 statement。
+//! 声明是 Client 的所属属性，不是管理员专属开关。所有者走
+//! `/api/v1/auth/oauth-clients/{id}/app-link`，管理面 `/api/v1/admin/app-links`
+//! 是全站覆盖。都不是 Client 注册/更新入参。公开端点只发布已登记声明；同包名
+//! 多 Client 的指纹合并到同一 statement。
 //!
 //! 指纹是公钥派生，不是秘密，也不需要保密；格式统一为大写冒号分隔，便于确定性发布。
 

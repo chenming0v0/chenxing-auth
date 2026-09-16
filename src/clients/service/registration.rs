@@ -13,6 +13,7 @@ use uuid::Uuid;
 impl ClientService {
     pub async fn register(
         &self,
+        owner_user_id: Option<UserId>,
         input: impl Into<ClientRegistrationRequest>,
     ) -> Result<RegisteredClientSecret, ClientServiceError> {
         let request = input.into();
@@ -21,14 +22,21 @@ impl ClientService {
             validate_client_registration_with_limits(request.registration, &self.limits)?;
         let client_id = format!("cx_{}", Uuid::new_v4().simple());
         let (credential, client_secret) = issue_client_credential(auth_method)?;
-        let client =
-            repository::insert_client(&self.pool, registration, client_id, credential).await?;
+        let client = repository::insert_client(
+            &self.pool,
+            registration,
+            client_id,
+            credential,
+            owner_user_id,
+        )
+        .await?;
 
         Ok(registered_client_secret(client, client_secret))
     }
 
     pub async fn register_with_audit<F>(
         &self,
+        owner_user_id: Option<UserId>,
         input: impl Into<ClientRegistrationRequest>,
         audit_event: F,
     ) -> Result<RegisteredClientSecret, ClientServiceError>
@@ -46,6 +54,7 @@ impl ClientService {
             registration,
             client_id,
             credential,
+            owner_user_id,
             audit_event,
         )
         .await
@@ -144,6 +153,7 @@ impl ClientService {
 
     pub async fn register_with_audit_idempotent<F>(
         &self,
+        owner_user_id: Option<UserId>,
         input: impl Into<ClientRegistrationRequest>,
         actor_scope: String,
         key: IdempotencyKey,
@@ -152,8 +162,15 @@ impl ClientService {
     where
         F: FnOnce(&repository::NewClient) -> crate::audit::AuditEvent,
     {
-        self.register_idempotent(None, input.into(), actor_scope, key, audit_event)
-            .await
+        self.register_idempotent(
+            owner_user_id,
+            false,
+            input.into(),
+            actor_scope,
+            key,
+            audit_event,
+        )
+        .await
     }
 
     pub async fn register_for_user_with_audit_idempotent<F>(
@@ -169,6 +186,7 @@ impl ClientService {
     {
         self.register_idempotent(
             Some(owner_user_id),
+            true,
             input.into(),
             actor_scope,
             key,
@@ -180,6 +198,7 @@ impl ClientService {
     async fn register_idempotent<F>(
         &self,
         owner_user_id: Option<UserId>,
+        enforce_owner_quota: bool,
         request: ClientRegistrationRequest,
         actor_scope: String,
         key: IdempotencyKey,
@@ -224,6 +243,7 @@ impl ClientService {
             &self.pool,
             repository::IdempotentClientInsert {
                 owner_user_id,
+                enforce_owner_quota,
                 registration,
                 client_id,
                 credential,

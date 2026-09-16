@@ -119,6 +119,9 @@ fn database_uses_forward_only_transactional_migration_history() {
     assert!(
         DB_MODULE.contains("include_str!(\"../../migrations/0055_client_numeric_app_id.sql\")")
     );
+    assert!(
+        DB_MODULE.contains("include_str!(\"../../migrations/0056_client_owner_backfill.sql\")")
+    );
 
     // The migrations directory is the independent source of truth for the
     // current history. Every on-disk SQL file must be embedded exactly once in

@@ -1361,6 +1361,45 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/oauth-clients/{client_id}/app-link:
+    put:
+      tags: [User Auth/OAuth Clients]
+      summary: 登记当前用户拥有的 OAuth 项目的 Android App Link
+      operationId: upsertOwnedOAuthClientAppLink
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateAppLinkInput' }
+      responses:
+        '200':
+          description: 已登记的 App Link
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppLinkResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+    delete:
+      tags: [User Auth/OAuth Clients]
+      summary: 清除当前用户拥有的 OAuth 项目的 Android App Link
+      operationId: deleteOwnedOAuthClientAppLink
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: App Link 已清除 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/auth/session:
     delete:
       tags: [User Auth/Sessions]
@@ -4490,9 +4529,14 @@ components:
         monthly_used: { type: integer, format: int64 }
     OwnedOAuthClient:
       type: object
-      required: [id, client_id, client_name, redirect_uris, scopes, status, quota, auth_method]
+      required: [id, numeric_app_id, client_id, client_name, redirect_uris, scopes, status, quota, auth_method]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
+        numeric_app_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 系统分配的全局递增数字 App ID，用于回调路径（/app/<id>/oauth/callback）
         client_id: { type: string }
         client_name: { type: string }
         redirect_uris: { type: array, items: { type: string, format: uri } }
@@ -4518,6 +4562,13 @@ components:
           nullable: true
           maxLength: 512
           description: 可选应用描述，展示在开发者控制台和授权确认页；空白或省略表示未设置
+        android_asset_link:
+          type: object
+          nullable: true
+          description: 可通过所有者 API `/api/v1/auth/oauth-clients/{client_id}/app-link` 或管理面 `/api/v1/admin/app-links` 登记；创建/更新 Client 入参仍不接受该字段。未登记时为 null。
+          properties:
+            package_name: { type: string }
+            sha256_cert_fingerprints: { type: array, items: { type: string } }
     OwnedOAuthClientList:
       type: object
       required: [items, total]
@@ -5479,7 +5530,7 @@ components:
             android_asset_link:
               type: object
               nullable: true
-              description: 只读。已通过 `/api/v1/admin/app-links` 登记的 Android App Links 声明；创建/更新 Client 不接受该字段。未登记时为 null。公开端点 `/.well-known/assetlinks.json` 从这些登记派生。
+              description: 只读。可通过所有者 API `/api/v1/auth/oauth-clients/{client_id}/app-link` 或管理面 `/api/v1/admin/app-links` 登记；创建/更新 Client 入参仍不接受该字段。未登记时为 null。公开端点 `/.well-known/assetlinks.json` 从这些登记派生。
               properties:
                 package_name: { type: string }
                 sha256_cert_fingerprints: { type: array, items: { type: string } }

@@ -295,7 +295,8 @@ pub async fn create_owned_client(router: &Router, cookie: &str, csrf: &str, suff
     json(response).await
 }
 
-/// 通过管理接口创建 Client：`owner_user_id IS NULL`，不受套餐计量影响。
+/// 通过管理接口创建 Client：stamp 到第一个未禁用 Owner（没有 Owner 时才为 NULL），
+/// 不走自助额度。没有生效套餐时授权/换令牌仍成功。
 pub async fn create_admin_client(router: &Router, suffix: &str) -> Value {
     let response = router
         .clone()

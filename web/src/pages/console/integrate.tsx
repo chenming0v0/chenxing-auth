@@ -233,6 +233,9 @@ export function IntegratePage() {
                   <p className="chenxing-body truncate font-semibold leading-tight">{client.client_name}</p>
                   <p className="chenxing-mono truncate text-[11px] text-[var(--chenxing-muted-foreground)]">{client.client_id}</p>
                   <p className="chenxing-caption mt-1 hidden sm:block">{formatQuota(client)}</p>
+                  {client.android_asset_link ? (
+                    <p className="chenxing-caption mt-1">Android 已登记 · {client.android_asset_link.package_name}</p>
+                  ) : null}
                 </div>
                 <span className="chenxing-tag hidden lg:inline-flex">{client.auth_method === 'none' ? '公开' : '机密'}</span>
                 <span className={`${client.status === 'active' ? 'chenxing-tag-success' : 'chenxing-tag-warning'} hidden lg:inline-flex`}>

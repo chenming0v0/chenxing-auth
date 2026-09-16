@@ -1,6 +1,6 @@
 //! `/.well-known/assetlinks.json`：Android App Links 声明端点。
 //!
-//! 声明从管理面登记的 Client 档案派生，不经 Issuer 门禁。未登记时 404。
+//! 声明从已登记的 Client 档案派生，不经 Issuer 门禁。未登记时 404。
 
 use axum::{
     body::Body,
@@ -12,8 +12,12 @@ use axum::{
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+use chenxing_auth::sessions::domain::Session;
+use std::time::Duration;
+
 use crate::harness::HarnessBuilder;
 use crate::http::json_body;
+use crate::oauth_flow::ensure_owner_bootstrapped;
 
 const FINGERPRINT: &str = "14:6D:E9:83:C5:73:06:50:D8:EE:B9:95:2F:34:FC:64:16:A0:83:42:E6:1D:BE:A8:8A:04:96:B2:3F:CF:44:E5";
 const FINGERPRINT_B: &str = "B6:DA:01:48:0E:EF:D5:FB:F2:CD:37:71:B8:D1:02:1E:C7:91:30:4B:DD:6C:4B:F4:1D:3F:AA:BA:D4:8E:E5:E1";
@@ -87,6 +91,21 @@ async fn put_app_link(router: &axum::Router, client_id: &str, fingerprint: &str)
         .expect("upsert app link response");
     assert_eq!(response.status(), StatusCode::OK);
     json_body(response).await
+}
+
+async fn owner_session(state: &chenxing_auth::state::AppState, owner_id: i64) -> (String, String) {
+    let mut session =
+        Session::new(owner_id.to_string(), Duration::from_secs(3600)).expect("owner session");
+    state
+        .sessions
+        .save(&mut session, Duration::from_secs(3600))
+        .await
+        .expect("persist owner session");
+    let cookies = format!(
+        "chenxing_session={}; chenxing_csrf={}",
+        session.token, session.csrf_token
+    );
+    (cookies, session.csrf_token)
 }
 
 #[tokio::test]
@@ -272,6 +291,67 @@ async fn same_package_fingerprints_merge_into_one_statement() {
                 "namespace": "android_app",
                 "package_name": "com.chengming.termux",
                 "sha256_cert_fingerprints": [FINGERPRINT, FINGERPRINT_B],
+            }
+        }])
+    );
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn user_registered_app_link_is_published() {
+    let harness = HarnessBuilder::new("assetlinks_user")
+        .admin_token(ADMIN_TOKEN)
+        .build()
+        .await;
+    ensure_owner_bootstrapped(
+        &harness.router,
+        &harness.database,
+        "assetlinks",
+        "assetlinks-user",
+    )
+    .await;
+    let owner_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT id FROM users WHERE role = 'owner' AND status <> 'disabled' ORDER BY id ASC LIMIT 1",
+    )
+    .fetch_one(&harness.database)
+    .await
+    .expect("first owner");
+    let (cookies, csrf_token) = owner_session(&harness.state, owner_id).await;
+    let client_id = create_client(&harness.router).await;
+
+    let declared = harness
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/auth/oauth-clients/{client_id}/app-link"))
+                .header("cookie", &cookies)
+                .header("x-csrf-token", csrf_token)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "package_name": "com.chengming.termux",
+                        "sha256_cert_fingerprints": [FINGERPRINT],
+                    })
+                    .to_string(),
+                ))
+                .expect("user upsert app link"),
+        )
+        .await
+        .expect("user upsert app link response");
+    assert_eq!(declared.status(), StatusCode::OK);
+
+    let response = fetch(&harness.router).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(response).await,
+        json!([{
+            "relation": ["delegate_permission/common.handle_all_urls"],
+            "target": {
+                "namespace": "android_app",
+                "package_name": "com.chengming.termux",
+                "sha256_cert_fingerprints": [FINGERPRINT],
             }
         }])
     );

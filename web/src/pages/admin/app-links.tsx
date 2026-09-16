@@ -13,7 +13,7 @@ export function AdminAppLinks() {
       <PageIntro
         eyebrow="// Admin · App Links"
         title="软件链接"
-        description="登记 Android 包名和签名指纹。辰星在 /.well-known/assetlinks.json 公开发布，供系统把 /app/<数字ID>/oauth/callback 交给对应 App。"
+        description="全站覆盖视图。应用所有者在「接入应用」里配置自己的包名和指纹。管理员仍可改任何 Client。"
       />
       <AdminGate access={access} permission="manage_clients">
         <AppLinksWorkspace />

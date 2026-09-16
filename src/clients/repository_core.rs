@@ -176,7 +176,7 @@ fn to_listed_client(row: ClientRow) -> ListedClient {
     }
 }
 
-/// 单条 INSERT，供有主 / 无主两条注册路径共用。
+/// 单条 INSERT。owner 由调用方写入；本函数不计自助额度。
 /// 返回生成的自增 id，由调用方一次性构造 `NewClient`，避免占位值再回填（Issue #93）。
 pub(super) async fn insert_client_row<'executor, E>(
     executor: E,
@@ -215,6 +215,7 @@ pub async fn insert_client(
     registration: ValidatedClientRegistration,
     client_id: String,
     credential: ClientCredential,
+    owner_user_id: Option<UserId>,
 ) -> Result<NewClient, crate::sqlx::Error> {
     // 保留墙钟（Issue #299 的明确例外）：Client 行的创建时间，不是凭据有效期。
     // Client Secret 本身没有过期语义，撤销通过 `revoke_client_tokens` 表达。
@@ -225,7 +226,7 @@ pub async fn insert_client(
         &client_id,
         &credential,
         created_at,
-        None,
+        owner_user_id,
     )
     .await?;
     Ok(NewClient {
@@ -236,7 +237,7 @@ pub async fn insert_client(
         redirect_uris: registration.redirect_uris,
         scopes: registration.scopes,
         created_at,
-        owner_user_id: None,
+        owner_user_id,
         auth_method: credential.auth_method(),
         logo_uri: registration.logo_uri,
         client_uri: registration.client_uri,
@@ -250,6 +251,7 @@ pub async fn insert_client_with_audit<F>(
     registration: ValidatedClientRegistration,
     client_id: String,
     credential: ClientCredential,
+    owner_user_id: Option<UserId>,
     audit_event: F,
 ) -> Result<NewClient, AuditedClientInsertError>
 where
@@ -263,7 +265,7 @@ where
         &client_id,
         &credential,
         created_at,
-        None,
+        owner_user_id,
     )
     .await?;
     let client = NewClient {
@@ -274,7 +276,7 @@ where
         redirect_uris: registration.redirect_uris,
         scopes: registration.scopes,
         created_at,
-        owner_user_id: None,
+        owner_user_id,
         auth_method: credential.auth_method(),
         logo_uri: registration.logo_uri,
         client_uri: registration.client_uri,

@@ -49,6 +49,8 @@ enum Claim {
 
 pub(crate) struct IdempotentClientInsert<'a, F> {
     pub owner_user_id: Option<UserId>,
+    /// 与「有没有 owner」独立：管理面 stamp owner 但不走自助额度。
+    pub enforce_owner_quota: bool,
     pub registration: ValidatedClientRegistration,
     pub client_id: String,
     pub credential: ClientCredential,
@@ -66,6 +68,7 @@ where
 {
     let IdempotentClientInsert {
         owner_user_id,
+        enforce_owner_quota,
         registration,
         client_id,
         credential,
@@ -86,18 +89,21 @@ where
             })
         }
         Claim::New { secret_kid } => {
-            if let Some(owner_user_id) = owner_user_id {
-                let Some(limit) =
-                    owned_registration::effective_limit(&mut transaction, owner_user_id).await?
-                else {
-                    transaction.rollback().await?;
-                    return Err(IdempotentClientOperationError::QuotaExceeded);
-                };
-                if !owned_registration::quota_available(&mut transaction, owner_user_id, limit)
-                    .await?
-                {
-                    transaction.rollback().await?;
-                    return Err(IdempotentClientOperationError::QuotaExceeded);
+            if enforce_owner_quota {
+                if let Some(owner_user_id) = owner_user_id {
+                    let Some(limit) =
+                        owned_registration::effective_limit(&mut transaction, owner_user_id)
+                            .await?
+                    else {
+                        transaction.rollback().await?;
+                        return Err(IdempotentClientOperationError::QuotaExceeded);
+                    };
+                    if !owned_registration::quota_available(&mut transaction, owner_user_id, limit)
+                        .await?
+                    {
+                        transaction.rollback().await?;
+                        return Err(IdempotentClientOperationError::QuotaExceeded);
+                    }
                 }
             }
 

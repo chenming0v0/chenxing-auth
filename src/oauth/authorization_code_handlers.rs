@@ -168,8 +168,8 @@ pub async fn issue_authorization_code_result(
         return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
     }
 
-    // 只有用户自助创建的 Client 计量配额；admin Client（owner_user_id 为空）
-    // 和「没有生效套餐」都直接跳过计量，不改变协议错误语义。
+    // owner_user_id 有值就按 owner 生效套餐计量；没有 owner 或没有生效套餐时跳过，
+    // 不改变协议错误语义。闸门只关自助新增，不打死既有集成。
     let owner_plan = match client.owner_user_id {
         Some(owner_user_id) => match state.plans.effective_plan_for_user(owner_user_id).await {
             Ok(effective) => effective,
