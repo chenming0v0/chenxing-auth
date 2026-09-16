@@ -10,6 +10,8 @@ use uuid::Uuid;
 
 // 迁移不再种子默认套餐：自助创建 Client 的用例必须自己给用户挂套餐，
 // 否则会被自助接入闸门拒绝（403 self_service_disabled）。
+use chenxing_auth::sessions::domain::Session;
+
 use crate::harness::HarnessBuilder;
 use crate::http;
 use crate::oauth_flow;
@@ -1327,5 +1329,171 @@ async fn admin_token_created_client_belongs_to_first_owner() {
     .await
     .expect("first active owner");
     assert_eq!(owner, Some(first_owner));
+    let quota_exempt: bool = chenxing_auth::sqlx::query_scalar(
+        "SELECT quota_exempt FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(&client_id)
+    .fetch_one(&database)
+    .await
+    .expect("quota_exempt");
+    assert!(quota_exempt);
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+async fn inject_user_session(
+    state: &chenxing_auth::state::AppState,
+    user_id: i64,
+) -> (String, String) {
+    let mut session = Session::new(user_id.to_string(), std::time::Duration::from_secs(3600))
+        .expect("injected session");
+    state
+        .sessions
+        .save(&mut session, std::time::Duration::from_secs(3600))
+        .await
+        .expect("save injected session");
+    (
+        format!(
+            "chenxing_session={}; chenxing_csrf={}",
+            session.token, session.csrf_token
+        ),
+        session.csrf_token,
+    )
+}
+
+#[tokio::test]
+async fn admin_token_created_client_does_not_consume_first_owner_quota() {
+    let harness = HarnessBuilder::new("user_oauth_api")
+        .admin_token("user-ui-admin-token")
+        .build()
+        .await;
+    ensure_owner_bootstrapped(
+        &harness.router,
+        &harness.database,
+        "user_oauth_api",
+        "user-oauth-api",
+    )
+    .await;
+    let first_owner: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT id FROM users WHERE role = 'owner' AND status <> 'disabled' ORDER BY id ASC LIMIT 1",
+    )
+    .fetch_one(&harness.database)
+    .await
+    .expect("first owner");
+    plan_fixtures::assign_private_plan(
+        &harness.database,
+        first_owner,
+        plan_fixtures::PlanLimits::legacy_default(),
+    )
+    .await;
+    let created = harness
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/clients")
+                .header("authorization", "Bearer user-ui-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "client_name": "Exempt Admin Client",
+                        "redirect_uris": ["https://admin-exempt.example/callback"],
+                        "scopes": ["openid"]
+                    })
+                    .to_string(),
+                ))
+                .expect("admin create client request"),
+        )
+        .await
+        .expect("admin create client response");
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let (cookies, csrf_token) = inject_user_session(&harness.state, first_owner).await;
+    let router = harness.router.clone();
+    let key_directory = harness.key_directory.clone();
+    for index in 0..2 {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/oauth-clients")
+                    .header("cookie", &cookies)
+                    .header("x-csrf-token", &csrf_token)
+                    .header("content-type", "application/json")
+                    .body(Body::from(client_input(30 + index)))
+                    .expect("owner self-service create"),
+            )
+            .await
+            .expect("owner self-service response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+    let exceeded = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/oauth-clients")
+                .header("cookie", &cookies)
+                .header("x-csrf-token", &csrf_token)
+                .header("content-type", "application/json")
+                .body(Body::from(client_input(32)))
+                .expect("owner quota overflow"),
+        )
+        .await
+        .expect("owner quota overflow response");
+    assert_eq!(exceeded.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        http::json_body(exceeded).await["code"],
+        "oauth_client_quota_exceeded"
+    );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn deleting_user_keeps_quota_exempt_client_and_cascades_self_service() {
+    let (router, database, key_directory) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let (cookies, csrf_token) = register_and_login(&router, &database, &suffix).await;
+    let user_id: i64 = chenxing_auth::sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(format!("ui-{suffix}@example.com"))
+        .fetch_one(&database)
+        .await
+        .expect("user id");
+    let self_service_id = create_owned_client(&router, &cookies, &csrf_token, 40).await;
+    let exempt_id = format!("cx_exempt_{suffix}");
+    chenxing_auth::sqlx::query(
+        "INSERT INTO oauth_clients
+         (client_id, client_name, redirect_uris, scopes, auth_method, owner_user_id, created_at, quota_exempt)
+         VALUES ($1, 'Exempt Keep', $2::jsonb, $3::jsonb, 'none', $4, NOW(), true)",
+    )
+    .bind(&exempt_id)
+    .bind(serde_json::json!(["https://exempt.example/callback"]))
+    .bind(serde_json::json!(["openid"]))
+    .bind(user_id)
+    .execute(&database)
+    .await
+    .expect("insert exempt client");
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("delete user");
+
+    let remaining: Option<(Option<i64>, bool)> = chenxing_auth::sqlx::query_as(
+        "SELECT owner_user_id, quota_exempt FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(&exempt_id)
+    .fetch_optional(&database)
+    .await
+    .expect("load exempt client after owner delete");
+    assert_eq!(remaining, Some((None, true)));
+    let self_service: Option<String> = chenxing_auth::sqlx::query_scalar(
+        "SELECT client_id FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(&self_service_id)
+    .fetch_optional(&database)
+    .await
+    .expect("load self-service client after owner delete");
+    assert!(self_service.is_none());
     let _ = std::fs::remove_dir_all(key_directory);
 }

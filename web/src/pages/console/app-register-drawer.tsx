@@ -365,11 +365,11 @@ export function AppRegisterDrawer({
                 options={CONFIDENTIAL_AUTH_OPTIONS}
                 hint="机密客户端在令牌端点出示 Secret 的方式。公开客户端固定为 none。"
               />
-              <p className="chenxing-caption">创建后如需接入 Android，到编辑里登记包名和指纹。</p>
+              <p className="chenxing-caption">原生应用请改用公开客户端，并把 https 回调登记到你自己的域名。</p>
             </>
           ) : (
             <Notice tone="info">
-              公开客户端不签发 Client Secret，换令牌时必须使用 PKCE。创建后可在编辑里登记 Android 包名和签名指纹，系统才会把 {'/app/<数字ID>/oauth/callback'} 交给 App。
+              公开客户端不签发 Client Secret，换令牌时必须使用 PKCE。Redirect URI 填你自己的 HTTPS 地址，不要用本认证域名的 /app/… 路径。
             </Notice>
           )}
         </HudPanel>

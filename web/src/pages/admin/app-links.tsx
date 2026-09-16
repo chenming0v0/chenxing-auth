@@ -13,7 +13,7 @@ export function AdminAppLinks() {
       <PageIntro
         eyebrow="// Admin · App Links"
         title="软件链接"
-        description="全站覆盖视图。应用所有者在「接入应用」里配置自己的包名和指纹。管理员仍可改任何 Client。"
+        description="把第一方 Android 应用发布到本 Issuer 的 assetlinks.json。第三方应使用自己的 HTTPS 域名，不要把任意应用写进这里。"
       />
       <AdminGate access={access} permission="manage_clients">
         <AppLinksWorkspace />
@@ -89,7 +89,7 @@ export function AppLinksWorkspace(_props: { access?: AdminAccess } = {}) {
           minWidth={920}
           columns={['软件', 'App ID', '包名', '指纹', { label: '操作', align: 'right' }]}
           empty={items?.length ? null : items ? (
-            <EmptyState icon="smartphone" title="还没有软件链接" description="点「登记软件」，填入包名和签名指纹。认证链接在「认证链接」页单独配置。" />
+            <EmptyState icon="smartphone" title="还没有软件链接" description="点「登记软件」发布第一方声明。普通接入走「接入应用」，不要把第三方写进本域名。" />
           ) : error ? null : '正在加载软件链接。'}
         >
           {items?.map((item) => (

@@ -139,7 +139,7 @@ pub async fn upsert_app_link(
     }
 }
 
-/// 清空一个 Client 的 App Link 声明（不再参与 `/.well-known/assetlinks.json`）。
+/// 清空一个 Client 档案上的 App Link 声明。豁免 Client 被清空后不再出现在公开 DAL。
 #[axum::debug_handler]
 pub async fn delete_app_link(
     State(state): State<AppState>,

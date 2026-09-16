@@ -65,6 +65,7 @@ pub struct NewClient {
     pub client_uri: Option<String>,
     pub description: Option<String>,
     pub android_asset_link: Option<AndroidAssetLink>,
+    pub quota_exempt: bool,
 }
 
 #[derive(Debug)]
@@ -86,6 +87,7 @@ pub struct StoredClient {
     pub client_uri: Option<String>,
     pub description: Option<String>,
     pub android_asset_link: Option<AndroidAssetLink>,
+    pub quota_exempt: bool,
 }
 
 #[derive(Debug)]
@@ -103,6 +105,7 @@ pub struct ListedClient {
     pub client_uri: Option<String>,
     pub description: Option<String>,
     pub android_asset_link: Option<AndroidAssetLink>,
+    pub quota_exempt: bool,
 }
 
 #[derive(Debug, Error)]
@@ -138,9 +141,10 @@ type ClientRow = (
     Option<String>,
     Option<String>,
     Option<Json<AndroidAssetLink>>,
+    bool,
 );
 
-const LIST_COLUMNS: &str = "id, numeric_app_id, client_id, client_name, redirect_uris, scopes, status, owner_user_id, auth_method, logo_uri, client_uri, description, android_asset_link";
+const LIST_COLUMNS: &str = "id, numeric_app_id, client_id, client_name, redirect_uris, scopes, status, owner_user_id, auth_method, logo_uri, client_uri, description, android_asset_link, quota_exempt";
 
 fn to_listed_client(row: ClientRow) -> ListedClient {
     let (
@@ -157,6 +161,7 @@ fn to_listed_client(row: ClientRow) -> ListedClient {
         client_uri,
         description,
         android_asset_link,
+        quota_exempt,
     ) = row;
     ListedClient {
         id,
@@ -173,11 +178,13 @@ fn to_listed_client(row: ClientRow) -> ListedClient {
         client_uri,
         description,
         android_asset_link: android_asset_link.map(|link| link.0),
+        quota_exempt,
     }
 }
 
-/// 单条 INSERT。owner 由调用方写入；本函数不计自助额度。
-/// 返回生成的自增 id，由调用方一次性构造 `NewClient`，避免占位值再回填（Issue #93）。
+/// 单条 INSERT。owner 与 quota_exempt 由调用方按通道写入；本函数不计自助额度。
+/// 管理面 true，自助 false。返回生成的自增 id，由调用方一次性构造 `NewClient`
+/// （Issue #93）。
 pub(super) async fn insert_client_row<'executor, E>(
     executor: E,
     registration: &ValidatedClientRegistration,
@@ -185,14 +192,15 @@ pub(super) async fn insert_client_row<'executor, E>(
     credential: &ClientCredential,
     created_at: OffsetDateTime,
     owner_user_id: Option<UserId>,
+    quota_exempt: bool,
 ) -> Result<(i64, i64), crate::sqlx::Error>
 where
     E: crate::sqlx::Executor<'executor, Database = crate::sqlx::Postgres>,
 {
     crate::sqlx::query_as::<_, (i64, i64)>(
         "INSERT INTO oauth_clients
-          (client_id, client_name, client_secret_hash, redirect_uris, scopes, auth_method, status, created_at, owner_user_id, logo_uri, client_uri, description)
-          VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11)
+          (client_id, client_name, client_secret_hash, redirect_uris, scopes, auth_method, status, created_at, owner_user_id, logo_uri, client_uri, description, quota_exempt)
+          VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11, $12)
           RETURNING id, numeric_app_id",
     )
     .bind(client_id)
@@ -206,6 +214,7 @@ where
     .bind(&registration.logo_uri)
     .bind(&registration.client_uri)
     .bind(&registration.description)
+    .bind(quota_exempt)
     .fetch_one(executor)
     .await
 }
@@ -227,6 +236,7 @@ pub async fn insert_client(
         &credential,
         created_at,
         owner_user_id,
+        true,
     )
     .await?;
     Ok(NewClient {
@@ -243,6 +253,7 @@ pub async fn insert_client(
         client_uri: registration.client_uri,
         description: registration.description,
         android_asset_link: None,
+        quota_exempt: true,
     })
 }
 
@@ -266,6 +277,7 @@ where
         &credential,
         created_at,
         owner_user_id,
+        true,
     )
     .await?;
     let client = NewClient {
@@ -282,6 +294,7 @@ where
         client_uri: registration.client_uri,
         description: registration.description,
         android_asset_link: None,
+        quota_exempt: true,
     };
     crate::audit::repository::insert_with(&mut *transaction, &audit_event(&client))
         .await
@@ -294,14 +307,14 @@ pub async fn find_client_by_id(
     pool: &PgPool,
     client_id: &str,
 ) -> Result<Option<StoredClient>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (String, i64, String, Json<Vec<String>>, Json<Vec<String>>, String, Option<UserId>, Option<String>, Option<String>, Option<String>, Option<Json<AndroidAssetLink>>)>(
-        "SELECT client_id, numeric_app_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri, description, android_asset_link FROM oauth_clients WHERE client_id = $1",
+    crate::sqlx::query_as::<_, (String, i64, String, Json<Vec<String>>, Json<Vec<String>>, String, Option<UserId>, Option<String>, Option<String>, Option<String>, Option<Json<AndroidAssetLink>>, bool)>(
+        "SELECT client_id, numeric_app_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri, description, android_asset_link, quota_exempt FROM oauth_clients WHERE client_id = $1",
     )
     .bind(client_id)
     .fetch_optional(pool)
     .await
     .map(|record| {
-        record.map(|(client_id, numeric_app_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri, description, android_asset_link)| StoredClient {
+        record.map(|(client_id, numeric_app_id, client_name, redirect_uris, scopes, status, owner_user_id, logo_uri, client_uri, description, android_asset_link, quota_exempt)| StoredClient {
             client_id,
             numeric_app_id,
             client_name,
@@ -313,6 +326,7 @@ pub async fn find_client_by_id(
             client_uri,
             description,
             android_asset_link: android_asset_link.map(|link| link.0),
+            quota_exempt,
         })
     })
 }

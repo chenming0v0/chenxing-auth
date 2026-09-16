@@ -375,6 +375,17 @@ fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
     assert!(login.contains("issuer_runtime_invalid"));
     assert!(login.contains("415 或 422"));
 
+    let assetlinks = openapi_section(
+        "  /.well-known/assetlinks.json:\n",
+        "  /.well-known/openid-configuration:\n",
+    );
+    assert!(assetlinks.contains("平台管理（quota_exempt）Client"));
+    assert!(assetlinks.contains("自助用户对自己 Client 的登记只留在档案上，不进入本文件"));
+    let owned_app_link =
+        openapi_operation("/api/v1/auth/oauth-clients/{client_id}/app-link", "put");
+    assert!(owned_app_link.contains("**不会**发布到本 Issuer"));
+    assert!(owned_app_link.contains("第三方应用应在自有 HTTPS 域名发布 Digital Asset Links"));
+
     let discovery = openapi_section(
         "  /.well-known/openid-configuration:\n",
         "  /.well-known/jwks.json:\n",

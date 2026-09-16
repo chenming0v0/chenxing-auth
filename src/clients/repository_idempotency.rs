@@ -49,7 +49,7 @@ enum Claim {
 
 pub(crate) struct IdempotentClientInsert<'a, F> {
     pub owner_user_id: Option<UserId>,
-    /// 与「有没有 owner」独立：管理面 stamp owner 但不走自助额度。
+    /// 与「有没有 owner」独立：管理面 stamp owner 且 quota_exempt，不走自助额度。
     pub enforce_owner_quota: bool,
     pub registration: ValidatedClientRegistration,
     pub client_id: String,
@@ -105,6 +105,7 @@ where
             }
 
             let created_at = OffsetDateTime::now_utc();
+            let quota_exempt = !enforce_owner_quota;
             let (id, numeric_app_id) = insert_client_row(
                 &mut *transaction,
                 &registration,
@@ -112,6 +113,7 @@ where
                 &credential,
                 created_at,
                 owner_user_id,
+                quota_exempt,
             )
             .await?;
             let client = NewClient {
@@ -128,6 +130,7 @@ where
                 client_uri: registration.client_uri,
                 description: registration.description,
                 android_asset_link: None,
+                quota_exempt,
             };
             crate::audit::repository::insert_with(&mut *transaction, &audit_event(&client)).await?;
             let value = PersistedClientCreateResult {

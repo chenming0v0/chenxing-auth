@@ -111,11 +111,11 @@ describe('AppRegisterDrawer 创建', () => {
     await waitFor(() => expect(createBody()?.auth_method).toBe('none'))
   })
 
-  it('创建时不出现 Android 包名输入，公开客户端提示创建后登记', () => {
+  it('创建时不出现 Android 包名输入，公开客户端提示用自己的 https 回调', () => {
     renderCreate()
     expect(screen.queryByLabelText('Android 包名')).toBeNull()
     fireEvent.click(screen.getByRole('radio', { name: /公开客户端/ }))
-    expect(screen.getByText(/创建后可在编辑里登记 Android 包名和签名指纹/)).toBeTruthy()
+    expect(screen.getByText(/Redirect URI 填你自己的 HTTPS 地址/)).toBeTruthy()
   })
 
   it('机密客户端可改为 client_secret_post', async () => {

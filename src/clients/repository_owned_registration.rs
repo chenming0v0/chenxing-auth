@@ -31,11 +31,12 @@ pub(super) async fn quota_available(
     owner_user_id: UserId,
     limit: i64,
 ) -> Result<bool, crate::sqlx::Error> {
-    let count: i64 =
-        crate::sqlx::query_scalar("SELECT COUNT(*) FROM oauth_clients WHERE owner_user_id = $1")
-            .bind(owner_user_id)
-            .fetch_one(&mut **transaction)
-            .await?;
+    let count: i64 = crate::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM oauth_clients WHERE owner_user_id = $1 AND quota_exempt = false",
+    )
+    .bind(owner_user_id)
+    .fetch_one(&mut **transaction)
+    .await?;
     Ok(count < limit)
 }
 
@@ -136,6 +137,7 @@ where
         &credential,
         created_at,
         Some(owner_user_id),
+        false,
     )
     .await?;
     let client = NewClient {
@@ -152,6 +154,7 @@ where
         client_uri: registration.client_uri,
         description: registration.description,
         android_asset_link: None,
+        quota_exempt: false,
     };
     if let Some(audit_event) = audit_event {
         crate::audit::repository::insert_with(&mut **transaction, &audit_event(&client))

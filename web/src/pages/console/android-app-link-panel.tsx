@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { apiFetch, type AppLinkResponse } from '../../api'
 import { CopyValue, Field, HudPanel, TextAreaField } from '@chenxing/ui'
 
@@ -80,6 +81,15 @@ export async function syncOwnedAndroidAppLink(
   }
 }
 
+function issuerFromDiscovery(body: unknown): string | null {
+  if (!body || typeof body !== 'object' || !('issuer' in body)) return null
+  const issuer = body.issuer
+  if (typeof issuer !== 'string') return null
+  const trimmed = issuer.trim().replace(/\/+$/, '')
+  if (!/^https:\/\//i.test(trimmed)) return null
+  return trimmed
+}
+
 export function AndroidAppLinkPanel({
   numericAppId,
   value,
@@ -94,6 +104,24 @@ export function AndroidAppLinkPanel({
   onChange: (value: AndroidAppLinkValue) => void
 }) {
   const callbackPath = `/app/${numericAppId}/oauth/callback`
+  const [issuer, setIssuer] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void fetch('/.well-known/openid-configuration')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body) => {
+        if (active) setIssuer(issuerFromDiscovery(body))
+      })
+      .catch(() => {
+        if (active) setIssuer(null)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const officialCallback = issuer ? `${issuer}${callbackPath}` : null
 
   function update<K extends keyof AndroidAppLinkValue>(key: K, next: AndroidAppLinkValue[K]) {
     onChange({ ...value, [key]: next })
@@ -103,7 +131,8 @@ export function AndroidAppLinkPanel({
     <HudPanel className="space-y-4 !p-5">
       <p className="chenxing-label !mb-0">软件链接</p>
       <p className="chenxing-caption">
-        登记包名和签名指纹后，Android 才会把 {callbackPath} 交给这个 App。留空并保存，会清掉已有声明。
+        第三方原生应用把 Redirect URI 填成你自己的 HTTPS 地址，并在那个域名发布 assetlinks.json。
+        这里保存的包名和指纹只是档案，不会把本认证域名交给这个 App。留空并保存会清掉档案。
       </p>
       <div className="grid gap-3 sm:grid-cols-2">
         <div>
@@ -111,10 +140,18 @@ export function AndroidAppLinkPanel({
           <p className="chenxing-mono text-sm">{numericAppId}</p>
         </div>
         <div className="min-w-0">
-          <p className="chenxing-label">App 回调路径</p>
-          <CopyValue value={callbackPath} ariaLabel="复制 App 回调路径" />
+          <p className="chenxing-label">官方回调路径（仅第一方）</p>
+          <CopyValue value={callbackPath} ariaLabel="复制官方回调路径" />
         </div>
       </div>
+      {officialCallback ? (
+        <div className="min-w-0">
+          <p className="chenxing-label">官方完整回调 URL（仅第一方）</p>
+          <CopyValue value={officialCallback} ariaLabel="复制官方完整回调 URL" />
+        </div>
+      ) : (
+        <p className="chenxing-caption">完整地址是配置中的 Issuer 加上这条路径，不使用当前页面的域名。</p>
+      )}
       <Field
         label="Android 包名"
         id={ANDROID_APP_LINK_FIELD_ID.packageName}

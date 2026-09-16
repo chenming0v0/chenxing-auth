@@ -15,6 +15,7 @@ fn client() -> RegisteredClient {
         client_uri: None,
         description: None,
         numeric_app_id: 1,
+        quota_exempt: false,
     }
 }
 

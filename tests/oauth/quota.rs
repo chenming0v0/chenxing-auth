@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 const AUTHORIZATION_CODE_HANDLERS: &str =
     include_str!("../../src/oauth/authorization_code_handlers.rs");
+const TOKEN_SECURITY: &str = include_str!("../../src/oauth/token_security.rs");
 const TOKEN_USE_CASE_SUPPORT: &str = include_str!("../../src/oauth/token_use_case_support.rs");
 const QUOTA_REFUND: &str = include_str!("../../src/oauth/quota_refund.rs");
 const QUOTA_SCRIPTS: &str = include_str!("../../src/oauth/quota_scripts.rs");
@@ -168,5 +169,17 @@ fn redemption_and_refund_share_a_single_reservation_claim() {
     assert!(
         AUTHORIZATION_CODE_HANDLERS.contains("single-use claim (Issue #657)"),
         "issue-path compensation must document why Ok(None) refund is safe after redemption"
+    );
+}
+
+#[test]
+fn quota_exempt_clients_skip_plan_metering() {
+    assert!(
+        AUTHORIZATION_CODE_HANDLERS.contains("!client.quota_exempt"),
+        "authorization quota must skip quota_exempt clients"
+    );
+    assert!(
+        TOKEN_SECURITY.contains("!client.quota_exempt"),
+        "plan QPS must skip quota_exempt clients"
     );
 }

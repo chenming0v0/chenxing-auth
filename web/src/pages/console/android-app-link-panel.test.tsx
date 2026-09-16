@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import {
   AndroidAppLinkPanel,
   androidAppLinkUnchanged,
@@ -20,8 +20,15 @@ vi.mock('../../api', async (importOriginal) => ({
 beforeEach(() => {
   apiFetchMock.mockReset()
   apiFetchMock.mockResolvedValue({})
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+    ok: true,
+    json: async () => ({ issuer: 'https://issuer.example' }),
+  })))
 })
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 const FINGERPRINT = '14:6D:E9:83:C5:73:06:50:D8:EE:B9:95:2F:34:FC:64:16:A0:83:42:E6:1D:BE:A8:8A:04:96:B2:3F:CF:44:E5'
 
@@ -75,7 +82,7 @@ describe('syncOwnedAndroidAppLink', () => {
 })
 
 describe('AndroidAppLinkPanel', () => {
-  it('展示数字 App ID 和回调路径，不含 Vite origin', () => {
+  it('展示数字 App ID、官方路径和 Discovery 里的 Issuer URL，不含 Vite origin', async () => {
     render(
       <AndroidAppLinkPanel
         numericAppId={7}
@@ -86,6 +93,25 @@ describe('AndroidAppLinkPanel', () => {
     )
     expect(screen.getByText('7')).toBeTruthy()
     expect(screen.getByText('/app/7/oauth/callback')).toBeTruthy()
+    expect(await screen.findByText('https://issuer.example/app/7/oauth/callback')).toBeTruthy()
+    expect(screen.getByText(/不会把本认证域名交给这个 App/)).toBeTruthy()
+    expect(screen.queryByText(/5175/)).toBeNull()
+  })
+
+  it('Discovery 失败时只显示路径，并说明完整地址来自配置中的 Issuer', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('offline'))))
+    render(
+      <AndroidAppLinkPanel
+        numericAppId={7}
+        value={{ packageName: '', fingerprints: '' }}
+        errors={{}}
+        onChange={() => {}}
+      />,
+    )
+    expect(screen.getByText('/app/7/oauth/callback')).toBeTruthy()
+    await waitFor(() => {
+      expect(screen.getByText(/完整地址是配置中的 Issuer 加上这条路径/)).toBeTruthy()
+    })
     expect(screen.queryByText(/5175/)).toBeNull()
   })
 })

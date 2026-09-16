@@ -726,6 +726,7 @@ async fn session_admin_created_client_belongs_to_the_actor() {
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
     let (cookies, csrf, _) = browser_session(&database, &redis_url, owner_id).await;
     let created = router
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -758,6 +759,70 @@ async fn session_admin_created_client_belongs_to_the_actor() {
     .await
     .expect("session admin client owner");
     assert_eq!(owner, Some(owner_id));
+    let quota_exempt: bool = chenxing_auth::sqlx::query_scalar(
+        "SELECT quota_exempt FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(&client_id)
+    .fetch_one(&database)
+    .await
+    .expect("quota_exempt");
+    assert!(quota_exempt);
+
+    plan_fixtures::assign_private_plan(
+        &database,
+        owner_id,
+        plan_fixtures::PlanLimits::legacy_default(),
+    )
+    .await;
+    for index in 0..2 {
+        let created = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/oauth-clients")
+                    .header("cookie", &cookies)
+                    .header("x-csrf-token", &csrf)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "client_name": format!("Owner Self Service {index} {suffix}"),
+                            "redirect_uris": [format!("https://owner-self-{index}.example/callback")],
+                            "scopes": ["openid"]
+                        })
+                        .to_string(),
+                    ))
+                    .expect("owner self-service create"),
+            )
+            .await
+            .expect("owner self-service response");
+        assert_eq!(created.status(), StatusCode::CREATED);
+    }
+    let exceeded = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/oauth-clients")
+                .header("cookie", &cookies)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "client_name": format!("Owner Overflow {suffix}"),
+                        "redirect_uris": ["https://owner-overflow.example/callback"],
+                        "scopes": ["openid"]
+                    })
+                    .to_string(),
+                ))
+                .expect("owner quota overflow"),
+        )
+        .await
+        .expect("owner quota overflow response");
+    assert_eq!(exceeded.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        http::json_body(exceeded).await["code"],
+        "oauth_client_quota_exceeded"
+    );
 
     let _ = std::fs::remove_dir_all(key_directory);
 }

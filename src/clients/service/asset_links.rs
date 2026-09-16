@@ -112,7 +112,7 @@ impl ClientService {
             .collect())
     }
 
-    /// 公开读取：聚合所有已登记的 App Link（不查 Issuer，不做鉴权）。
+    /// 公开读取：只聚合豁免 Client 的 App Link（不查 Issuer，不做鉴权）。
     pub async fn published_app_links(&self) -> Result<Vec<AppLinkStatement>, ClientServiceError> {
         let links = repository::list_client_app_links(&self.pool).await?;
         Ok(links

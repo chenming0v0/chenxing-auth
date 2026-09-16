@@ -136,7 +136,7 @@ describe('IntegratePage 加载期间不闪空态（Issue #371）', () => {
       }],
     })
     render(<IntegratePage />)
-    expect(await screen.findByText('Android 已登记 · com.example.app')).toBeTruthy()
+    expect(await screen.findByText('Android 档案 · com.example.app')).toBeTruthy()
     expect(screen.queryByText('无软件链接')).toBeNull()
   })
 
@@ -148,7 +148,7 @@ describe('IntegratePage 加载期间不闪空态（Issue #371）', () => {
     vi.stubGlobal('confirm', () => true)
     render(<IntegratePage />)
     expect(await screen.findByText('演示应用')).toBeTruthy()
-    expect(screen.queryByText(/Android 已登记/)).toBeNull()
+    expect(screen.queryByText(/Android 档案/)).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: '禁用' }))
 

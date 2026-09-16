@@ -63,6 +63,7 @@ pub struct RegisteredClient {
     pub client_uri: Option<String>,
     pub description: Option<String>,
     pub numeric_app_id: i64,
+    pub quota_exempt: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]

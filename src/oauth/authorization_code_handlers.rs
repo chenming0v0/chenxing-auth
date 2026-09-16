@@ -168,9 +168,9 @@ pub async fn issue_authorization_code_result(
         return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
     }
 
-    // owner_user_id 有值就按 owner 生效套餐计量；没有 owner 或没有生效套餐时跳过，
-    // 不改变协议错误语义。闸门只关自助新增，不打死既有集成。
-    let owner_plan = match client.owner_user_id {
+    // 豁免 Client、没有 owner、或没有生效套餐时跳过套餐计量，不改变协议错误语义。
+    // 闸门只关自助新增，不打死既有平台集成。
+    let owner_plan = match client.owner_user_id.filter(|_| !client.quota_exempt) {
         Some(owner_user_id) => match state.plans.effective_plan_for_user(owner_user_id).await {
             Ok(effective) => effective,
             Err(error_value) => {

@@ -114,8 +114,10 @@ paths:
       description: |
         返回 Digital Asset Links 语句数组，供 Android 校验「以本 Issuer 域名为回调落地链接的移动端 OAuth 客户端」
         （例如 `https://<issuer>/app/<numeric_app_id>/oauth/callback`）确实归指定 App 所有。
-        内容从管理面「软件链接」登记的 Client 声明派生，同包名指纹合并；不读取请求上下文，不经 Issuer 门禁。
-        未登记任何声明时返回 404 `assetlinks_not_configured`。
+        内容从平台管理（quota_exempt）Client 的 Android 声明派生，同包名指纹合并；
+        自助用户对自己 Client 的登记只留在档案上，不进入本文件。
+        不读取请求上下文，不经 Issuer 门禁。
+        未发布任何豁免声明时返回 404 `assetlinks_not_configured`。
         响应携带 `Cache-Control: public, max-age=3600, must-revalidate` 与内容哈希 ETag。
       responses:
         '200':
@@ -1366,6 +1368,10 @@ paths:
       tags: [User Auth/OAuth Clients]
       summary: 登记当前用户拥有的 OAuth 项目的 Android App Link
       operationId: upsertOwnedOAuthClientAppLink
+      description: |
+        把 Android App Link 写入当前用户拥有的 Client 档案，供列表/编辑回显。
+        该声明**不会**发布到本 Issuer 的 `/.well-known/assetlinks.json`。
+        第三方应用应在自有 HTTPS 域名发布 Digital Asset Links。
       security: [{ sessionCookie: [] }]
       parameters:
         - { name: client_id, in: path, required: true, schema: { type: string } }
@@ -1391,6 +1397,9 @@ paths:
       tags: [User Auth/OAuth Clients]
       summary: 清除当前用户拥有的 OAuth 项目的 Android App Link
       operationId: deleteOwnedOAuthClientAppLink
+      description: |
+        清除当前用户拥有的 Client 档案上的 Android App Link。
+        自助登记本就不会进入本 Issuer 的 `/.well-known/assetlinks.json`。
       security: [{ sessionCookie: [] }]
       parameters:
         - { name: client_id, in: path, required: true, schema: { type: string } }
@@ -4565,7 +4574,7 @@ components:
         android_asset_link:
           type: object
           nullable: true
-          description: 可通过所有者 API `/api/v1/auth/oauth-clients/{client_id}/app-link` 或管理面 `/api/v1/admin/app-links` 登记；创建/更新 Client 入参仍不接受该字段。未登记时为 null。
+          description: 可通过所有者 API `/api/v1/auth/oauth-clients/{client_id}/app-link` 或管理面 `/api/v1/admin/app-links` 登记；创建/更新 Client 入参仍不接受该字段。未登记时为 null。所有者自助登记只留在档案上，不会发布到本 Issuer 的 `/.well-known/assetlinks.json`。
           properties:
             package_name: { type: string }
             sha256_cert_fingerprints: { type: array, items: { type: string } }
@@ -5530,7 +5539,7 @@ components:
             android_asset_link:
               type: object
               nullable: true
-              description: 只读。可通过所有者 API `/api/v1/auth/oauth-clients/{client_id}/app-link` 或管理面 `/api/v1/admin/app-links` 登记；创建/更新 Client 入参仍不接受该字段。未登记时为 null。公开端点 `/.well-known/assetlinks.json` 从这些登记派生。
+              description: 只读。可通过所有者 API `/api/v1/auth/oauth-clients/{client_id}/app-link` 或管理面 `/api/v1/admin/app-links` 登记；创建/更新 Client 入参仍不接受该字段。未登记时为 null。公开端点 `/.well-known/assetlinks.json` 只从平台管理（quota_exempt）Client 的登记派生；自助登记不会进入本 Issuer DAL。
               properties:
                 package_name: { type: string }
                 sha256_cert_fingerprints: { type: array, items: { type: string } }

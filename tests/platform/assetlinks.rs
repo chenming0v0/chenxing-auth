@@ -1,6 +1,7 @@
 //! `/.well-known/assetlinks.json`：Android App Links 声明端点。
 //!
-//! 声明从已登记的 Client 档案派生，不经 Issuer 门禁。未登记时 404。
+//! 公开文件只发布 quota_exempt / 平台管理 Client 的声明，不经 Issuer 门禁。
+//! 自助登记仍写在 Client 档案上，但不进入本文件。未发布豁免声明时 404。
 
 use axum::{
     body::Body,
@@ -15,9 +16,10 @@ use tower::ServiceExt;
 use chenxing_auth::sessions::domain::Session;
 use std::time::Duration;
 
-use crate::harness::HarnessBuilder;
+use crate::harness::{Harness, HarnessBuilder};
 use crate::http::json_body;
 use crate::oauth_flow::ensure_owner_bootstrapped;
+use crate::plan_fixtures;
 
 const FINGERPRINT: &str = "14:6D:E9:83:C5:73:06:50:D8:EE:B9:95:2F:34:FC:64:16:A0:83:42:E6:1D:BE:A8:8A:04:96:B2:3F:CF:44:E5";
 const FINGERPRINT_B: &str = "B6:DA:01:48:0E:EF:D5:FB:F2:CD:37:71:B8:D1:02:1E:C7:91:30:4B:DD:6C:4B:F4:1D:3F:AA:BA:D4:8E:E5:E1";
@@ -69,6 +71,21 @@ async fn create_client(router: &axum::Router) -> String {
     body["client_id"].as_str().expect("client_id").to_owned()
 }
 
+async fn assert_client_quota_exempt(
+    database: &chenxing_auth::sqlx::PgPool,
+    client_id: &str,
+    expected: bool,
+) {
+    let quota_exempt: bool = chenxing_auth::sqlx::query_scalar(
+        "SELECT quota_exempt FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(client_id)
+    .fetch_one(database)
+    .await
+    .expect("quota_exempt");
+    assert_eq!(quota_exempt, expected);
+}
+
 async fn put_app_link(router: &axum::Router, client_id: &str, fingerprint: &str) -> Value {
     let response = router
         .clone()
@@ -91,6 +108,113 @@ async fn put_app_link(router: &axum::Router, client_id: &str, fingerprint: &str)
         .expect("upsert app link response");
     assert_eq!(response.status(), StatusCode::OK);
     json_body(response).await
+}
+
+async fn create_user_session(harness: &Harness, label: &str) -> (i64, String, String) {
+    let username = format!("{label}-user");
+    let response = harness
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header(AUTHORIZATION, format!("Bearer {ADMIN_TOKEN}"))
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "username": username,
+                        "email": format!("{label}@example.com"),
+                        "password": "correct horse battery",
+                    })
+                    .to_string(),
+                ))
+                .expect("create user"),
+        )
+        .await
+        .expect("create user response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let user_id = json_body(response).await["id"].as_i64().expect("user id");
+    plan_fixtures::assign_private_plan(
+        &harness.database,
+        user_id,
+        plan_fixtures::PlanLimits::legacy_default(),
+    )
+    .await;
+    let (cookies, csrf_token) = owner_session(&harness.state, user_id).await;
+    (user_id, cookies, csrf_token)
+}
+
+async fn create_owned_client(router: &axum::Router, cookies: &str, csrf_token: &str) -> String {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/oauth-clients")
+                .header("cookie", cookies)
+                .header("x-csrf-token", csrf_token)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "client_name": "self-service-app",
+                        "redirect_uris": ["https://oauth.clya.top/app/1/oauth/callback"],
+                        "scopes": ["openid"],
+                        "auth_method": "none",
+                    })
+                    .to_string(),
+                ))
+                .expect("create owned client"),
+        )
+        .await
+        .expect("create owned client response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    json_body(response).await["client_id"]
+        .as_str()
+        .expect("client_id")
+        .to_owned()
+}
+
+async fn put_owned_app_link(
+    router: &axum::Router,
+    cookies: &str,
+    csrf_token: &str,
+    client_id: &str,
+    package_name: &str,
+    fingerprint: &str,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/auth/oauth-clients/{client_id}/app-link"))
+                .header("cookie", cookies)
+                .header("x-csrf-token", csrf_token)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "package_name": package_name,
+                        "sha256_cert_fingerprints": [fingerprint],
+                    })
+                    .to_string(),
+                ))
+                .expect("user upsert app link"),
+        )
+        .await
+        .expect("user upsert app link response")
+}
+
+fn published_packages(body: &Value) -> Vec<String> {
+    body.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|statement| {
+            statement["target"]["package_name"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
 async fn owner_session(state: &chenxing_auth::state::AppState, owner_id: i64) -> (String, String) {
@@ -130,6 +254,7 @@ async fn published_app_link_is_served_without_issuer_gate() {
         .build()
         .await;
     let client_id = create_client(&harness.router).await;
+    assert_client_quota_exempt(&harness.database, &client_id, true).await;
     let declared = put_app_link(&harness.router, &client_id, FINGERPRINT).await;
     assert_eq!(declared["package_name"], "com.chengming.termux");
     assert_eq!(declared["numeric_app_id"], 1);
@@ -271,6 +396,7 @@ async fn invalid_fingerprint_is_rejected() {
 
 #[tokio::test]
 async fn same_package_fingerprints_merge_into_one_statement() {
+    // 合并只发生在豁免行上：管理面创建的 Client 才进入公开 DAL。
     let harness = HarnessBuilder::new("assetlinks_merge")
         .admin_token(ADMIN_TOKEN)
         .build()
@@ -298,7 +424,7 @@ async fn same_package_fingerprints_merge_into_one_statement() {
 }
 
 #[tokio::test]
-async fn user_registered_app_link_is_published() {
+async fn user_registered_app_link_is_not_published() {
     let harness = HarnessBuilder::new("assetlinks_user")
         .admin_token(ADMIN_TOKEN)
         .build()
@@ -310,38 +436,56 @@ async fn user_registered_app_link_is_published() {
         "assetlinks-user",
     )
     .await;
-    let owner_id: i64 = chenxing_auth::sqlx::query_scalar(
-        "SELECT id FROM users WHERE role = 'owner' AND status <> 'disabled' ORDER BY id ASC LIMIT 1",
-    )
-    .fetch_one(&harness.database)
-    .await
-    .expect("first owner");
-    let (cookies, csrf_token) = owner_session(&harness.state, owner_id).await;
-    let client_id = create_client(&harness.router).await;
+    let (_user_id, cookies, csrf_token) = create_user_session(&harness, "assetlinks-self").await;
+    let client_id = create_owned_client(&harness.router, &cookies, &csrf_token).await;
+    assert_client_quota_exempt(&harness.database, &client_id, false).await;
 
-    let declared = harness
+    let declared = put_owned_app_link(
+        &harness.router,
+        &cookies,
+        &csrf_token,
+        &client_id,
+        "com.chengming.termux",
+        FINGERPRINT,
+    )
+    .await;
+    assert_eq!(declared.status(), StatusCode::OK);
+
+    let listed = harness
         .router
         .clone()
         .oneshot(
             Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/auth/oauth-clients/{client_id}/app-link"))
-                .header("cookie", &cookies)
-                .header("x-csrf-token", csrf_token)
-                .header(CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "package_name": "com.chengming.termux",
-                        "sha256_cert_fingerprints": [FINGERPRINT],
-                    })
-                    .to_string(),
-                ))
-                .expect("user upsert app link"),
+                .uri("/api/v1/admin/app-links")
+                .header(AUTHORIZATION, format!("Bearer {ADMIN_TOKEN}"))
+                .body(Body::empty())
+                .expect("list app links"),
         )
         .await
-        .expect("user upsert app link response");
-    assert_eq!(declared.status(), StatusCode::OK);
+        .expect("list app links response");
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed_body = json_body(listed).await;
+    assert_eq!(listed_body.as_array().map(Vec::len), Some(1));
+    assert_eq!(listed_body[0]["package_name"], "com.chengming.termux");
 
+    let response = fetch(&harness.router).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        json_body(response).await["code"],
+        "assetlinks_not_configured"
+    );
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn admin_registered_app_link_is_published() {
+    let harness = HarnessBuilder::new("assetlinks_admin_publish")
+        .admin_token(ADMIN_TOKEN)
+        .build()
+        .await;
+    let client_id = create_client(&harness.router).await;
+    assert_client_quota_exempt(&harness.database, &client_id, true).await;
+    put_app_link(&harness.router, &client_id, FINGERPRINT).await;
     let response = fetch(&harness.router).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -355,5 +499,58 @@ async fn user_registered_app_link_is_published() {
             }
         }])
     );
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn two_users_app_links_stay_off_the_public_file() {
+    let harness = HarnessBuilder::new("assetlinks_two_users")
+        .admin_token(ADMIN_TOKEN)
+        .build()
+        .await;
+    ensure_owner_bootstrapped(
+        &harness.router,
+        &harness.database,
+        "assetlinks",
+        "assetlinks-two-users",
+    )
+    .await;
+    let (_a_id, a_cookies, a_csrf) = create_user_session(&harness, "assetlinks-a").await;
+    let (_b_id, b_cookies, b_csrf) = create_user_session(&harness, "assetlinks-b").await;
+    let client_a = create_owned_client(&harness.router, &a_cookies, &a_csrf).await;
+    let client_b = create_owned_client(&harness.router, &b_cookies, &b_csrf).await;
+    assert_eq!(
+        put_owned_app_link(
+            &harness.router,
+            &a_cookies,
+            &a_csrf,
+            &client_a,
+            "com.example.alpha",
+            FINGERPRINT,
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        put_owned_app_link(
+            &harness.router,
+            &b_cookies,
+            &b_csrf,
+            &client_b,
+            "com.example.beta",
+            FINGERPRINT_B,
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+
+    let response = fetch(&harness.router).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = json_body(response).await;
+    assert_eq!(body["code"], "assetlinks_not_configured");
+    assert!(!published_packages(&body).contains(&"com.example.alpha".to_owned()));
+    assert!(!published_packages(&body).contains(&"com.example.beta".to_owned()));
     harness.cleanup().await;
 }

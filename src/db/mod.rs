@@ -422,6 +422,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "client owner backfill",
             include_str!("../../migrations/0056_client_owner_backfill.sql"),
         ),
+        (
+            57,
+            "client quota exempt",
+            include_str!("../../migrations/0057_client_quota_exempt.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {
