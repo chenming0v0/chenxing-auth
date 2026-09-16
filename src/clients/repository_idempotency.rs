@@ -89,21 +89,18 @@ where
             })
         }
         Claim::New { secret_kid } => {
-            if enforce_owner_quota {
-                if let Some(owner_user_id) = owner_user_id {
-                    let Some(limit) =
-                        owned_registration::effective_limit(&mut transaction, owner_user_id)
-                            .await?
-                    else {
-                        transaction.rollback().await?;
-                        return Err(IdempotentClientOperationError::QuotaExceeded);
-                    };
-                    if !owned_registration::quota_available(&mut transaction, owner_user_id, limit)
-                        .await?
-                    {
-                        transaction.rollback().await?;
-                        return Err(IdempotentClientOperationError::QuotaExceeded);
-                    }
+            if enforce_owner_quota && let Some(owner_user_id) = owner_user_id {
+                let Some(limit) =
+                    owned_registration::effective_limit(&mut transaction, owner_user_id).await?
+                else {
+                    transaction.rollback().await?;
+                    return Err(IdempotentClientOperationError::QuotaExceeded);
+                };
+                if !owned_registration::quota_available(&mut transaction, owner_user_id, limit)
+                    .await?
+                {
+                    transaction.rollback().await?;
+                    return Err(IdempotentClientOperationError::QuotaExceeded);
                 }
             }
 
