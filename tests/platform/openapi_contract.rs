@@ -341,21 +341,21 @@ fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
         openapi
             .matches("#/components/responses/PayloadTooLarge")
             .count(),
-        55,
+        56,
         "every JSON request-body operation must declare the unified 413 envelope"
     );
     assert_eq!(
         openapi
             .matches("#/components/responses/UnsupportedMediaType")
             .count(),
-        55,
+        56,
         "every JSON request-body operation must declare the unified 415 envelope"
     );
     assert_eq!(
         openapi
             .matches("#/components/responses/InvalidJsonData")
             .count(),
-        55,
+        56,
         "every JSON request-body operation must declare the unified 422 envelope"
     );
     assert_eq!(
@@ -374,6 +374,17 @@ fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
     assert!(login.contains("数据库确实无记录时进入保护模式"));
     assert!(login.contains("issuer_runtime_invalid"));
     assert!(login.contains("415 或 422"));
+
+    let assetlinks = openapi_section(
+        "  /.well-known/assetlinks.json:\n",
+        "  /.well-known/openid-configuration:\n",
+    );
+    assert!(assetlinks.contains("平台管理（quota_exempt）Client"));
+    assert!(assetlinks.contains("自助用户对自己 Client 的登记只留在档案上，不进入本文件"));
+    let owned_app_link =
+        openapi_operation("/api/v1/auth/oauth-clients/{client_id}/app-link", "put");
+    assert!(owned_app_link.contains("**不会**发布到本 Issuer"));
+    assert!(owned_app_link.contains("第三方应用应在自有 HTTPS 域名发布 Digital Asset Links"));
 
     let discovery = openapi_section(
         "  /.well-known/openid-configuration:\n",
@@ -520,6 +531,50 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
 }
 
 #[test]
+fn openapi_documents_owned_oauth_client_writes_with_session_csrf() {
+    let write_operations = [
+        ("post", "/api/v1/auth/oauth-clients"),
+        ("put", "/api/v1/auth/oauth-clients/{client_id}"),
+        ("delete", "/api/v1/auth/oauth-clients/{client_id}"),
+        ("post", "/api/v1/auth/oauth-clients/{client_id}/disable"),
+        ("post", "/api/v1/auth/oauth-clients/{client_id}/enable"),
+        (
+            "post",
+            "/api/v1/auth/oauth-clients/{client_id}/rotate-secret",
+        ),
+        ("put", "/api/v1/auth/oauth-clients/{client_id}/app-link"),
+        ("delete", "/api/v1/auth/oauth-clients/{client_id}/app-link"),
+    ];
+    for (method, path) in write_operations {
+        let operation = openapi_operation(path, method);
+        assert!(
+            operation.contains("security: [{ sessionCookie: [] }]"),
+            "{method} {path} must require the browser session"
+        );
+        assert!(
+            operation.contains("#/components/parameters/CsrfHeader"),
+            "{method} {path} must declare the CSRF header"
+        );
+        assert!(
+            operation.contains("operationId:"),
+            "{method} {path} must declare an operationId"
+        );
+    }
+    let upsert = openapi_operation("/api/v1/auth/oauth-clients/{client_id}/app-link", "put");
+    assert!(upsert.contains("operationId: upsertOwnedOAuthClientAppLink"));
+    assert!(upsert.contains("$ref: '#/components/schemas/UpdateAppLinkInput'"));
+    assert!(upsert.contains("$ref: '#/components/schemas/AppLinkResponse'"));
+    let delete = openapi_operation("/api/v1/auth/oauth-clients/{client_id}/app-link", "delete");
+    assert!(delete.contains("operationId: deleteOwnedOAuthClientAppLink"));
+    assert_openapi_response(
+        &delete,
+        "204",
+        "delete",
+        "/api/v1/auth/oauth-clients/{client_id}/app-link",
+    );
+}
+
+#[test]
 fn totp_setup_operations_declare_the_issuer_gate() {
     for path in [
         "/api/v1/auth/totp/setup",
@@ -537,12 +592,12 @@ fn openapi_paths_match_all_static_axum_routes() {
     let paths = openapi_paths();
     assert_eq!(
         routes.len(),
-        128,
+        129,
         "route inventory changed; review contract"
     );
     assert_eq!(
         paths.len(),
-        128,
+        129,
         "OpenAPI path inventory changed; review contract"
     );
     assert_eq!(routes, paths, "Axum and OpenAPI path inventories diverged");

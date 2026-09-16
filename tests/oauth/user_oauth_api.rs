@@ -10,6 +10,8 @@ use uuid::Uuid;
 
 // 迁移不再种子默认套餐：自助创建 Client 的用例必须自己给用户挂套餐，
 // 否则会被自助接入闸门拒绝（403 self_service_disabled）。
+use chenxing_auth::sessions::domain::Session;
+
 use crate::harness::HarnessBuilder;
 use crate::http;
 use crate::oauth_flow;
@@ -155,6 +157,92 @@ fn client_input(index: usize) -> String {
         "scopes": ["openid", "profile"]
     })
     .to_string()
+}
+
+const APP_LINK_FINGERPRINT: &str = "14:6D:E9:83:C5:73:06:50:D8:EE:B9:95:2F:34:FC:64:16:A0:83:42:E6:1D:BE:A8:8A:04:96:B2:3F:CF:44:E5";
+
+async fn create_owned_client(
+    router: &Router,
+    cookies: &str,
+    csrf_token: &str,
+    index: usize,
+) -> String {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/oauth-clients")
+                .header("cookie", cookies)
+                .header("x-csrf-token", csrf_token)
+                .header("content-type", "application/json")
+                .body(Body::from(client_input(index)))
+                .expect("create client request"),
+        )
+        .await
+        .expect("create client response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    http::json_body(response).await["client_id"]
+        .as_str()
+        .expect("client id")
+        .to_owned()
+}
+
+fn app_link_body(package_name: &str, fingerprint: &str) -> String {
+    serde_json::json!({
+        "package_name": package_name,
+        "sha256_cert_fingerprints": [fingerprint],
+    })
+    .to_string()
+}
+
+async fn put_owned_app_link(
+    router: &Router,
+    cookies: &str,
+    csrf_token: &str,
+    client_id: &str,
+    package_name: &str,
+    fingerprint: &str,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/auth/oauth-clients/{client_id}/app-link"))
+                .header("cookie", cookies)
+                .header("x-csrf-token", csrf_token)
+                .header("content-type", "application/json")
+                .body(Body::from(app_link_body(package_name, fingerprint)))
+                .expect("put app link request"),
+        )
+        .await
+        .expect("put app link response")
+}
+
+async fn listed_asset_link(router: &Router, cookies: &str, client_id: &str) -> serde_json::Value {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/oauth-clients")
+                .header("cookie", cookies)
+                .body(Body::empty())
+                .expect("list clients request"),
+        )
+        .await
+        .expect("list clients response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = http::json_body(response).await;
+    body["items"]
+        .as_array()
+        .expect("client items")
+        .iter()
+        .find(|item| item["client_id"] == client_id)
+        .expect("owned client")
+        .get("android_asset_link")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
 }
 
 #[tokio::test]
@@ -974,5 +1062,438 @@ async fn disabled_user_cannot_use_an_existing_browser_session() {
         .execute(&database)
         .await
         .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn owner_can_put_and_clear_app_link_on_own_client() {
+    let (router, database, key_directory) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let (cookies, csrf_token) = register_and_login(&router, &database, &suffix).await;
+    let client_id = create_owned_client(&router, &cookies, &csrf_token, 1).await;
+
+    let response = put_owned_app_link(
+        &router,
+        &cookies,
+        &csrf_token,
+        &client_id,
+        "com.chengming.termux",
+        APP_LINK_FINGERPRINT,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = http::json_body(response).await;
+    assert_eq!(body["client_id"], client_id);
+    assert_eq!(body["package_name"], "com.chengming.termux");
+    assert_eq!(
+        body["sha256_cert_fingerprints"],
+        serde_json::json!([APP_LINK_FINGERPRINT])
+    );
+    assert!(
+        body["numeric_app_id"]
+            .as_i64()
+            .is_some_and(|numeric_app_id| numeric_app_id >= 1)
+    );
+    assert_eq!(
+        listed_asset_link(&router, &cookies, &client_id).await,
+        serde_json::json!({
+            "package_name": "com.chengming.termux",
+            "sha256_cert_fingerprints": [APP_LINK_FINGERPRINT],
+        })
+    );
+    let audits: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_events
+         WHERE action = 'client_update' AND resource_id = $1
+           AND actor_type = 'user'
+           AND metadata->>'field' = 'android_asset_link'",
+    )
+    .bind(&client_id)
+    .fetch_one(&database)
+    .await
+    .expect("app-link audit count");
+    assert_eq!(audits, 1);
+
+    let deleted = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/auth/oauth-clients/{client_id}/app-link"))
+                .header("cookie", &cookies)
+                .header("x-csrf-token", &csrf_token)
+                .body(Body::empty())
+                .expect("delete app link request"),
+        )
+        .await
+        .expect("delete app link response");
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    assert!(
+        listed_asset_link(&router, &cookies, &client_id)
+            .await
+            .is_null()
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE email = $1")
+        .bind(format!("ui-{suffix}@example.com"))
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn owner_cannot_mutate_another_users_app_link() {
+    let (router, database, key_directory) = setup().await;
+    let owner_suffix = Uuid::new_v4().simple().to_string();
+    let (owner_cookies, owner_csrf) = register_and_login(&router, &database, &owner_suffix).await;
+    let client_id = create_owned_client(&router, &owner_cookies, &owner_csrf, 9).await;
+
+    let other_suffix = Uuid::new_v4().simple().to_string();
+    let (other_cookies, other_csrf) = register_and_login(&router, &database, &other_suffix).await;
+    let response = put_owned_app_link(
+        &router,
+        &other_cookies,
+        &other_csrf,
+        &client_id,
+        "com.chengming.termux",
+        APP_LINK_FINGERPRINT,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        http::json_body(response).await["code"],
+        "oauth_client_not_found"
+    );
+
+    let deleted = router
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/auth/oauth-clients/{client_id}/app-link"))
+                .header("cookie", &other_cookies)
+                .header("x-csrf-token", &other_csrf)
+                .body(Body::empty())
+                .expect("other delete app link request"),
+        )
+        .await
+        .expect("other delete app link response");
+    assert_eq!(deleted.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        http::json_body(deleted).await["code"],
+        "oauth_client_not_found"
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE email IN ($1, $2)")
+        .bind(format!("ui-{owner_suffix}@example.com"))
+        .bind(format!("ui-{other_suffix}@example.com"))
+        .execute(&database)
+        .await
+        .expect("cleanup users");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn owned_app_link_rejects_invalid_package_and_fingerprint() {
+    let (router, database, key_directory) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let (cookies, csrf_token) = register_and_login(&router, &database, &suffix).await;
+    let client_id = create_owned_client(&router, &cookies, &csrf_token, 3).await;
+
+    let package = put_owned_app_link(
+        &router,
+        &cookies,
+        &csrf_token,
+        &client_id,
+        "termux",
+        APP_LINK_FINGERPRINT,
+    )
+    .await;
+    assert_eq!(package.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        http::json_body(package).await["code"],
+        "invalid_android_package_name"
+    );
+
+    let fingerprint = put_owned_app_link(
+        &router,
+        &cookies,
+        &csrf_token,
+        &client_id,
+        "com.chengming.termux",
+        "not-a-fingerprint",
+    )
+    .await;
+    assert_eq!(fingerprint.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        http::json_body(fingerprint).await["code"],
+        "invalid_android_fingerprint"
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE email = $1")
+        .bind(format!("ui-{suffix}@example.com"))
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn owned_app_link_update_is_not_blocked_when_self_service_is_closed() {
+    let (router, database, key_directory) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let (cookies, csrf_token) = register_and_login(&router, &database, &suffix).await;
+    let client_id = create_owned_client(&router, &cookies, &csrf_token, 4).await;
+    plan_fixtures::clear_all_plans(&database).await;
+
+    let refused = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/oauth-clients")
+                .header("cookie", &cookies)
+                .header("x-csrf-token", &csrf_token)
+                .header("content-type", "application/json")
+                .body(Body::from(client_input(5)))
+                .expect("create after gate closed"),
+        )
+        .await
+        .expect("create after gate closed response");
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        http::json_body(refused).await["code"],
+        "self_service_disabled"
+    );
+
+    let response = put_owned_app_link(
+        &router,
+        &cookies,
+        &csrf_token,
+        &client_id,
+        "com.chengming.termux",
+        APP_LINK_FINGERPRINT,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        listed_asset_link(&router, &cookies, &client_id).await["package_name"],
+        "com.chengming.termux"
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE email = $1")
+        .bind(format!("ui-{suffix}@example.com"))
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn admin_token_created_client_belongs_to_first_owner() {
+    let (router, database, key_directory) = setup().await;
+    let created = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/clients")
+                .header("authorization", "Bearer user-ui-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "client_name": "Admin Token Owner Stamp",
+                        "redirect_uris": ["https://admin-token.example/callback"],
+                        "scopes": ["openid"]
+                    })
+                    .to_string(),
+                ))
+                .expect("admin create client request"),
+        )
+        .await
+        .expect("admin create client response");
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let client_id = http::json_body(created).await["client_id"]
+        .as_str()
+        .expect("client id")
+        .to_owned();
+    let owner: Option<i64> = chenxing_auth::sqlx::query_scalar(
+        "SELECT owner_user_id FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(&client_id)
+    .fetch_one(&database)
+    .await
+    .expect("admin client owner");
+    let first_owner: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT id FROM users WHERE role = 'owner' AND status <> 'disabled' ORDER BY id ASC LIMIT 1",
+    )
+    .fetch_one(&database)
+    .await
+    .expect("first active owner");
+    assert_eq!(owner, Some(first_owner));
+    let quota_exempt: bool = chenxing_auth::sqlx::query_scalar(
+        "SELECT quota_exempt FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(&client_id)
+    .fetch_one(&database)
+    .await
+    .expect("quota_exempt");
+    assert!(quota_exempt);
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+async fn inject_user_session(
+    state: &chenxing_auth::state::AppState,
+    user_id: i64,
+) -> (String, String) {
+    let mut session = Session::new(user_id.to_string(), std::time::Duration::from_secs(3600))
+        .expect("injected session");
+    state
+        .sessions
+        .save(&mut session, std::time::Duration::from_secs(3600))
+        .await
+        .expect("save injected session");
+    (
+        format!(
+            "chenxing_session={}; chenxing_csrf={}",
+            session.token, session.csrf_token
+        ),
+        session.csrf_token,
+    )
+}
+
+#[tokio::test]
+async fn admin_token_created_client_does_not_consume_first_owner_quota() {
+    let harness = HarnessBuilder::new("user_oauth_api")
+        .admin_token("user-ui-admin-token")
+        .build()
+        .await;
+    ensure_owner_bootstrapped(
+        &harness.router,
+        &harness.database,
+        "user_oauth_api",
+        "user-oauth-api",
+    )
+    .await;
+    let first_owner: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT id FROM users WHERE role = 'owner' AND status <> 'disabled' ORDER BY id ASC LIMIT 1",
+    )
+    .fetch_one(&harness.database)
+    .await
+    .expect("first owner");
+    plan_fixtures::assign_private_plan(
+        &harness.database,
+        first_owner,
+        plan_fixtures::PlanLimits::legacy_default(),
+    )
+    .await;
+    let created = harness
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/clients")
+                .header("authorization", "Bearer user-ui-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "client_name": "Exempt Admin Client",
+                        "redirect_uris": ["https://admin-exempt.example/callback"],
+                        "scopes": ["openid"]
+                    })
+                    .to_string(),
+                ))
+                .expect("admin create client request"),
+        )
+        .await
+        .expect("admin create client response");
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let (cookies, csrf_token) = inject_user_session(&harness.state, first_owner).await;
+    let router = harness.router.clone();
+    let key_directory = harness.key_directory.clone();
+    for index in 0..2 {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/oauth-clients")
+                    .header("cookie", &cookies)
+                    .header("x-csrf-token", &csrf_token)
+                    .header("content-type", "application/json")
+                    .body(Body::from(client_input(30 + index)))
+                    .expect("owner self-service create"),
+            )
+            .await
+            .expect("owner self-service response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+    let exceeded = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/oauth-clients")
+                .header("cookie", &cookies)
+                .header("x-csrf-token", &csrf_token)
+                .header("content-type", "application/json")
+                .body(Body::from(client_input(32)))
+                .expect("owner quota overflow"),
+        )
+        .await
+        .expect("owner quota overflow response");
+    assert_eq!(exceeded.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        http::json_body(exceeded).await["code"],
+        "oauth_client_quota_exceeded"
+    );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn deleting_user_keeps_quota_exempt_client_and_cascades_self_service() {
+    let (router, database, key_directory) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let (cookies, csrf_token) = register_and_login(&router, &database, &suffix).await;
+    let user_id: i64 = chenxing_auth::sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(format!("ui-{suffix}@example.com"))
+        .fetch_one(&database)
+        .await
+        .expect("user id");
+    let self_service_id = create_owned_client(&router, &cookies, &csrf_token, 40).await;
+    let exempt_id = format!("cx_exempt_{suffix}");
+    chenxing_auth::sqlx::query(
+        "INSERT INTO oauth_clients
+         (client_id, client_name, redirect_uris, scopes, auth_method, owner_user_id, created_at, quota_exempt)
+         VALUES ($1, 'Exempt Keep', $2::jsonb, $3::jsonb, 'none', $4, NOW(), true)",
+    )
+    .bind(&exempt_id)
+    .bind(serde_json::json!(["https://exempt.example/callback"]))
+    .bind(serde_json::json!(["openid"]))
+    .bind(user_id)
+    .execute(&database)
+    .await
+    .expect("insert exempt client");
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("delete user");
+
+    let remaining: Option<(Option<i64>, bool)> = chenxing_auth::sqlx::query_as(
+        "SELECT owner_user_id, quota_exempt FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(&exempt_id)
+    .fetch_optional(&database)
+    .await
+    .expect("load exempt client after owner delete");
+    assert_eq!(remaining, Some((None, true)));
+    let self_service: Option<String> = chenxing_auth::sqlx::query_scalar(
+        "SELECT client_id FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(&self_service_id)
+    .fetch_optional(&database)
+    .await
+    .expect("load self-service client after owner delete");
+    assert!(self_service.is_none());
     let _ = std::fs::remove_dir_all(key_directory);
 }

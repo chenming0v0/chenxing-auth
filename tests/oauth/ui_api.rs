@@ -3,7 +3,6 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use redis::AsyncCommands;
 use totp_rs::TOTP;
 use tower::ServiceExt;
 use url::Url;
@@ -311,22 +310,6 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
         .await
         .expect("repeat inspect response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let redis_client = redis::Client::open(redis_url).expect("Redis URL");
-    let mut redis_connection = redis_client
-        .get_multiplexed_async_connection()
-        .await
-        .expect("Redis connection");
-    let quota_keys: Vec<String> = redis_connection
-        .keys(format!("chenxing:oauth:quota:{client_id}:*"))
-        .await
-        .expect("quota keys");
-    assert!(
-        quota_keys.is_empty(),
-        "administrator OAuth clients are unlimited"
-    );
 
     chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
         .bind(client_id)

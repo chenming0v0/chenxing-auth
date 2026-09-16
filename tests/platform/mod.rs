@@ -12,6 +12,8 @@ mod http;
 mod key_directory;
 #[path = "../support/oauth_flow.rs"]
 mod oauth_flow;
+#[path = "../support/plan_fixtures.rs"]
+mod plan_fixtures;
 
 mod api;
 mod assetlinks;

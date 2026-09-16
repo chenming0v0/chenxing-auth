@@ -24,6 +24,9 @@ use oauth_client_responses::{OwnedClientResponse, owned_registered_response};
 #[path = "oauth_client_delete.rs"]
 mod oauth_client_delete;
 pub use oauth_client_delete::delete_owned_client;
+#[path = "oauth_client_app_link.rs"]
+mod oauth_client_app_link;
+pub use oauth_client_app_link::{delete_owned_client_app_link, upsert_owned_client_app_link};
 
 #[derive(Debug, Serialize)]
 struct OwnedClientListResponse {

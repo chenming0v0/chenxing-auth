@@ -41,6 +41,7 @@ fn authorization_code_from_request(
             client_uri: None,
             description: None,
             numeric_app_id: 1,
+            quota_exempt: false,
         },
         AuthorizationRequest {
             client_id: CLIENT_ID.to_owned(),

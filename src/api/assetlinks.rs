@@ -1,7 +1,8 @@
 //! Android App Links 声明端点 `/.well-known/assetlinks.json`。
 //!
 //! 不经 Issuer 门禁：Android 在 App 安装/更新时抓取该文件校验域名归属，与 OIDC
-//! 发行者是否已配置无关；内容只从已登记的 Client 声明派生，不读取任何请求上下文。
+//! 发行者是否已配置无关；内容只从平台管理（quota_exempt）Client 的声明派生，
+//! 不读取任何请求上下文。
 
 use axum::{
     extract::State,

@@ -14,7 +14,7 @@ export function AdminClients() {
   const access = useAdminAccess()
   return (
     <ConsoleLayout>
-      <PageIntro eyebrow="// Admin · Clients" title="认证链接" description="OAuth Client 注册。回调地址填这里。数字 App ID 用于 /app/<id>/oauth/callback，改名字不影响 Android 端。" />
+      <PageIntro eyebrow="// Admin · Clients" title="认证链接" description="全站 OAuth Client 目录。开发者在「接入应用」创建和编辑；这里可以禁用或删除任意 Client。本 Issuer 上的 /app/<id>/oauth/callback 只给官方应用。" />
       <AdminGate access={access} permission="manage_clients"><ClientsTable access={access} /></AdminGate>
     </ConsoleLayout>
   )

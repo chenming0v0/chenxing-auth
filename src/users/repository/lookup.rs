@@ -152,6 +152,15 @@ where
     })
 }
 
+/// 当前第一个未禁用 Owner。ADMIN_TOKEN 创建 Client 时落到这个人；没有 Owner 时为 None。
+pub async fn first_active_owner_id(pool: &PgPool) -> Result<Option<UserId>, crate::sqlx::Error> {
+    crate::sqlx::query_scalar(
+        "SELECT id FROM users WHERE role = 'owner' AND status <> 'disabled' ORDER BY id ASC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn list_users(pool: &crate::sqlx::PgPool) -> Result<Vec<ListedUser>, crate::sqlx::Error> {
     crate::sqlx::query_as::<_, (UserId, String, String, Option<String>, String, String, OffsetDateTime)>(
         "SELECT id, username, email, display_name, status, role, created_at FROM users ORDER BY created_at DESC",

@@ -222,7 +222,7 @@ export function IntegratePage() {
             <div className="chenxing-app-grid mt-5 hidden px-4 pb-2 lg:grid">
               <span className="chenxing-label !mb-0">ID</span>
               <span className="chenxing-label !mb-0">名称</span>
-              <span className="chenxing-label !mb-0">分组</span>
+              <span className="chenxing-label !mb-0">类型</span>
               <span className="chenxing-label !mb-0">状态</span>
               <span className="chenxing-label !mb-0 text-right">操作</span>
             </div>
@@ -233,6 +233,9 @@ export function IntegratePage() {
                   <p className="chenxing-body truncate font-semibold leading-tight">{client.client_name}</p>
                   <p className="chenxing-mono truncate text-[11px] text-[var(--chenxing-muted-foreground)]">{client.client_id}</p>
                   <p className="chenxing-caption mt-1 hidden sm:block">{formatQuota(client)}</p>
+                  {client.android_asset_link ? (
+                    <p className="chenxing-caption mt-1">Android 档案 · {client.android_asset_link.package_name}</p>
+                  ) : null}
                 </div>
                 <span className="chenxing-tag hidden lg:inline-flex">{client.auth_method === 'none' ? '公开' : '机密'}</span>
                 <span className={`${client.status === 'active' ? 'chenxing-tag-success' : 'chenxing-tag-warning'} hidden lg:inline-flex`}>
@@ -281,18 +284,20 @@ export function IntegratePage() {
             ) : null}
           </>
         )}
-        <p className="chenxing-caption mt-4 flex items-center gap-2">
-          <Icon name="shield-alert" className="shrink-0 text-[var(--chenxing-warning)]" size={16} />
-          Client Secret 仅在创建应用时展示一次，遗失后只能重新生成。
-        </p>
+        {issued?.secret || clients.some((client) => client.auth_method !== 'none') ? (
+          <p className="chenxing-caption mt-4 flex items-center gap-2">
+            <Icon name="shield-alert" className="shrink-0 text-[var(--chenxing-warning)]" size={16} />
+            机密客户端的 Secret 只在创建或轮换时展示一次，遗失后只能重新生成。公开客户端没有 Secret。
+          </p>
+        ) : null}
       </HudPanel>
 
       <HudPanel as="section" className="mt-6">
         <h3 className="chenxing-h3 flex items-center gap-2"><Icon name="rocket" className="text-[var(--chenxing-cyan)]" size={18} />快速接入</h3>
         <div className="mt-5 grid gap-4 lg:grid-cols-3">
           {[
-            ['01', '注册应用', '创建应用，获取 Client ID 与仅展示一次的 Client Secret。'],
-            ['02', '配置回调地址', '登记 Redirect URI，辰星仅向精确匹配的地址回跳授权码。'],
+            ['01', '注册应用', '创建应用并拿到 Client ID。机密客户端另发一次性 Secret；公开客户端用 PKCE，不签发 Secret。'],
+            ['02', '配置回调地址', '登记你自己的 HTTPS Redirect URI。原生应用在自己的域名发布 assetlinks.json，不要占用本认证域名。'],
             ['03', '发起授权请求', '携带 PKCE 参数跳转授权端点，用授权码换取令牌。'],
           ].map(([n, title, copy]) => (
             <div className="flex gap-3" key={n}>

@@ -65,6 +65,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
         },
         client_id.clone(),
         ClientCredential::SecretBasic("client-secret-hash".to_owned()),
+        None,
     )
     .await
     .expect("insert client");

@@ -36,14 +36,17 @@ async fn revocation_handler_rejects_unknown_hint_and_accepts_supported_hints() {
     let router = api::router(state.clone());
     let client = state
         .clients
-        .register(ClientRegistrationInput {
-            client_name: "Revocation Handler Test Client".to_owned(),
-            redirect_uris: vec!["https://revocation.example/callback".to_owned()],
-            scopes: vec!["openid".to_owned()],
-            logo_uri: None,
-            client_uri: None,
-            description: None,
-        })
+        .register(
+            None,
+            ClientRegistrationInput {
+                client_name: "Revocation Handler Test Client".to_owned(),
+                redirect_uris: vec!["https://revocation.example/callback".to_owned()],
+                scopes: vec!["openid".to_owned()],
+                logo_uri: None,
+                client_uri: None,
+                description: None,
+            },
+        )
         .await
         .expect("test client");
     let authorization = format!(

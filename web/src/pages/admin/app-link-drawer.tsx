@@ -95,7 +95,7 @@ export function AppLinkDrawer({
       description={
         editing
           ? `覆盖「${editing.client_name}」已登记的包名和签名指纹。`
-          : '登记后会写入公开的 assetlinks.json，Android 才能把回调交给这个 App。'
+          : '只把第一方应用写入本 Issuer 的 assetlinks.json。第三方应使用自己的 HTTPS 域名。'
       }
       onClose={onClose}
       onSubmit={(event) => void submit(event)}

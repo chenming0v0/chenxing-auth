@@ -151,8 +151,8 @@ async fn no_default_plan_keeps_existing_user_clients_working() {
     env.cleanup().await;
 }
 
-/// 管理端创建的 Client（`owner_user_id IS NULL`）不参与套餐计量，
-/// 缺少默认套餐时 authorize / token 全程正常。
+/// 管理端创建的 Client 会 stamp 到第一个未禁用 Owner；清掉套餐后授权/换令牌
+/// 仍成功——没有生效套餐时跳过计量，不打死既有集成。
 #[tokio::test]
 async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
     let env = test_state_from_template().await;
@@ -174,7 +174,17 @@ async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
     .fetch_one(&env.database)
     .await
     .expect("admin client owner");
-    assert!(owner.is_none(), "admin client must not have an owner");
+    let first_owner: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT id FROM users WHERE role = 'owner' AND status <> 'disabled' ORDER BY id ASC LIMIT 1",
+    )
+    .fetch_one(&env.database)
+    .await
+    .expect("first active owner");
+    assert_eq!(
+        owner,
+        Some(first_owner),
+        "ADMIN_TOKEN created client belongs to the first active owner"
+    );
 
     clear_all_plans(&env.database).await;
 

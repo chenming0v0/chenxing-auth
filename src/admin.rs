@@ -8,6 +8,7 @@ pub mod app_link_handlers;
 pub mod auth_handlers;
 pub mod authorization;
 pub mod bootstrap_guard;
+pub mod client_create;
 mod client_errors;
 pub mod domain;
 pub mod factor_handlers;

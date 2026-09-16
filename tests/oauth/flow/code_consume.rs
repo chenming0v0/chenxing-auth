@@ -218,12 +218,14 @@ async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
     ensure_owner_bootstrapped(&setup_router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
     let (client_id, _client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
-    chenxing_auth::sqlx::query("UPDATE oauth_clients SET owner_user_id = $1 WHERE client_id = $2")
-        .bind(user_id)
-        .bind(&client_id)
-        .execute(&database)
-        .await
-        .expect("bind client owner");
+    chenxing_auth::sqlx::query(
+        "UPDATE oauth_clients SET owner_user_id = $1, quota_exempt = false WHERE client_id = $2",
+    )
+    .bind(user_id)
+    .bind(&client_id)
+    .execute(&database)
+    .await
+    .expect("bind client owner");
 
     // 计量只在存在生效套餐时发生，所以这个用例必须显式挂一个私有套餐；
     // 否则「授权码写失败不烧配额」根本没有配额可烧，断言会退化成空转。

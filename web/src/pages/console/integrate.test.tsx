@@ -50,6 +50,8 @@ const CLIENT: OwnedOAuthClient = {
   auth_method: 'client_secret_basic',
   logo_uri: null,
   client_uri: null,
+  numeric_app_id: 1,
+  android_asset_link: null,
 }
 
 const OLD_CLIENT: OwnedOAuthClient = {
@@ -126,6 +128,18 @@ describe('IntegratePage 加载期间不闪空态（Issue #371）', () => {
     expect(screen.queryByText('正在加载接入应用。')).toBeNull()
   })
 
+  it('已登记软件链接时展示包名，未登记时不刷「无软件链接」', async () => {
+    apiFetchMock.mockResolvedValue({
+      items: [{
+        ...CLIENT,
+        android_asset_link: { package_name: 'com.example.app', sha256_cert_fingerprints: ['AA'] },
+      }],
+    })
+    render(<IntegratePage />)
+    expect(await screen.findByText('Android 档案 · com.example.app')).toBeTruthy()
+    expect(screen.queryByText('无软件链接')).toBeNull()
+  })
+
   it('刷新列表时保留已有应用，不退回空态', async () => {
     apiFetchMock
       .mockResolvedValueOnce({ items: [CLIENT] })
@@ -134,6 +148,7 @@ describe('IntegratePage 加载期间不闪空态（Issue #371）', () => {
     vi.stubGlobal('confirm', () => true)
     render(<IntegratePage />)
     expect(await screen.findByText('演示应用')).toBeTruthy()
+    expect(screen.queryByText(/Android 档案/)).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: '禁用' }))
 
