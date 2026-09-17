@@ -1,0 +1,10 @@
+{
+  "protocol": "account-provider/v1",
+  "issuer": "https://provider.example.com",
+  "capabilities": ["account:read"],
+  "credentials": {
+    "identifier_label": "账户",
+    "secret_label": "密码",
+    "identifier_sensitive": true
+  }
+}

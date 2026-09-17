@@ -1,0 +1,21 @@
+{
+  "description": "account-snapshot.json 的 subscription 替换用例清单。本文件是无效/边界输入清单，不是端点负载，禁止作为 schema 根校验。每个 case 的 subscription 替换基准快照的 subscription 后，必须按 expect 得到 reject 或 accept。",
+  "base_fixture": "account-snapshot.json",
+  "cases": [
+    { "name": "expires_at_with_remaining_seconds", "expect": "reject", "subscription": { "kind": "expires_at", "expires_at": "2026-12-31T23:59:59Z", "remaining_seconds": 100 } },
+    { "name": "expires_at_with_as_of", "expect": "reject", "subscription": { "kind": "expires_at", "expires_at": "2026-12-31T23:59:59Z", "as_of": "2026-09-18T00:00:00Z" } },
+    { "name": "remaining_with_expires_at", "expect": "reject", "subscription": { "kind": "remaining", "remaining_seconds": 100, "as_of": "2026-09-18T00:00:00Z", "expires_at": "2026-12-31T23:59:59Z" } },
+    { "name": "none_with_expires_at_null", "expect": "reject", "subscription": { "kind": "none", "expires_at": null } },
+    { "name": "none_with_remaining_seconds_null", "expect": "reject", "subscription": { "kind": "none", "remaining_seconds": null } },
+    { "name": "permanent_with_expires_at", "expect": "reject", "subscription": { "kind": "permanent", "expires_at": "2026-12-31T23:59:59Z" } },
+    { "name": "permanent_with_as_of", "expect": "reject", "subscription": { "kind": "permanent", "as_of": "2026-09-18T00:00:00Z" } },
+    { "name": "unknown_kind_with_expires_at", "expect": "reject", "subscription": { "kind": "unknown", "expires_at": "2026-12-31T23:59:59Z" } },
+    { "name": "unknown_kind_with_remaining_seconds", "expect": "reject", "subscription": { "kind": "unknown", "remaining_seconds": 100 } },
+    { "name": "unknown_kind_with_as_of_null", "expect": "reject", "subscription": { "kind": "unknown", "as_of": null } },
+    { "name": "contradictory_kind_fields", "expect": "reject", "subscription": { "kind": "expires_at", "expires_at": "2026-12-31T23:59:59Z", "remaining_seconds": 100, "as_of": "2026-09-18T00:00:00Z" } },
+    { "name": "unknown_subscription_kind", "expect": "reject", "subscription": { "kind": "future_kind" } },
+    { "name": "unknown_subscription_kind_with_attr", "expect": "reject", "subscription": { "kind": "future_kind", "expires_at": "2026-12-31T23:59:59Z" } },
+    { "name": "expires_at_with_unknown_extra_attr", "expect": "accept", "subscription": { "kind": "expires_at", "expires_at": "2026-12-31T23:59:59Z", "vendor_future_attr": { "ignored": true } } },
+    { "name": "unknown_kind_with_unknown_extra_attr", "expect": "accept", "subscription": { "kind": "unknown", "vendor_future_attr": "ignored" } }
+  ]
+}

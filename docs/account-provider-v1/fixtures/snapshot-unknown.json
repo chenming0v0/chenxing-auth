@@ -1,0 +1,17 @@
+{
+  "schema_version": "1",
+  "issuer": "https://provider.example.com",
+  "uid": "acct-1002",
+  "account": "demo-account-1002",
+  "name": null,
+  "status": "unknown",
+  "subscription": {
+    "kind": "unknown"
+  },
+  "future_top_level_field": { "ignored": true },
+  "fields": [
+    { "key": "uid", "label": "UID", "type": "text", "value": "acct-1002" },
+    { "key": "unmapped_field", "label": "未知类型", "type": "vendor_future_type", "value": { "nested": "consumer must ignore" } }
+  ],
+  "fetched_at": "2026-09-18T00:00:00Z"
+}

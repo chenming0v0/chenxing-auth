@@ -1,0 +1,22 @@
+{
+  "schema_version": "1",
+  "issuer": "https://provider.example.com",
+  "uid": "acct-1001",
+  "account": "demo-account-1001",
+  "name": "示例用户",
+  "status": "active",
+  "subscription": {
+    "kind": "expires_at",
+    "expires_at": "2026-12-31T23:59:59Z"
+  },
+  "fields": [
+    { "key": "uid", "label": "UID", "type": "text", "value": "acct-1001" },
+    { "key": "account_status", "label": "账号状态", "type": "status", "value": "active" },
+    { "key": "is_subscribed", "label": "已订阅", "type": "boolean", "value": true },
+    { "key": "subscription_expires_at", "label": "订阅到期", "type": "datetime", "value": "2026-12-31T23:59:59Z" },
+    { "key": "remaining_seconds", "label": "剩余订阅", "type": "duration", "value": 9071999 },
+    { "key": "device_status", "label": "设备状态", "type": "status", "value": "bound" },
+    { "key": "homepage", "label": "主页", "type": "url", "value": "https://provider.example.com/user/1001" }
+  ],
+  "fetched_at": "2026-09-18T00:00:00Z"
+}
