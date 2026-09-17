@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { apiFetch, type AppLinkResponse, type ClientSummary } from '../../api'
 import { Drawer } from '@chenxing/ui'
-import { Button, CopyValue, Field, HudPanel, Notice, SelectField, TextAreaField } from '@chenxing/ui'
+import { Button, Field, HudPanel, Notice, SelectField, TextAreaField } from '@chenxing/ui'
 import { useMutationLock } from '../../use-mutation-lock'
+import { OfficialCallbackValue, useIssuer } from '../console/official-callback'
 
 type FormState = {
   clientId: string
@@ -37,39 +38,9 @@ function validate(form: FormState): FieldErrors {
   return errors
 }
 
-function issuerFromDiscovery(body: unknown): string | null {
-  if (!body || typeof body !== 'object' || !('issuer' in body)) return null
-  const issuer = body.issuer
-  if (typeof issuer !== 'string') return null
-  const trimmed = issuer.trim().replace(/\/+$/, '')
-  if (!/^https:\/\//i.test(trimmed)) return null
-  return trimmed
-}
-
 function numericAppIdOf(client: Pick<ClientSummary, 'numeric_app_id'> | undefined): number | null {
   const value = client?.numeric_app_id
   return typeof value === 'number' && Number.isFinite(value) ? value : null
-}
-
-function OfficialCallback({ numericAppId, issuer }: { numericAppId: number; issuer: string | null }) {
-  const callbackPath = `/app/${numericAppId}/oauth/callback`
-  const officialCallback = issuer ? `${issuer}${callbackPath}` : null
-  return (
-    <div className="space-y-3">
-      <div className="min-w-0">
-        <p className="chenxing-label">官方回调路径</p>
-        <CopyValue value={callbackPath} ariaLabel="复制官方回调路径" />
-      </div>
-      {officialCallback ? (
-        <div className="min-w-0">
-          <p className="chenxing-label">官方完整回调 URL</p>
-          <CopyValue value={officialCallback} ariaLabel="复制官方完整回调 URL" />
-        </div>
-      ) : (
-        <p className="chenxing-caption">完整地址是配置中的 Issuer 加上这条路径。</p>
-      )}
-    </div>
-  )
 }
 
 export function AppLinkDrawer({
@@ -91,23 +62,8 @@ export function AppLinkDrawer({
   const [message, setMessage] = useState('')
   const [clients, setClients] = useState<ClientSummary[] | null>(locked ? [] : null)
   const [listError, setListError] = useState('')
-  const [issuer, setIssuer] = useState<string | null>(null)
+  const issuer = useIssuer()
   const { busy, run } = useMutationLock()
-
-  useEffect(() => {
-    let active = true
-    void fetch('/.well-known/openid-configuration')
-      .then((response) => (response.ok ? response.json() : null))
-      .then((body) => {
-        if (active) setIssuer(issuerFromDiscovery(body))
-      })
-      .catch(() => {
-        if (active) setIssuer(null)
-      })
-    return () => {
-      active = false
-    }
-  }, [])
 
   useEffect(() => {
     if (locked) return
@@ -241,7 +197,7 @@ export function AppLinkDrawer({
             />
           </div>
         )}
-        {numericAppId !== null ? <OfficialCallback numericAppId={numericAppId} issuer={issuer} /> : null}
+        {numericAppId !== null ? <OfficialCallbackValue numericAppId={numericAppId} issuer={issuer} /> : null}
         <Field
           label="Android 包名"
           id={FIELD_ID.packageName}

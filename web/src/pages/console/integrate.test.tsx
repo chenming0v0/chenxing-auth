@@ -30,9 +30,33 @@ vi.mock('./shared', async (importOriginal) => ({
   useEntitlements: () => ({ data: null, error: '', loading: false, retry: vi.fn() }),
 }))
 
+const authState = vi.hoisted(() => ({ role: 'user' as 'user' | 'owner' }))
+
+// 官方回调区块用 useAuth 判断是否展示「去软件链接」；页面测试不挂 AuthProvider，按角色 mock。
+vi.mock('../../auth-state', () => ({
+  useAuth: () => ({
+    user: {
+      id: 1, username: 'chenxing', email: 'chenxing@example.test', display_name: '测试员',
+      status: 'active', role: authState.role, current_session_expires_at: '2026-08-20T00:00:00Z',
+      avatar_updated_at: null,
+    },
+    status: 'authenticated',
+  }),
+}))
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return { ok: status >= 200 && status < 300, status, json: async () => body } as Response
+}
+
 beforeEach(() => {
   apiFetchMock.mockReset()
   apiFetchMock.mockImplementation(() => new Promise(() => {}))
+  authState.role = 'user'
+  vi.stubGlobal('fetch', (path: string) => (
+    String(path) === '/.well-known/openid-configuration'
+      ? Promise.resolve(jsonResponse({ issuer: 'https://issuer.example' }))
+      : Promise.reject(new Error(`unexpected fetch ${String(path)}`))
+  ))
 })
 afterEach(() => {
   cleanup()
@@ -283,6 +307,47 @@ describe('IntegratePage Redirect URI guidance', () => {
     expect(await screen.findByText('公开客户端已创建')).toBeTruthy()
     expect(screen.getByText('cx-public')).toBeTruthy()
     expect(screen.queryByLabelText('复制 Client Secret')).toBeNull()
+    expect(await screen.findByText('https://issuer.example/app/1/oauth/callback')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '加入回调列表' })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: '去软件链接' })).toBeNull()
+  })
+
+  it('公开客户端创建后可一键把官方回调写入 redirect_uris，Owner 看到软件链接入口', async () => {
+    authState.role = 'owner'
+    apiFetchMock.mockImplementation((path, init) => {
+      if (path === '/api/v1/auth/oauth-clients' && init?.method === 'POST') {
+        return Promise.resolve({ ...CLIENT, client_id: 'cx-public', auth_method: 'none', redirect_uris: ['https://spa.example.com/cb'] })
+      }
+      if (path === '/api/v1/auth/oauth-clients' && init === undefined) {
+        return Promise.resolve({ items: [] })
+      }
+      return Promise.resolve(undefined)
+    })
+    render(<IntegratePage />)
+    fireEvent.click(screen.getAllByRole('button', { name: '注册新应用' })[0])
+    fireEvent.click(screen.getByRole('radio', { name: /公开客户端/ }))
+    fireEvent.change(screen.getByLabelText('应用名称'), { target: { value: '星尘 SPA' } })
+    fireEvent.change(screen.getByLabelText('Redirect URI'), { target: { value: 'https://spa.example.com/cb' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建应用' }))
+
+    expect(await screen.findByText('公开客户端已创建')).toBeTruthy()
+    expect(screen.getByRole('link', { name: '去软件链接' }).getAttribute('href')).toBe('/admin/app-links')
+    fireEvent.click(await screen.findByRole('button', { name: '加入回调列表' }))
+
+    await waitFor(() => {
+      const put = apiFetchMock.mock.calls.find(([path, init]) =>
+        path === '/api/v1/auth/oauth-clients/cx-public' && init?.method === 'PUT')
+      expect(JSON.parse(String(put?.[1]?.body))).toEqual({
+        client_name: '演示应用',
+        redirect_uris: ['https://spa.example.com/cb', 'https://issuer.example/app/1/oauth/callback'],
+        scopes: ['openid'],
+        logo_uri: null,
+        client_uri: null,
+        description: null,
+      })
+    })
+    expect(await screen.findByRole('button', { name: '已加入' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '已加入' }).hasAttribute('disabled')).toBe(true)
   })
 
   it('reuses a retry key for Secret rotation', async () => {
