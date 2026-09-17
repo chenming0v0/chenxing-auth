@@ -379,12 +379,13 @@ fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
         "  /.well-known/assetlinks.json:\n",
         "  /.well-known/openid-configuration:\n",
     );
-    assert!(assetlinks.contains("平台管理（quota_exempt）Client"));
-    assert!(assetlinks.contains("自助用户对自己 Client 的登记只留在档案上，不进入本文件"));
-    let owned_app_link =
-        openapi_operation("/api/v1/auth/oauth-clients/{client_id}/app-link", "put");
-    assert!(owned_app_link.contains("**不会**发布到本 Issuer"));
-    assert!(owned_app_link.contains("第三方应用应在自有 HTTPS 域名发布 Digital Asset Links"));
+    assert!(assetlinks.contains("Owner 通过管理面登记"));
+    assert!(assetlinks.contains("用户自助不能写入本文件"));
+    assert!(!assetlinks.contains("自助用户对自己 Client 的登记只留在档案上"));
+    let admin_app_link = openapi_operation("/api/v1/admin/app-links/{client_id}", "put");
+    assert!(admin_app_link.contains("manage_issuer"));
+    assert!(admin_app_link.contains("接入应用"));
+    assert!(!admin_app_link.contains("app_link_not_platform_client"));
 
     let discovery = openapi_section(
         "  /.well-known/openid-configuration:\n",
@@ -542,8 +543,6 @@ fn openapi_documents_owned_oauth_client_writes_with_session_csrf() {
             "post",
             "/api/v1/auth/oauth-clients/{client_id}/rotate-secret",
         ),
-        ("put", "/api/v1/auth/oauth-clients/{client_id}/app-link"),
-        ("delete", "/api/v1/auth/oauth-clients/{client_id}/app-link"),
     ];
     for (method, path) in write_operations {
         let operation = openapi_operation(path, method);
@@ -560,18 +559,6 @@ fn openapi_documents_owned_oauth_client_writes_with_session_csrf() {
             "{method} {path} must declare an operationId"
         );
     }
-    let upsert = openapi_operation("/api/v1/auth/oauth-clients/{client_id}/app-link", "put");
-    assert!(upsert.contains("operationId: upsertOwnedOAuthClientAppLink"));
-    assert!(upsert.contains("$ref: '#/components/schemas/UpdateAppLinkInput'"));
-    assert!(upsert.contains("$ref: '#/components/schemas/AppLinkResponse'"));
-    let delete = openapi_operation("/api/v1/auth/oauth-clients/{client_id}/app-link", "delete");
-    assert!(delete.contains("operationId: deleteOwnedOAuthClientAppLink"));
-    assert_openapi_response(
-        &delete,
-        "204",
-        "delete",
-        "/api/v1/auth/oauth-clients/{client_id}/app-link",
-    );
 }
 
 #[test]

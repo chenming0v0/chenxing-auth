@@ -261,6 +261,7 @@ fn to_summary(client: repository::ListedClient) -> ClientSummary {
         client_uri: client.client_uri,
         description: client.description,
         android_asset_link: client.android_asset_link,
+        quota_exempt: client.quota_exempt,
     }
 }
 

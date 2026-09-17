@@ -1,7 +1,7 @@
 //! `/.well-known/assetlinks.json`：Android App Links 声明端点。
 //!
-//! 公开文件只发布 quota_exempt / 平台管理 Client 的声明，不经 Issuer 门禁。
-//! 自助登记仍写在 Client 档案上，但不进入本文件。未发布豁免声明时 404。
+//! 公开文件发布 Owner 已登记的声明，不经 Issuer 门禁。
+//! 用户自助 App Link API 已移除。未发布任何声明时 404。
 
 use axum::{
     body::Body,
@@ -68,6 +68,7 @@ async fn create_client(router: &axum::Router) -> String {
             .is_some_and(|numeric_app_id| numeric_app_id >= 1)
     );
     assert!(body["android_asset_link"].is_null());
+    assert_eq!(body["quota_exempt"], true);
     body["client_id"].as_str().expect("client_id").to_owned()
 }
 
@@ -280,6 +281,7 @@ async fn published_app_link_is_served_without_issuer_gate() {
         .iter()
         .find(|client| client["client_id"] == client_id)
         .expect("created client");
+    assert_eq!(created["quota_exempt"], true);
     assert_eq!(
         created["android_asset_link"],
         json!({
@@ -449,7 +451,8 @@ async fn user_registered_app_link_is_not_published() {
         FINGERPRINT,
     )
     .await;
-    assert_eq!(declared.status(), StatusCode::OK);
+    assert_eq!(declared.status(), StatusCode::NOT_FOUND);
+    assert_eq!(json_body(declared).await["code"], "not_found");
 
     let listed = harness
         .router
@@ -465,8 +468,7 @@ async fn user_registered_app_link_is_not_published() {
         .expect("list app links response");
     assert_eq!(listed.status(), StatusCode::OK);
     let listed_body = json_body(listed).await;
-    assert_eq!(listed_body.as_array().map(Vec::len), Some(1));
-    assert_eq!(listed_body[0]["package_name"], "com.chengming.termux");
+    assert_eq!(listed_body.as_array().map(Vec::len), Some(0));
 
     let response = fetch(&harness.router).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -490,6 +492,58 @@ async fn admin_registered_app_link_is_published() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         json_body(response).await,
+        json!([{
+            "relation": ["delegate_permission/common.handle_all_urls"],
+            "target": {
+                "namespace": "android_app",
+                "package_name": "com.chengming.termux",
+                "sha256_cert_fingerprints": [FINGERPRINT],
+            }
+        }])
+    );
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn owner_can_publish_integrate_app_client() {
+    let harness = HarnessBuilder::new("assetlinks_publish_integrate")
+        .admin_token(ADMIN_TOKEN)
+        .build()
+        .await;
+    ensure_owner_bootstrapped(
+        &harness.router,
+        &harness.database,
+        "assetlinks",
+        "assetlinks-publish-integrate",
+    )
+    .await;
+    let (_user_id, cookies, csrf_token) =
+        create_user_session(&harness, "assetlinks-self-admin").await;
+    let client_id = create_owned_client(&harness.router, &cookies, &csrf_token).await;
+    assert_client_quota_exempt(&harness.database, &client_id, false).await;
+
+    let declared = put_app_link(&harness.router, &client_id, FINGERPRINT).await;
+    assert_eq!(declared["package_name"], "com.chengming.termux");
+
+    let listed = harness
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/app-links")
+                .header(AUTHORIZATION, format!("Bearer {ADMIN_TOKEN}"))
+                .body(Body::empty())
+                .expect("list app links"),
+        )
+        .await
+        .expect("list app links response");
+    assert_eq!(listed.status(), StatusCode::OK);
+    assert_eq!(json_body(listed).await.as_array().map(Vec::len), Some(1));
+
+    let published = fetch(&harness.router).await;
+    assert_eq!(published.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(published).await,
         json!([{
             "relation": ["delegate_permission/common.handle_all_urls"],
             "target": {
@@ -530,7 +584,7 @@ async fn two_users_app_links_stay_off_the_public_file() {
         )
         .await
         .status(),
-        StatusCode::OK
+        StatusCode::NOT_FOUND
     );
     assert_eq!(
         put_owned_app_link(
@@ -543,7 +597,7 @@ async fn two_users_app_links_stay_off_the_public_file() {
         )
         .await
         .status(),
-        StatusCode::OK
+        StatusCode::NOT_FOUND
     );
 
     let response = fetch(&harness.router).await;

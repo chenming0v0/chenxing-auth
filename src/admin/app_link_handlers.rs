@@ -1,4 +1,4 @@
-//! App Links（Android App Links）管理面：Owner 显式增删 Client 的签名声明。
+//! App Links（Android App Links）管理面：Owner 把任意 Client 发布到本 Issuer 主机。
 
 use axum::{
     Json,
@@ -12,7 +12,7 @@ use crate::{
     admin::domain::AdminPermission,
     api::extract::{AdminRead, AdminWrite},
     audit::{AuditAction, AuditEvent},
-    clients::android_link::AndroidAssetLinkError,
+    clients::{android_link::AndroidAssetLinkError, repository::StoredClient},
     error,
     state::AppState,
 };
@@ -45,13 +45,24 @@ fn validation_response(error: &AndroidAssetLinkError) -> Response {
     }
 }
 
-/// 列出所有已登记 App Link 的 Client（带当前指纹）。
+async fn require_client(state: &AppState, client_id: &str) -> Result<StoredClient, Response> {
+    match state.clients.find_stored(client_id).await {
+        Ok(Some(client)) => Ok(client),
+        Ok(None) => Err(error::not_found(
+            "oauth_client_not_found",
+            "OAuth project was not found",
+        )),
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load client for app link");
+            Err(error::internal())
+        }
+    }
+}
+
+/// 列出 Owner 已发布到本 Issuer 的 App Link（带当前指纹）。
 #[axum::debug_handler]
 pub async fn list_app_links(State(state): State<AppState>, admin: AdminRead) -> Response {
-    if let Err(response) = admin
-        .authorize(&state, AdminPermission::ManageClients)
-        .await
-    {
+    if let Err(response) = admin.authorize(&state, AdminPermission::ManageIssuer).await {
         return response;
     }
     match state.clients.declared_app_links().await {
@@ -86,15 +97,13 @@ pub async fn upsert_app_link(
     Path(client_id): Path<String>,
     Json(input): Json<UpdateAppLinkInput>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageClients)
-        .await
-    {
+    let actor = match admin.authorize(&state, AdminPermission::ManageIssuer).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    let Some(client) = state.clients.find_stored(&client_id).await.ok().flatten() else {
-        return error::not_found("oauth_client_not_found", "OAuth project was not found");
+    let client = match require_client(&state, &client_id).await {
+        Ok(client) => client,
+        Err(response) => return response,
     };
     match state
         .clients
@@ -139,20 +148,20 @@ pub async fn upsert_app_link(
     }
 }
 
-/// 清空一个 Client 档案上的 App Link 声明。豁免 Client 被清空后不再出现在公开 DAL。
+/// 清空一个 Client 的 App Link 声明，公开 DAL 同步撤下。
 #[axum::debug_handler]
 pub async fn delete_app_link(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(client_id): Path<String>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageClients)
-        .await
-    {
+    let actor = match admin.authorize(&state, AdminPermission::ManageIssuer).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };
+    if let Err(response) = require_client(&state, &client_id).await {
+        return response;
+    }
     match state.clients.delete_app_link(&client_id).await {
         Ok(true) => {
             let (actor_type, actor_id) = actor.audit_fields();

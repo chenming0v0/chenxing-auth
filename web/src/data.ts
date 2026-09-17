@@ -27,7 +27,7 @@ export const navGroups: NavGroup[] = [
       { label: '仪表盘', path: '/admin', icon: 'gauge' },
       { label: '用户管理', path: '/admin/users', icon: 'users' },
       { label: '认证链接', path: '/admin/clients', icon: 'key-round' },
-      { label: '软件链接', path: '/admin/app-links', icon: 'smartphone' },
+      { label: '软件链接', path: '/admin/app-links', icon: 'smartphone', ownerOnly: true },
       { label: '审计日志', path: '/admin/audit', icon: 'file-search' },
       { label: '套餐管理', path: '/admin/plans', icon: 'crown', ownerOnly: true },
       { label: '邀请码', path: '/admin/invitations', icon: 'ticket' },
