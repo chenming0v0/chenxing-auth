@@ -48,6 +48,7 @@ struct ClientSummary {
     client_uri: Option<String>,
     description: Option<String>,
     android_asset_link: Option<crate::clients::android_link::AndroidAssetLink>,
+    quota_exempt: bool,
 }
 
 pub async fn list_clients(
@@ -83,6 +84,7 @@ pub async fn list_clients(
                         client_uri: client.client_uri,
                         description: client.description,
                         android_asset_link: client.android_asset_link,
+                        quota_exempt: client.quota_exempt,
                     })
                     .collect::<Vec<_>>(),
             ),

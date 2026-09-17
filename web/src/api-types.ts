@@ -119,10 +119,6 @@ export type OwnedOAuthClient = {
   client_uri: string | null
   description?: string | null
   numeric_app_id: number
-  android_asset_link?: {
-    package_name: string
-    sha256_cert_fingerprints: string[]
-  } | null
 }
 
 export type OwnedOAuthClientList = { items: OwnedOAuthClient[]; total?: number }
@@ -216,6 +212,7 @@ export type ClientSummary = ClientInput & {
     package_name: string
     sha256_cert_fingerprints: string[]
   } | null
+  quota_exempt?: boolean
 }
 export type AppLinkResponse = {
   client_id: string

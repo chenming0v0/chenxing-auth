@@ -13,9 +13,9 @@ export function AdminAppLinks() {
       <PageIntro
         eyebrow="// Admin · App Links"
         title="软件链接"
-        description="把第一方 Android 应用发布到本 Issuer 的 assetlinks.json。第三方应使用自己的 HTTPS 域名，不要把任意应用写进这里。"
+        description="只给本实例官方 Android 应用发布本域名的软件链接声明。保存后写入 /.well-known/assetlinks.json，Android 才会把本 Issuer 上的回调交给这个包。第三方用自己的 HTTPS 域名，不要写到这里。"
       />
-      <AdminGate access={access} permission="manage_clients">
+      <AdminGate access={access} permission="manage_issuer">
         <AppLinksWorkspace />
       </AdminGate>
     </ConsoleLayout>
@@ -89,7 +89,7 @@ export function AppLinksWorkspace(_props: { access?: AdminAccess } = {}) {
           minWidth={920}
           columns={['软件', 'App ID', '包名', '指纹', { label: '操作', align: 'right' }]}
           empty={items?.length ? null : items ? (
-            <EmptyState icon="smartphone" title="还没有软件链接" description="点「登记软件」发布第一方声明。普通接入走「接入应用」，不要把第三方写进本域名。" />
+            <EmptyState icon="smartphone" title="还没有官方软件链接" description="点「登记软件」，选接入应用里的公开客户端，填包名和签名指纹。" />
           ) : error ? null : '正在加载软件链接。'}
         >
           {items?.map((item) => (

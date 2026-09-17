@@ -144,6 +144,7 @@ pub struct ClientSummary {
     pub client_uri: Option<String>,
     pub description: Option<String>,
     pub android_asset_link: Option<crate::clients::android_link::AndroidAssetLink>,
+    pub quota_exempt: bool,
 }
 
 #[derive(Serialize)]

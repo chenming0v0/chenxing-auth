@@ -78,10 +78,9 @@ use crate::{
     users::entitlements_handlers::current_entitlements,
     users::handlers::{login_user, register_user, registration_status, revoke_session},
     users::oauth_client_handlers::{
-        create_owned_client, delete_owned_client, delete_owned_client_app_link,
-        disable_owned_client, enable_owned_client, list_authorized_apps, list_owned_clients,
-        revoke_authorized_app, rotate_owned_client_secret, update_owned_client,
-        upsert_owned_client_app_link,
+        create_owned_client, delete_owned_client, disable_owned_client, enable_owned_client,
+        list_authorized_apps, list_owned_clients, revoke_authorized_app,
+        rotate_owned_client_secret, update_owned_client,
     },
     users::security_event_handlers::{get_security_event, list_security_events},
     users::ui_handlers::{
@@ -430,10 +429,6 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
             axum::routing::post(rotate_owned_client_secret),
         )
         .route(
-            "/api/v1/auth/oauth-clients/{client_id}/app-link",
-            axum::routing::put(upsert_owned_client_app_link).delete(delete_owned_client_app_link),
-        )
-        .route(
             "/api/v1/admin/clients",
             axum::routing::get(list_clients).post(create_client),
         )
@@ -453,7 +448,7 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
             "/api/v1/admin/clients/{client_id}/rotate-secret",
             axum::routing::post(rotate_secret),
         )
-        // App Links 管理面：全站覆盖，用 Client ID 挂包名+指纹（不是用 numeric_app_id）。
+        // App Links 管理面：Owner 把平台 Client 发布到本 Issuer 主机（用 client_id，不是 numeric_app_id）。
         .route(
             "/api/v1/admin/app-links",
             axum::routing::get(admin_app_link_handlers::list_app_links),

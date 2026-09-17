@@ -65,7 +65,6 @@ function fakeClient(id: number): OwnedOAuthClient {
     logo_uri: null,
     client_uri: null,
     numeric_app_id: 1,
-    android_asset_link: null,
   }
 }
 

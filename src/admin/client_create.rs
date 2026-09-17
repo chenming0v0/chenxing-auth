@@ -35,6 +35,7 @@ struct RegisteredClientResponse {
     client_uri: Option<String>,
     description: Option<String>,
     android_asset_link: Option<crate::clients::android_link::AndroidAssetLink>,
+    quota_exempt: bool,
 }
 
 impl fmt::Debug for RegisteredClientResponse {
@@ -159,6 +160,7 @@ pub async fn create_client(
                 client_uri: client.client_uri,
                 description: client.description,
                 android_asset_link: client.android_asset_link,
+                quota_exempt: true,
             }),
         )
             .into_response(),

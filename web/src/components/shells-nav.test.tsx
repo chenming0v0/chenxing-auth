@@ -150,15 +150,18 @@ describe('ConsoleLayout 移动端导航可达性（#197）', () => {
     expect(bottomNav().getByRole('link', { name: '接入应用' }).getAttribute('aria-current')).toBe('page')
     expect(bottomNav().queryByRole('link', { name: '总览' })).toBeNull()
 
-    // 管理区：Client 管理、审计日志、邀请码曾被白名单裁掉；admin 看不到 ownerOnly 的套餐管理
+    // 管理区：Client 管理、审计日志、邀请码曾被白名单裁掉；admin 看不到 ownerOnly 的套餐管理和软件链接
     remountAt('/admin/users')
-    expect(hrefsIn(bottomNav())).toEqual(['/admin', '/admin/users', '/admin/clients', '/admin/app-links', '/admin/audit', '/admin/invitations'])
+    expect(hrefsIn(bottomNav())).toEqual(groupPaths('管理'))
+    expect(bottomNav().queryByRole('link', { name: '软件链接' })).toBeNull()
+    expect(bottomNav().queryByRole('link', { name: '套餐管理' })).toBeNull()
     expect(bottomNav().getByRole('link', { name: '用户管理' }).getAttribute('aria-current')).toBe('page')
   })
 
   it('系统分组自成一区，Owner 的底栏按分组补齐 ownerOnly 页面（#693）', () => {
     remountAt('/admin/plans', 'owner')
     expect(hrefsIn(bottomNav())).toEqual(groupPaths('管理', 'owner'))
+    expect(bottomNav().getByRole('link', { name: '软件链接' })).toBeTruthy()
 
     remountAt('/admin/oauth-providers', 'owner')
     expect(hrefsIn(bottomNav())).toEqual(['/admin/oauth-providers', '/admin/settings'])
