@@ -1,20 +1,16 @@
 use super::*;
 
 #[test]
-fn registration_defaults_do_not_grant_legacy_cltermux_scope() {
-    assert_eq!(DEFAULT_REGISTRATION_SCOPES, &["openid", "profile", "email"]);
-    assert!(!DEFAULT_REGISTRATION_SCOPES.contains(&"cltermux:access"));
+fn base_allowlist_only_contains_identity_scopes() {
+    assert_eq!(DEFAULT_ALLOWED_SCOPES, &["openid", "profile", "email"]);
     assert_eq!(
-        IMPLICIT_RUNTIME_SCOPE_UPPER_BOUND,
-        &["openid", "profile", "email", "cltermux:access"]
+        ClientRegistrationLimits::default().allowed_scopes,
+        vec!["openid", "profile", "email"]
     );
-    assert_eq!(DEFAULT_ALLOWED_SCOPES, IMPLICIT_RUNTIME_SCOPE_UPPER_BOUND);
-    assert!(
-        ClientRegistrationLimits::default()
-            .allowed_scopes
-            .iter()
-            .any(|scope| scope == "cltermux:access")
-    );
+    for scope in DEFAULT_ALLOWED_SCOPES {
+        assert!(RESERVED_SCOPES.contains(scope));
+    }
+    assert!(RESERVED_SCOPES.contains(&"offline_access"));
 }
 
 /// 辅助函数：直接校验单个 redirect URI，返回归一化后的结果

@@ -4,7 +4,6 @@ use std::{sync::Arc, time::Duration};
 mod issuer_worker;
 
 use crate::{
-    account_portal::{AccountPortalService, CryptoError, load_account_provider_secret_manager},
     admin::AdminAuthenticator,
     audit::AuditService,
     auth_factors::service::AuthFactorService,
@@ -14,9 +13,7 @@ use crate::{
     config::Config,
     consents::ConsentService,
     db::Database,
-    integrations::cltermux::types::IntegrationError,
     keys::{KeyManager, KeyManagerError},
-    linked_accounts::service::LinkedAccountService,
     notifications::{EmailOutbox, EmailSender, SmtpEmailSender},
     oauth::providers::{
         endpoint_policy::EndpointPolicy,
@@ -33,6 +30,9 @@ use crate::{
     oauth::store::AuthorizationCodeStore,
     plans::service::PlanService,
     redis_client::RedisClient,
+    resource_services::{
+        CryptoError, ResourceServiceService, load_account_provider_secret_manager,
+    },
     sessions::store::SessionStore,
     settings::{
         IssuerRuntime, SecurityLimitsSetting, SessionLifetimeSetting, SettingsService,
@@ -85,8 +85,7 @@ pub struct AppState {
     pub audit: AuditService,
     pub factors: AuthFactorService,
     pub external_oauth: ExternalOAuthService,
-    pub linked_accounts: LinkedAccountService,
-    pub account_portal: AccountPortalService,
+    pub resource_services: ResourceServiceService,
     pub email_sender: Arc<dyn EmailSender>,
     pub email_outbox: EmailOutbox,
     pub external_login_states: ExternalLoginStateStore,
@@ -104,20 +103,16 @@ pub enum StateError {
     Issuer(#[from] crate::settings::IssuerSettingError),
     #[error("settings initialization failed: {0}")]
     Settings(#[from] crate::settings::SettingsServiceError),
-    #[error(transparent)]
-    AccountProviders(#[from] crate::settings::account_providers::AccountProviderError),
     #[error("redis configuration is invalid: {0}")]
     Redis(#[from] redis::RedisError),
     #[error("key manager initialization failed: {0}")]
     Keys(#[from] KeyManagerError),
     #[error("external OAuth initialization failed: {0}")]
     ExternalOAuth(#[from] crate::oauth::providers::service::ExternalOAuthError),
-    #[error("CLtermux integration initialization failed: {0}")]
-    Cltermux(#[from] IntegrationError),
     #[error("external OAuth secret initialization failed: {0}")]
     ExternalOAuthSecret(#[from] crate::oauth::providers::secrets::SecretError),
-    #[error("account portal secret initialization failed: {0}")]
-    AccountPortalSecret(#[from] CryptoError),
+    #[error("resource service secret initialization failed: {0}")]
+    ResourceServiceSecret(#[from] CryptoError),
     #[error("persisted credential migration failed: {0}")]
     SecretMigration(#[from] SecretMigrationError),
     /// 静态根校验与密钥加载都放在阻塞线程池执行，线程 panic 或被取消时只能观察到
@@ -227,7 +222,7 @@ impl AppState {
         self.factors = self.factors.clone().with_clock(clock.clone());
         self.plans = self.plans.clone().with_clock(clock.clone());
         self.audit = self.audit.clone().with_clock(clock.clone());
-        self.account_portal = self.account_portal.clone().with_clock(clock.clone());
+        self.resource_services = self.resource_services.clone().with_clock(clock.clone());
         self.clock = clock;
         self
     }
@@ -300,16 +295,12 @@ impl AppState {
             crate::settings::repository::has_smtp_password_ciphertext(&database)
                 .await
                 .map_err(crate::db::DbError::from)?;
-        let business_ciphertext_exists =
-            crate::settings::account_providers::has_ciphertext(&database)
-                .await
-                .map_err(crate::db::DbError::from)?;
         let portal_ciphertext_exists =
-            crate::account_portal::store::has_persisted_ciphertext(&database)
+            crate::resource_services::store::has_persisted_ciphertext(&database)
                 .await
                 .map_err(crate::db::DbError::from)?;
         let persisted_secret_ciphertext_exists =
-            provider_ciphertext_exists || smtp_ciphertext_exists || business_ciphertext_exists;
+            provider_ciphertext_exists || smtp_ciphertext_exists;
         let StartupKeyMaterial {
             keys,
             secrets: secret_manager,
@@ -436,19 +427,13 @@ impl AppState {
             settings.clone(),
             config.redis_keyspace.clone(),
         );
-        if let Some(legacy) = config.cltermux.as_ref() {
-            settings.import_legacy_account_provider(legacy).await?;
-        }
-        let linked_accounts =
-            LinkedAccountService::new(database.clone(), external_oauth.clone(), None)
-                .with_provider_settings(settings.clone());
         let portal_key_directory = config.key_directory.clone();
         let portal_secrets =
             load_account_provider_secret_manager(&portal_key_directory, portal_ciphertext_exists)
                 .await?;
-        let account_portal =
-            AccountPortalService::new(database.clone(), portal_secrets, clock.clone())
-                .map_err(|_| StateError::AccountPortalSecret(CryptoError::BlockingTask))?;
+        let resource_services =
+            ResourceServiceService::new(database.clone(), portal_secrets, clock.clone())
+                .map_err(|_| StateError::ResourceServiceSecret(CryptoError::BlockingTask))?;
 
         Ok(Self {
             config,
@@ -477,8 +462,7 @@ impl AppState {
             audit,
             factors,
             external_oauth,
-            linked_accounts,
-            account_portal,
+            resource_services,
             external_login_states,
             email_sender,
             email_outbox,

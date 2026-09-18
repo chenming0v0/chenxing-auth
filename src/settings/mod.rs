@@ -1,4 +1,3 @@
-pub mod account_providers;
 pub mod domain;
 pub mod issuer;
 pub(crate) mod issuer_passkey;

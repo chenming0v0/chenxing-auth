@@ -146,7 +146,7 @@ impl HarnessBuilder {
 
     /// 在默认 Config 字段全部落定之后、`AppState::new_with_pool` 之前应用自定义配置。
     ///
-    /// 用于覆盖 `oauth_provider_loopback_enabled`、`cltermux`、自定义 issuer 等
+    /// 用于覆盖 `oauth_provider_loopback_enabled`、自定义 issuer 等
     /// 不在默认面上的字段。只允许调用一次：重复调用会 panic，而不是静默丢弃先前的
     /// 变更；多项修改请在同一个闭包里完成。
     pub fn configure(mut self, f: impl FnOnce(&mut Config) + Send + 'static) -> Self {

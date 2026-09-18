@@ -77,27 +77,18 @@ audit_actions! {
     OauthProviderUpdate => "oauth_provider_update" => (Auth, Critical),
     OauthProviderActive => "oauth_provider_active" => (Auth, Critical),
     OauthProviderDisabled => "oauth_provider_disabled" => (Auth, Warning),
-    AccountProviderSave => "account_provider_save" => (Auth, Critical),
-    AccountPortalProviderSave => "account_portal_provider_save" => (Auth, Critical),
-    AccountPortalProviderDisable => "account_portal_provider_disable" => (Auth, Warning),
-    AccountPortalBind => "account_portal_bind" => (Account, Notice),
-    AccountPortalBindFailure => "account_portal_bind_failure" => (Account, Warning),
-    AccountPortalRefresh => "account_portal_refresh" => (Account, Notice),
-    AccountPortalUnlink => "account_portal_unlink" => (Account, Critical),
+    ResourceServiceProviderSave => "resource_service_provider_save" => (Auth, Critical),
+    ResourceServiceProviderDisable => "resource_service_provider_disable" => (Auth, Warning),
+    ResourceServiceBind => "resource_service_bind" => (Account, Notice),
+    ResourceServiceBindFailure => "resource_service_bind_failure" => (Account, Warning),
+    ResourceServiceRefresh => "resource_service_refresh" => (Account, Notice),
+    ResourceServiceUnlink => "resource_service_unlink" => (Account, Critical),
+    // 一键登录兑换成功签发会话令牌，Notice，对齐 TokenExchange；
+    // 兑换被拒是授权/账号状态拒绝，Warning，与绑定失败同级。
+    ResourceServiceExchange => "resource_service_exchange" => (Account, Notice),
+    ResourceServiceExchangeDenied => "resource_service_exchange_denied" => (Account, Warning),
     ExternalIdentityLink => "external_identity_link" => (Account, Notice),
     ExternalIdentityUnlink => "external_identity_unlink" => (Account, Critical),
-    // Issue #706：业务服务（CLtermux）绑定走 linked_accounts 表，与 OAuth 外部
-    // 身份绑定同属账号维度。绑定成功是 Notice（对齐 ExternalIdentityLink），
-    // 绑定失败是 Warning（对齐 LoginFailure 一类的失败事件）；刷新是常规同步
-    // 动作，Notice；resolve 被拒是授权拒绝，Warning（对齐 AdminAuthorizationDenied）。
-    // Issue #709：一键登录兑换成功签发会话令牌，Notice，对齐 TokenExchange；
-    // 兑换被拒是授权/账号状态拒绝，Warning，与绑定失败同级。
-    CltermuxCredentialBind => "cltermux_credential_bind" => (Account, Notice),
-    CltermuxCredentialBindFailure => "cltermux_credential_bind_failure" => (Account, Warning),
-    CltermuxCredentialRefresh => "cltermux_credential_refresh" => (Account, Notice),
-    CltermuxResolveDenied => "cltermux_resolve_denied" => (Account, Warning),
-    CltermuxExchange => "cltermux_exchange" => (Account, Notice),
-    CltermuxExchangeDenied => "cltermux_exchange_denied" => (Account, Warning),
     PasskeySettingUpdate => "passkey_setting_update" => (Auth, Critical),
 
     SessionRevoke => "session_revoke" => (Session, Warning),

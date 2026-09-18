@@ -200,10 +200,10 @@ fn published_migrator() -> Migrator {
 
 async fn revert_migrations_after_description(pool: &chenxing_auth::sqlx::PgPool) {
     for statement in [
-        "DROP TABLE account_portal_revocation_outbox",
-        "DROP TABLE account_portal_operations",
-        "DROP TABLE account_portal_bindings",
-        "DROP TABLE account_portal_providers",
+        "DROP TABLE resource_service_revocation_outbox",
+        "DROP TABLE resource_service_operations",
+        "DROP TABLE resource_service_bindings",
+        "DROP TABLE resource_service_providers",
         "DROP TABLE wallet_purchase_idempotency",
         "DROP TABLE user_quota_addon_purchases",
         "DROP TABLE plan_quota_addons",
@@ -354,8 +354,9 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     // 回收、access-token 撤销、JSONB shape CHECK、签发时 idle 窗口、
     // auth_method 与 secret 哈希配对 CHECK、client 展示字段、钱包与套餐定价、
     // 兑换码、配额加购和钱包购买幂等。0052 是 #706 的外部身份快照列，
-    // 0053 是 #706 的 CLtermux 业务账号绑定表；0054 是账户 provider registry
-    // 的 app_settings 种子。
+    // 0053 是 #706 的业务账号绑定表、0054 是 provider registry 的 app_settings
+    // 种子，两者都在 0059 被淘汰（表 DROP、设置行 DELETE），但作为历史链保留；
+    // 0058 是资源服务四张表，0059 把它们改名并加上 scope 声明列。
     //
     // 期望值来自仓库迁移目录而不是数据库自身，也不是写死的总数：目录一旦
     // 新增迁移，升级后的账本必须包含该版本，漏跑即失败。
@@ -469,10 +470,10 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     // 步骤应用进来，先把这些 schema 变更回退，模拟才忠实。列/表均为空，
     // 回退不影响被保留的身份数据。
     for statement in [
-        "DROP TABLE account_portal_revocation_outbox",
-        "DROP TABLE account_portal_operations",
-        "DROP TABLE account_portal_bindings",
-        "DROP TABLE account_portal_providers",
+        "DROP TABLE resource_service_revocation_outbox",
+        "DROP TABLE resource_service_operations",
+        "DROP TABLE resource_service_bindings",
+        "DROP TABLE resource_service_providers",
         "DROP TABLE wallet_purchase_idempotency",
         "DROP TABLE user_quota_addon_purchases",
         "DROP TABLE plan_quota_addons",
@@ -609,10 +610,10 @@ async fn flattened_repair_rejects_trigger_names_from_other_schema_or_wrong_table
         .expect("initialize current target schema");
 
     for statement in [
-        "DROP TABLE account_portal_revocation_outbox",
-        "DROP TABLE account_portal_operations",
-        "DROP TABLE account_portal_bindings",
-        "DROP TABLE account_portal_providers",
+        "DROP TABLE resource_service_revocation_outbox",
+        "DROP TABLE resource_service_operations",
+        "DROP TABLE resource_service_bindings",
+        "DROP TABLE resource_service_providers",
         "DROP TABLE wallet_purchase_idempotency",
         "DROP TABLE user_quota_addon_purchases",
         "DROP TABLE plan_quota_addons",

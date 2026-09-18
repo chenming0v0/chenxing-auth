@@ -1,6 +1,4 @@
 import type {
-  AccountProvider,
-  AccountProviderListResponse,
   AdminMeResponse,
   AuthStatusResponse,
   AuthorizationDecisionResponse,
@@ -8,20 +6,20 @@ import type {
   ExternalIdentityExtension,
   ExternalIdentityExtensionField,
   ExternalIdentityListResponse,
-  LinkedAccount,
-  LinkedAccountListResponse,
   PendingAuthorization,
+  ScopeCatalogItem,
+  ScopeCatalogResponse,
   UserMe,
   UserRole,
 } from './api-types'
-import { isManagedAccountProvider } from './account-provider-types'
 import {
-  isAccountPortalAdminProvider,
-  isAccountPortalAdminProviderList,
-  isAccountPortalBinding,
-  isAccountPortalBindingList,
-  isAccountPortalPublicProviderList,
-} from './account-portal-types'
+  isResourceServiceAdminProvider,
+  isResourceServiceAdminProviderList,
+  isResourceServiceBinding,
+  isResourceServiceBindingList,
+  isResourceServicePublicProviderList,
+  isResourceServiceScopeAccess,
+} from './resource-services-types'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -106,69 +104,25 @@ function isExternalIdentityListResponse(value: unknown): value is ExternalIdenti
     && value.items.every(isExternalIdentity)
 }
 
-/** guard 上限与 openapi.yaml maxItems/maxLength 对齐；超出即整体拒绝，不做半截渲染。 */
-const MAX_LINKED_ACCOUNT_ITEMS = 100
+/** scope 目录上限与 openapi.yaml maxItems 对齐；超出即整体拒绝，不做半截渲染。 */
+const MAX_SCOPE_CATALOG_ITEMS = 200
 
-function isNullableBoundedString(value: unknown, max: number): boolean {
-  return value === null || isBoundedString(value, max)
-}
-
-function isAccountProvider(value: unknown): value is AccountProvider {
+function isScopeCatalogItem(value: unknown): value is ScopeCatalogItem {
   if (!isRecord(value)
-    || !isBoundedString(value.id, 128)
-    || !isBoundedString(value.name, 256)
-    || !isNullableBoundedString(value.icon_url, 4096)
-    || value.kind !== 'service_account'
-    || value.binding_method !== 'credentials'
-    || typeof value.can_refresh !== 'boolean') return false
-  return Object.keys(value).every((key) =>
-    ['id', 'name', 'icon_url', 'kind', 'binding_method', 'can_refresh'].includes(key))
+    || !isBoundedString(value.scope, 128)
+    || !isBoundedString(value.title, 256)
+    || !isBoundedString(value.description, 1024)
+    || (value.source !== 'base' && value.source !== 'resource_service')
+    || !(value.access === null || isResourceServiceScopeAccess(value.access))
+    || !(value.provider_slug === null || isBoundedString(value.provider_slug, 64))) return false
+  return true
 }
 
-function isAccountProviderListResponse(value: unknown): value is AccountProviderListResponse {
+function isScopeCatalogResponse(value: unknown): value is ScopeCatalogResponse {
   return isRecord(value)
     && Array.isArray(value.items)
-    && value.items.length <= MAX_LINKED_ACCOUNT_ITEMS
-    && value.items.every(isAccountProvider)
-}
-
-function isLinkedAccount(value: unknown): value is LinkedAccount {
-  if (!isRecord(value)
-    || !isBoundedString(value.id, 128)
-    || (value.kind !== 'service_account' && value.kind !== 'oauth_identity')
-    || !isNullableBoundedString(value.uid, 255)
-    || !isNullableBoundedString(value.subject_hint, 512)
-    || !isBoundedString(value.account_status, 64)
-    || !isBoundedString(value.linked_at, 128)) return false
-  if (!isRecord(value.provider)
-    || !isBoundedString(value.provider.id, 128)
-    || !isBoundedString(value.provider.name, 256)
-    || !isNullableBoundedString(value.provider.icon_url, 4096)) return false
-  if (!isRecord(value.display)
-    || !isNullableBoundedString(value.display.name, 512)
-    || !isNullableBoundedString(value.display.email, 512)
-    || !isNullableBoundedString(value.display.avatar_url, 4096)) return false
-  if (!isRecord(value.capabilities)
-    || typeof value.capabilities.can_login !== 'boolean'
-    || typeof value.capabilities.can_refresh !== 'boolean') return false
-  if (!isRecord(value.sync)
-    || !isBoundedString(value.sync.status, 64)
-    || !isNullableBoundedString(value.sync.last_attempt_at, 128)
-    || !isNullableBoundedString(value.sync.last_success_at, 128)
-    || !isNullableBoundedString(value.sync.stale_after, 128)
-    || !isNullableBoundedString(value.sync.refresh_after, 128)
-    || !isNullableBoundedString(value.sync.error, 512)) return false
-  return Array.isArray(value.extensions)
-    && value.extensions.length <= MAX_EXTERNAL_IDENTITY_EXTENSIONS
-    && value.extensions.every(isExternalIdentityExtension)
-}
-
-function isLinkedAccountListResponse(value: unknown): value is LinkedAccountListResponse {
-  return isRecord(value)
-    && Array.isArray(value.items)
-    && value.items.length <= MAX_LINKED_ACCOUNT_ITEMS
-    && value.items.every(isLinkedAccount)
-    && (value.next_cursor === null || isBoundedString(value.next_cursor, 512))
+    && value.items.length <= MAX_SCOPE_CATALOG_ITEMS
+    && value.items.every(isScopeCatalogItem)
 }
 
 function isUserRole(value: unknown): value is UserRole {
@@ -233,25 +187,22 @@ type ResponseGuard = (value: unknown) => boolean
 
 export function responseGuard(path: string, method: string): ResponseGuard | undefined {
   const endpoint = path.split('?')[0]
-  if (endpoint === '/api/v1/admin/account-providers' && method === 'GET') {
-    return (value) => Array.isArray(value) && value.every(isManagedAccountProvider)
+  if (endpoint === '/api/v1/admin/resource-services' && method === 'GET') return isResourceServiceAdminProviderList
+  if (endpoint === '/api/v1/admin/resource-services' && method === 'POST') return isResourceServiceAdminProvider
+  if (/^\/api\/v1\/admin\/resource-services\/[^/]+$/.test(endpoint) && (method === 'GET' || method === 'PUT')) {
+    return isResourceServiceAdminProvider
   }
-  if (/^\/api\/v1\/admin\/account-providers\/[^/]+$/.test(endpoint) && method === 'PUT') return isManagedAccountProvider
-  if (endpoint === '/api/v1/admin/account-portal/providers' && method === 'GET') return isAccountPortalAdminProviderList
-  if (endpoint === '/api/v1/admin/account-portal/providers' && method === 'POST') return isAccountPortalAdminProvider
-  if (/^\/api\/v1\/admin\/account-portal\/providers\/[^/]+$/.test(endpoint) && (method === 'GET' || method === 'PUT')) {
-    return isAccountPortalAdminProvider
+  if (/^\/api\/v1\/admin\/resource-services\/[^/]+\/(enable|disable)$/.test(endpoint) && method === 'POST') {
+    return isResourceServiceAdminProvider
   }
-  if (/^\/api\/v1\/admin\/account-portal\/providers\/[^/]+\/(enable|disable)$/.test(endpoint) && method === 'POST') {
-    return isAccountPortalAdminProvider
+  if (endpoint === '/api/v1/auth/resource-services' && method === 'GET') return isResourceServicePublicProviderList
+  if (endpoint === '/api/v1/auth/resource-services/bindings' && method === 'GET') return isResourceServiceBindingList
+  if (endpoint === '/api/v1/auth/resource-services/bindings' && method === 'POST') return isResourceServiceBinding
+  if (/^\/api\/v1\/auth\/resource-services\/bindings\/[^/]+$/.test(endpoint) && method === 'GET') return isResourceServiceBinding
+  if (/^\/api\/v1\/auth\/resource-services\/bindings\/[^/]+\/(refresh|sync)$/.test(endpoint) && method === 'POST') {
+    return isResourceServiceBinding
   }
-  if (endpoint === '/api/v1/auth/account-portal/providers' && method === 'GET') return isAccountPortalPublicProviderList
-  if (endpoint === '/api/v1/auth/account-portal/bindings' && method === 'GET') return isAccountPortalBindingList
-  if (endpoint === '/api/v1/auth/account-portal/bindings' && method === 'POST') return isAccountPortalBinding
-  if (/^\/api\/v1\/auth\/account-portal\/bindings\/[^/]+$/.test(endpoint) && method === 'GET') return isAccountPortalBinding
-  if (/^\/api\/v1\/auth\/account-portal\/bindings\/[^/]+\/(refresh|sync)$/.test(endpoint) && method === 'POST') {
-    return isAccountPortalBinding
-  }
+  if (endpoint === '/api/v1/auth/oauth-scopes' && method === 'GET') return isScopeCatalogResponse
   if (endpoint === '/api/v1/auth/me') return isUserMeResponse
   // 头像的 PUT / DELETE 返回完整资料；GET 返回图片字节，不走 apiFetch。
   if (endpoint === '/api/v1/auth/me/avatar' && (method === 'PUT' || method === 'DELETE')) {
@@ -260,15 +211,6 @@ export function responseGuard(path: string, method: string): ResponseGuard | und
   if (endpoint === '/api/v1/auth/status') return isAuthStatusResponse
   if (endpoint === '/api/v1/admin/auth/me') return isAdminMeResponse
   if (endpoint === '/api/v1/auth/external-identities' && method === 'GET') return isExternalIdentityListResponse
-  if (endpoint === '/api/v1/auth/linked-accounts' && method === 'GET') return isLinkedAccountListResponse
-  if (endpoint === '/api/v1/auth/account-providers' && method === 'GET') return isAccountProviderListResponse
-
-  const linkedAccountEndpoint = /^\/api\/v1\/auth\/linked-accounts\/[^/]+$/
-  if (linkedAccountEndpoint.test(endpoint) && method === 'GET') return isLinkedAccount
-  const linkedAccountWriteEndpoint = /^\/api\/v1\/auth\/linked-accounts\/[^/]+\/(refresh)$/
-  if (linkedAccountWriteEndpoint.test(endpoint) && method === 'POST') return isLinkedAccount
-  const linkedAccountBindEndpoint = /^\/api\/v1\/auth\/account-providers\/[^/]+\/bindings$/
-  if (linkedAccountBindEndpoint.test(endpoint) && method === 'POST') return isLinkedAccount
 
   const pendingEndpoint = /^\/api\/v1\/oauth\/authorize\/requests\/[^/]+$/
   if (pendingEndpoint.test(endpoint)) {

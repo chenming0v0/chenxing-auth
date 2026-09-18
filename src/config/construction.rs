@@ -7,7 +7,6 @@ use crate::web_dist::{DEFAULT_WEB_DIST_DIR, WEB_DIST_DIR_ENV};
 
 use super::admin::admin_token_from_env;
 use super::audit::{AuditRetentionConfig, audit_retention_from_env};
-use super::cltermux::{CltermuxConfig, cltermux_config_from_env};
 use super::limits::{
     SecurityLimits, client_registration_limits_from_env, parse_auth_limiter_failure_policy,
     parse_missing_source_ip_policy, security_limits_from_env,
@@ -68,7 +67,6 @@ struct ConfigValues {
     trusted_proxies: TrustedProxies,
     security_limits: SecurityLimits,
     audit_retention: AuditRetentionConfig,
-    cltermux: Option<CltermuxConfig>,
 }
 
 impl Config {
@@ -212,7 +210,6 @@ impl Config {
         let trusted_proxies = trusted_proxies_from_env()?;
         let security_limits = security_limits_from_env()?;
         let audit_retention = audit_retention_from_env()?;
-        let cltermux = cltermux_config_from_env()?;
 
         Self::from_validated_values(ConfigValues {
             host,
@@ -252,7 +249,6 @@ impl Config {
             trusted_proxies,
             security_limits,
             audit_retention,
-            cltermux,
         })
     }
 
@@ -295,7 +291,6 @@ impl Config {
             trusted_proxies,
             security_limits,
             audit_retention,
-            cltermux,
         } = values;
         if host.trim().is_empty() {
             return Err(ConfigError::InvalidValue("APP_HOST"));
@@ -394,7 +389,6 @@ impl Config {
             trusted_proxies,
             security_limits,
             audit_retention,
-            cltermux,
         })
     }
 

@@ -124,6 +124,7 @@ fn database_uses_forward_only_transactional_migration_history() {
     );
     assert!(DB_MODULE.contains("include_str!(\"../../migrations/0057_client_quota_exempt.sql\")"));
     assert!(DB_MODULE.contains("include_str!(\"../../migrations/0058_account_portal.sql\")"));
+    assert!(DB_MODULE.contains("include_str!(\"../../migrations/0059_resource_services.sql\")"));
 
     // The migrations directory is the independent source of truth for the
     // current history. Every on-disk SQL file must be embedded exactly once in

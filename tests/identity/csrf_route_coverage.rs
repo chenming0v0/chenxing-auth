@@ -13,9 +13,11 @@
 
 use std::{collections::BTreeMap, fs, path::Path};
 
-const ROUTE_SOURCES: [&str; 2] = [
+const ROUTE_SOURCES: [&str; 3] = [
     include_str!("../../src/api/routes.rs"),
     include_str!("../../src/api/mod.rs"),
+    // 资源服务路由挂在独立模块里，写端点同样必须走 SessionWrite / AdminWrite。
+    include_str!("../../src/resource_services/routes.rs"),
 ];
 
 /// 需要 CSRF 保证的 HTTP 方法。GET/HEAD 不改状态，同源策略也拿不到响应体。
@@ -43,7 +45,7 @@ enum Exempt {
 }
 
 /// 状态改变路由的 CSRF 豁免白名单：`(路径, 方法, 依据)`。
-const EXEMPTIONS: [(&str, &str, Exempt); 16] = [
+const EXEMPTIONS: [(&str, &str, Exempt); 15] = [
     // —— OAuth 协议端点 ——
     ("/oauth/authorize", "post", Exempt::FrontChannelProtocol),
     ("/oauth/token", "post", Exempt::NonBrowserCredential),
@@ -80,11 +82,6 @@ const EXEMPTIONS: [(&str, &str, Exempt); 16] = [
         "/api/v1/auth/passkeys/authentication/finish",
         "post",
         Exempt::PreAuthTicket,
-    ),
-    (
-        "/api/v1/integrations/cltermux/resolve",
-        "post",
-        Exempt::NonBrowserCredential,
     ),
     // 一键登录兑换（Issue #709）：凭据是 `Authorization: Bearer` 里的辰星 Access
     // Token，由非浏览器客户端（手机端）显式附加，浏览器不会自动携带，因此不存在

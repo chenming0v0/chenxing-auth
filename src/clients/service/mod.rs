@@ -219,4 +219,16 @@ impl ClientService {
         self.idempotency_keys = Some(keys);
         self
     }
+
+    /// 带上按应用解析出的 scope allowlist 的副本，供单次注册 / 更新校验使用。
+    ///
+    /// allowlist 由资源服务目录在运行时动态给出（基础 scope + 该应用可见的
+    /// 服务 scope）；非法列表（空或超上限）时保持原有 allowlist，不放宽校验。
+    pub fn with_scope_allowlist(&self, allowed_scopes: Vec<String>) -> Self {
+        let mut scoped = self.clone();
+        if let Some(limits) = scoped.limits.clone().with_allowed_scopes(allowed_scopes) {
+            scoped.limits = limits;
+        }
+        scoped
+    }
 }

@@ -13,20 +13,16 @@ mod key_directory;
 #[path = "../support/oauth_flow.rs"]
 mod oauth_flow;
 
-mod account_provider_registry;
 mod cookie_security;
 mod csrf;
 mod csrf_route_coverage;
-// Issue #706：CLtermux 业务账号绑定（bind/refresh/delete + resolve）。
-mod cltermux_resolve;
-// Issue #709：辰星 Access Token 兑换 CLtermux 业务会话令牌。
-mod cltermux_exchange;
 mod email_change_attempt_budget;
 mod email_change_outbox;
 mod email_change_outbox_alerts;
 mod email_change_outbox_support;
 mod external_identity_binding;
-mod linked_accounts_cltermux;
+// Issue #709：辰星 Access Token 兑换资源服务会话令牌。
+mod resource_service_exchange;
 mod security_events_api;
 mod session_api;
 mod session_auth_role_bind;

@@ -109,17 +109,16 @@ async fn authorize_request(
         return error::oauth_bad_request("invalid_client", "client is invalid");
     };
 
-    let mut validated = match validate_authorization_request_with_allowlist(
-        &client,
-        request.clone(),
-        &state.config.client_registration_limits.allowed_scopes,
-    ) {
-        Ok(request) => request,
-        Err(validation_error) => {
-            tracing::info!(error = %validation_error, "OAuth authorization request rejected");
-            return authorization_error(&request, &client, validation_error);
-        }
-    };
+    let allowlist =
+        crate::resource_services::client_scope_allowlist(&state, Some(&client.client_id)).await;
+    let mut validated =
+        match validate_authorization_request_with_allowlist(&client, request.clone(), &allowlist) {
+            Ok(request) => request,
+            Err(validation_error) => {
+                tracing::info!(error = %validation_error, "OAuth authorization request rejected");
+                return authorization_error(&request, &client, validation_error);
+            }
+        };
 
     let session = match session_for_headers(&state, &headers).await {
         Ok(session) => session,

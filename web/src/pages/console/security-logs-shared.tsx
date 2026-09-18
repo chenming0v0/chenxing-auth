@@ -25,10 +25,12 @@ export const ACTION_PRESENTATION: Record<string, { label: string; tone: 'success
   user_avatar_remove: { label: '移除头像', tone: 'neutral' },
   oauth_consent: { label: '授权应用', tone: 'success' },
   oauth_consent_revoke: { label: '撤销授权', tone: 'warning' },
-  cltermux_credential_bind: { label: '绑定 CLtermux 账号', tone: 'success' },
-  cltermux_credential_bind_failure: { label: '绑定尝试被拒绝', tone: 'warning' },
-  cltermux_credential_refresh: { label: '同步 CLtermux 数据', tone: 'neutral' },
-  cltermux_resolve_denied: { label: 'CLtermux 解析被拒绝', tone: 'warning' },
+  resource_service_bind: { label: '绑定资源服务账号', tone: 'success' },
+  resource_service_bind_failure: { label: '资源服务绑定失败', tone: 'warning' },
+  resource_service_refresh: { label: '刷新资源服务令牌', tone: 'neutral' },
+  resource_service_unlink: { label: '解绑资源服务账号', tone: 'warning' },
+  resource_service_exchange: { label: '资源服务会话兑换', tone: 'neutral' },
+  resource_service_exchange_denied: { label: '资源服务会话兑换被拒绝', tone: 'warning' },
 }
 
 export function ActionBadge({ action }: { action: string }) {

@@ -289,6 +289,8 @@ async fn validated_pending(
     pending: &PendingAuthorization,
 ) -> Result<ValidatedAuthorizationRequest, DecisionError> {
     let client = load_client(state, &pending.client_id).await?;
+    let allowlist =
+        crate::resource_services::client_scope_allowlist(state, Some(&client.client_id)).await;
     let mut validated = validate_authorization_request_with_allowlist(
         &client,
         AuthorizationRequest {
@@ -303,7 +305,7 @@ async fn validated_pending(
             prompt: pending.prompt.clone(),
             max_age: pending.max_age,
         },
-        &state.config.client_registration_limits.allowed_scopes,
+        &allowlist,
     )
     .map_err(|_| DecisionError::InvalidRequest)?;
     // The caller already verified the pending request is bound to the current

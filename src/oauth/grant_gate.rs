@@ -107,8 +107,9 @@ pub(crate) async fn effective_grant_scopes(
 
     // 收窄而不是整体拒绝：管理员从 Client 上去掉 `email` 之后，既有授权应当
     // 继续以剩余 scope 工作，而不是让所有客户端一起失效。平台 allowlist 同时
-    // 参与判定，因为它是 scope 的最终上界（`OAUTH_CLIENT_ALLOWED_SCOPES`）。
-    let allowlist = &state.config.client_registration_limits.allowed_scopes;
+    // 参与判定，因为它是 scope 的最终上界（基础 scope + 该应用可见的资源服务
+    // scope；资源服务被禁用或撤销该应用的访问后，对应 scope 在这里被收窄掉）。
+    let allowlist = crate::resource_services::client_scope_allowlist(state, Some(client_id)).await;
     let effective = granted
         .iter()
         .filter(|scope| {

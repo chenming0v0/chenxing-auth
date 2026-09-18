@@ -43,14 +43,31 @@ const CLIENT: OwnedOAuthClient = {
   numeric_app_id: 1,
 }
 
+const BASE_SCOPE_CATALOG = [
+  { scope: 'openid', title: '身份标识', description: '获取你的唯一辰星 ID，用于识别账户身份', source: 'base', access: null, provider_slug: null },
+  { scope: 'profile', title: '基本资料', description: '查看你的昵称、头像与公开个人信息', source: 'base', access: null, provider_slug: null },
+  { scope: 'email', title: '电子邮箱', description: '读取与你账号关联的邮箱地址', source: 'base', access: null, provider_slug: null },
+]
+
+let scopeCatalog: unknown[] = BASE_SCOPE_CATALOG
+let scopeCatalogCalls: string[] = []
+
 beforeEach(() => {
   apiFetchMock.mockReset()
   apiFetchMock.mockResolvedValue({ ...CLIENT, client_secret: 'cxs_secret', auth_method: 'client_secret_basic' })
-  vi.stubGlobal('fetch', (path: string) => (
-    String(path) === '/.well-known/openid-configuration'
-      ? Promise.resolve({ ok: true, status: 200, json: async () => ({ issuer: 'https://issuer.example' }) } as Response)
-      : Promise.reject(new Error(`unexpected fetch ${String(path)}`))
-  ))
+  scopeCatalog = BASE_SCOPE_CATALOG
+  scopeCatalogCalls = []
+  vi.stubGlobal('fetch', (path: string) => {
+    const url = String(path)
+    if (url === '/.well-known/openid-configuration') {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ issuer: 'https://issuer.example' }) } as Response)
+    }
+    if (url.startsWith('/api/v1/auth/oauth-scopes')) {
+      scopeCatalogCalls.push(url)
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ items: scopeCatalog }) } as Response)
+    }
+    return Promise.reject(new Error(`unexpected fetch ${url}`))
+  })
 })
 afterEach(() => {
   cleanup()
@@ -284,6 +301,27 @@ describe('AppRegisterDrawer 编辑', () => {
     expect(listedUris()).toEqual(['https://app.example.com/callback', 'https://app.example.com/oauth'])
     expect(screen.getByRole('button', { name: '移除 https://app.example.com/callback' })).toBeTruthy()
     expect(redirectInput().tagName).toBe('INPUT')
+  })
+
+  it('目录接口返回资源服务 scope 时列出并标记来源；编辑时带 client_id 查询', async () => {
+    scopeCatalog = [
+      ...BASE_SCOPE_CATALOG,
+      { scope: 'demo:access', title: '演示服务', description: '访问演示服务账号', source: 'resource_service', access: 'restricted', provider_slug: 'demo' },
+    ]
+    render(<AppRegisterDrawer editing={CLIENT} onClose={() => {}} onCreated={() => {}} onUpdated={() => {}} />)
+    expect(await screen.findByRole('switch', { name: '演示服务' })).toBeTruthy()
+    expect(screen.getByText('访问演示服务账号')).toBeTruthy()
+    expect(screen.getByText('资源服务')).toBeTruthy()
+    expect(scopeCatalogCalls).toEqual(['/api/v1/auth/oauth-scopes?client_id=cx-client-demo'])
+  })
+
+  it('目录接口不可用时回落到离线基础目录', async () => {
+    vi.stubGlobal('fetch', () => Promise.reject(new Error('offline')))
+    renderCreate()
+    expect(permissionSwitch('身份标识')).toBeTruthy()
+    expect(permissionSwitch('基本资料')).toBeTruthy()
+    expect(permissionSwitch('电子邮箱')).toBeTruthy()
+    expect(screen.queryByText('资源服务')).toBeNull()
   })
 
   it('编辑时保留目录外的已有权限，不会悄悄丢掉', async () => {

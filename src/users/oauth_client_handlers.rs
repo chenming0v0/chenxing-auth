@@ -162,9 +162,10 @@ pub async fn create_owned_client(
         }
     };
     let actor_id = session.user_id.to_string();
+    // 新应用尚无 client_id：allowlist = 基础 scope + public 资源服务 scope。
+    let clients = crate::resource_services::scoped_client_service(&state, None).await;
     let result = match idempotency_key {
-        Some(key) => state
-            .clients
+        Some(key) => clients
             .register_for_user_with_audit_idempotent(
                 session.user_id,
                 input,
@@ -185,8 +186,7 @@ pub async fn create_owned_client(
             // 幂等恢复路径没有随行的事务内套餐快照；配额强制已在幂等插入
             // 事务内完成（Issue #479/#50），这里稍后只补取展示用的限额。
             .map(|client| Some((client, None))),
-        None => state
-            .clients
+        None => clients
             .register_for_user_with_audit(session.user_id, input, move |client| {
                 AuditEvent::new(
                     "user".to_owned(),
@@ -261,8 +261,8 @@ pub async fn update_owned_client(
     Path(client_id): Path<String>,
     ApiJson(input): ApiJson<ClientRegistrationInput>,
 ) -> Response {
-    match state
-        .clients
+    let clients = crate::resource_services::scoped_client_service(&state, Some(&client_id)).await;
+    match clients
         .update_for_user(session.user_id, &client_id, input)
         .await
     {
