@@ -179,7 +179,7 @@ async fn missing_portal_key_with_persisted_ciphertext_fails_closed() {
         Err(other) => panic!("unexpected error: {other:?}"),
     }
     assert!(!key_path.exists());
-    assert!(ciphertext.as_bytes().first().is_some());
+    assert!(!ciphertext.as_bytes().is_empty());
 
     let _ = std::fs::remove_dir_all(root);
 }

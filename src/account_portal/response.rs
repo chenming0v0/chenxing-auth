@@ -54,12 +54,12 @@ pub fn service_error(error: ServiceError) -> Response {
             error::bad_request("invalid_response", "provider response was invalid")
         }
     };
-    if let Some(seconds) = retry_after {
-        if let Ok(value) = axum::http::HeaderValue::from_str(&seconds.as_secs().to_string()) {
-            response
-                .headers_mut()
-                .insert(axum::http::header::RETRY_AFTER, value);
-        }
+    if let Some(seconds) = retry_after
+        && let Ok(value) = axum::http::HeaderValue::from_str(&seconds.as_secs().to_string())
+    {
+        response
+            .headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, value);
     }
     with_no_store_headers(response)
 }

@@ -31,7 +31,8 @@ const CI_WORKFLOW: &str = include_str!("../../.github/workflows/ci.yml");
 const OPENAPI: &str = include_str!("../../openapi.yaml");
 const ROUTE_SOURCES: &str = concat!(
     include_str!("../../src/api/routes.rs"),
-    include_str!("../../src/api/mod.rs")
+    include_str!("../../src/api/mod.rs"),
+    include_str!("../../src/account_portal/routes.rs")
 );
 
 fn static_route_paths(source: &str) -> BTreeSet<String> {

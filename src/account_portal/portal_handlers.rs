@@ -22,13 +22,16 @@ pub struct CreateBindingBody {
     pub secret: String,
 }
 
-fn required_idempotency_key(headers: &HeaderMap) -> Result<Uuid, Response> {
+fn required_idempotency_key(headers: &HeaderMap) -> Result<Uuid, &'static str> {
     let raw = headers
         .get("idempotency-key")
         .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| error::bad_request("invalid_request", "Idempotency-Key is required"))?;
-    Uuid::parse_str(raw)
-        .map_err(|_| error::bad_request("invalid_request", "Idempotency-Key must be a UUID"))
+        .ok_or("Idempotency-Key is required")?;
+    Uuid::parse_str(raw).map_err(|_| "Idempotency-Key must be a UUID")
+}
+
+fn missing_idempotency_key(message: &'static str) -> Response {
+    error::bad_request("invalid_request", message)
 }
 
 pub async fn list_providers(State(state): State<AppState>, _session: SessionRead) -> Response {
@@ -53,7 +56,7 @@ pub async fn create_binding(
 ) -> Response {
     let idempotency_key = match required_idempotency_key(&headers) {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(message) => return missing_idempotency_key(message),
     };
     let Some(credential) = session.user_session_credential() else {
         return service_error(ServiceError::SessionInvalid);
@@ -93,7 +96,7 @@ pub async fn refresh_binding(
 ) -> Response {
     let idempotency_key = match required_idempotency_key(&headers) {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(message) => return missing_idempotency_key(message),
     };
     let Some(credential) = session.user_session_credential() else {
         return service_error(ServiceError::SessionInvalid);
