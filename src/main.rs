@@ -144,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut workers = WorkerSupervisor::new(state.worker_health.clone());
 
     // Route admission is runtime-gated, so worker startup cannot be frozen by the issuer
-    // state observed during construction. All five tasks are supervised: a panic or return
+    // state observed during construction. All six tasks are supervised: a panic or return
     // removes readiness immediately and initiates process shutdown.
     let issuer_state = state.clone();
     workers.spawn(WorkerName::IssuerSync, move |worker| {
@@ -166,6 +166,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let quota_clock = state.clock.clone();
     workers.spawn(WorkerName::QuotaRefund, move |worker| {
         quotas.run_refund_worker(quota_clock, QUOTA_REFUND_WORKER_INTERVAL, worker)
+    });
+    let account_portal = state.account_portal.clone();
+    workers.spawn(WorkerName::AccountPortalRevoke, move |worker| {
+        account_portal.run_revocation_worker(worker)
     });
 
     let app = api::router(state);

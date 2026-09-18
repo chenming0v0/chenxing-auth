@@ -19,7 +19,8 @@ import {
   REDIRECT_URI_RULE_MESSAGE,
 } from './developer-shared'
 import { PermissionChecklist } from './permission-checklist'
-import { RedirectUriList, type RedirectUriListHandle } from './redirect-uri-list'
+import { MAX_REDIRECT_URIS, RedirectUriList, type RedirectUriListHandle } from './redirect-uri-list'
+import { OfficialCallbackBlock, officialCallbackUrl, useIssuer, type OfficialCallbackState } from './official-callback'
 
 const NAME_MAX = 128
 const DESCRIPTION_MAX = 512
@@ -149,6 +150,14 @@ export function AppRegisterDrawer({
   const { busy, run } = useMutationLock()
   const kindLabelId = useId()
   const previewLogo = form.logoUri.trim()
+  const officialApp = editing?.auth_method === 'none' ? editing : null
+  const issuer = useIssuer()
+  const officialUrl = officialApp ? officialCallbackUrl(issuer, officialApp.numeric_app_id) : null
+  const officialState: OfficialCallbackState = officialUrl !== null && form.redirectUris.includes(officialUrl)
+    ? 'present'
+    : form.redirectUris.length >= MAX_REDIRECT_URIS
+      ? 'full'
+      : 'absent'
 
   useEffect(() => {
     setLogoFailed(false)
@@ -343,11 +352,11 @@ export function AppRegisterDrawer({
                 options={CONFIDENTIAL_AUTH_OPTIONS}
                 hint="机密客户端在令牌端点出示 Secret 的方式。公开客户端固定为 none。"
               />
-              <p className="chenxing-caption">原生应用请改用公开客户端。第三方填自己的 HTTPS 回调；官方手机应用用本 Issuer 的 /app/&lt;数字ID&gt;/oauth/callback。</p>
+              <p className="chenxing-caption">原生应用请改用公开客户端。第三方填自己的 HTTPS 回调。</p>
             </>
           ) : (
             <Notice tone="info">
-              公开客户端不签发 Client Secret，换令牌时必须使用 PKCE。第三方填自己的 HTTPS 回调；官方手机应用创建后把 Redirect 改成本 Issuer 的 /app/&lt;数字ID&gt;/oauth/callback，再去「软件链接」发布声明。
+              公开客户端不签发 Client Secret，换令牌时必须使用 PKCE。第三方填自己的 HTTPS 回调；官方手机应用创建后，在编辑页可一键加入本 Issuer 的官方回调，再去「软件链接」发布声明。
             </Notice>
           )}
         </HudPanel>
@@ -361,6 +370,15 @@ export function AppRegisterDrawer({
 
       <HudPanel className="space-y-4 !p-5">
         <p className="chenxing-label !mb-0">回调与权限</p>
+        {officialApp ? (
+          <OfficialCallbackBlock
+            numericAppId={officialApp.numeric_app_id}
+            issuer={issuer}
+            state={officialState}
+            busy={busy}
+            onAdd={(url) => update('redirectUris', [...form.redirectUris, url])}
+          />
+        ) : null}
         <RedirectUriList
           ref={redirectUrisRef}
           id={FIELD_ID.redirectUris}

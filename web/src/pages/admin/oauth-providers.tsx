@@ -5,6 +5,7 @@ import { AdminGate, useAdminAccess } from './shared'
 import { useDraftLeaveGuard, useFlashMessage } from './settings/panel'
 import { OAuthProvidersPanel } from './settings/oauth-providers-panel'
 import { AccountProvidersPanel } from './settings/account-providers-panel'
+import { AccountPortalPanel } from './settings/account-portal-panel'
 
 export function AdminOAuthProviders() {
   const access = useAdminAccess()
@@ -21,7 +22,8 @@ export function OAuthProvidersPageBody() {
   const { flash, message } = useFlashMessage()
   const [dirty, setDirty] = useState(false)
   const [accountDirty, setAccountDirty] = useState(false)
-  useDraftLeaveGuard(dirty || accountDirty)
+  const [portalDirty, setPortalDirty] = useState(false)
+  useDraftLeaveGuard(dirty || accountDirty || portalDirty)
   return (
     <>
       <PageIntro
@@ -33,6 +35,9 @@ export function OAuthProvidersPageBody() {
       <OAuthProvidersPanel onMessage={flash} onDirtyChange={setDirty} />
       <div className="mt-6">
         <AccountProvidersPanel onMessage={flash} onDirtyChange={setAccountDirty} />
+      </div>
+      <div className="mt-6">
+        <AccountPortalPanel onMessage={flash} onDirtyChange={setPortalDirty} />
       </div>
     </>
   )

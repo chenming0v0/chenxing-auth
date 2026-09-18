@@ -14,6 +14,20 @@ vi.mock('../../api', async (importOriginal) => ({
   apiFetch: apiFetchMock,
 }))
 
+// 官方回调区块用 useAuth 判断是否展示「去软件链接」；抽屉测试不挂 AuthProvider。
+vi.mock('../../auth-state', () => ({
+  useAuth: () => ({
+    user: {
+      id: 1, username: 'chenxing', email: 'chenxing@example.test', display_name: '测试员',
+      status: 'active', role: 'user', current_session_expires_at: '2026-08-20T00:00:00Z',
+      avatar_updated_at: null,
+    },
+    status: 'authenticated',
+  }),
+}))
+
+const OFFICIAL_CALLBACK = 'https://issuer.example/app/1/oauth/callback'
+
 const CLIENT: OwnedOAuthClient = {
   id: 1,
   client_id: 'cx-client-demo',
@@ -32,8 +46,16 @@ const CLIENT: OwnedOAuthClient = {
 beforeEach(() => {
   apiFetchMock.mockReset()
   apiFetchMock.mockResolvedValue({ ...CLIENT, client_secret: 'cxs_secret', auth_method: 'client_secret_basic' })
+  vi.stubGlobal('fetch', (path: string) => (
+    String(path) === '/.well-known/openid-configuration'
+      ? Promise.resolve({ ok: true, status: 200, json: async () => ({ issuer: 'https://issuer.example' }) } as Response)
+      : Promise.reject(new Error(`unexpected fetch ${String(path)}`))
+  ))
 })
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 function renderCreate(handlers: { onCreated?: (client: unknown) => void; onUpdated?: () => void; onClose?: () => void } = {}) {
   render(
@@ -110,12 +132,13 @@ describe('AppRegisterDrawer 创建', () => {
     await waitFor(() => expect(createBody()?.auth_method).toBe('none'))
   })
 
-  it('创建时不出现 Android 包名输入，公开客户端提示用自己的 https 回调', () => {
+  it('创建时不出现 Android 包名输入和官方回调区块，公开客户端提示编辑页一键加入', () => {
     renderCreate()
     expect(screen.queryByLabelText('Android 包名')).toBeNull()
     fireEvent.click(screen.getByRole('radio', { name: /公开客户端/ }))
     expect(screen.getByText(/第三方填自己的 HTTPS 回调/)).toBeTruthy()
-    expect(screen.getByText(/再去「软件链接」发布声明/)).toBeTruthy()
+    expect(screen.getByText(/在编辑页可一键加入本 Issuer 的官方回调/)).toBeTruthy()
+    expect(screen.queryByText('官方回调（本 Issuer）')).toBeNull()
   })
 
   it('机密客户端可改为 client_secret_post', async () => {
@@ -280,6 +303,62 @@ describe('AppRegisterDrawer 编辑', () => {
     const put = apiFetchMock.mock.calls.find(([path, init]) =>
       typeof path === 'string' && path.includes('/oauth-clients/') && init?.method === 'PUT')
     expect(JSON.parse(String(put?.[1]?.body)).scopes).toEqual(['openid', 'profile', 'custom_scope'])
+  })
+})
+
+describe('AppRegisterDrawer 编辑公开客户端的官方回调', () => {
+  const PUBLIC: OwnedOAuthClient = { ...CLIENT, auth_method: 'none' }
+
+  function renderEdit(client: OwnedOAuthClient, onUpdated = () => {}) {
+    render(<AppRegisterDrawer editing={client} onClose={() => {}} onCreated={() => {}} onUpdated={onUpdated} />)
+  }
+
+  it('机密客户端不显示官方回调区块', () => {
+    renderEdit(CLIENT)
+    expect(screen.queryByText('官方回调（本 Issuer）')).toBeNull()
+  })
+
+  it('显示完整官方回调 URL，一键加入回调列表后按钮变为已加入并随 PUT 提交', async () => {
+    const onUpdated = vi.fn()
+    apiFetchMock.mockResolvedValue(undefined)
+    renderEdit(PUBLIC, onUpdated)
+    expect(screen.getByText('官方回调（本 Issuer）')).toBeTruthy()
+    expect(screen.getByText('/app/1/oauth/callback')).toBeTruthy()
+    expect(await screen.findByText(OFFICIAL_CALLBACK)).toBeTruthy()
+    expect(screen.queryByRole('link', { name: '去软件链接' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '加入回调列表' }))
+    expect(listedUris()).toEqual(['https://app.example.com/callback', OFFICIAL_CALLBACK])
+    const added = screen.getByRole('button', { name: '已加入' })
+    expect(added.hasAttribute('disabled')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: '保存更新' }))
+    await waitFor(() => expect(onUpdated).toHaveBeenCalled())
+    const put = apiFetchMock.mock.calls.find(([path, init]) =>
+      typeof path === 'string' && path.includes('/oauth-clients/') && init?.method === 'PUT')
+    expect(JSON.parse(String(put?.[1]?.body)).redirect_uris).toEqual(['https://app.example.com/callback', OFFICIAL_CALLBACK])
+  })
+
+  it('官方回调已在列表时直接显示已加入', async () => {
+    renderEdit({ ...PUBLIC, redirect_uris: [OFFICIAL_CALLBACK] })
+    expect((await screen.findByRole('button', { name: '已加入' })).hasAttribute('disabled')).toBe(true)
+    expect(screen.queryByRole('button', { name: '加入回调列表' })).toBeNull()
+  })
+
+  it('回调列表已满时禁用加入并提示', async () => {
+    const full = Array.from({ length: MAX_REDIRECT_URIS }, (_, index) => `https://app.example.com/cb-${index}`)
+    renderEdit({ ...PUBLIC, redirect_uris: full })
+    await screen.findByText(OFFICIAL_CALLBACK)
+    expect(screen.getByRole('button', { name: '加入回调列表' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByText('回调列表已满，先移除一条再加入。')).toBeTruthy()
+  })
+
+  it('取不到 Issuer 时只展示路径并禁用加入', async () => {
+    vi.stubGlobal('fetch', () => Promise.reject(new Error('offline')))
+    renderEdit(PUBLIC)
+    expect(await screen.findByText('完整地址是配置中的 Issuer 加上这条路径。')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '加入回调列表' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.queryByText(OFFICIAL_CALLBACK)).toBeNull()
   })
 })
 

@@ -4,6 +4,7 @@ use std::{sync::Arc, time::Duration};
 mod issuer_worker;
 
 use crate::{
+    account_portal::{AccountPortalService, CryptoError, load_account_provider_secret_manager},
     admin::AdminAuthenticator,
     audit::AuditService,
     auth_factors::service::AuthFactorService,
@@ -85,6 +86,7 @@ pub struct AppState {
     pub factors: AuthFactorService,
     pub external_oauth: ExternalOAuthService,
     pub linked_accounts: LinkedAccountService,
+    pub account_portal: AccountPortalService,
     pub email_sender: Arc<dyn EmailSender>,
     pub email_outbox: EmailOutbox,
     pub external_login_states: ExternalLoginStateStore,
@@ -114,6 +116,8 @@ pub enum StateError {
     Cltermux(#[from] IntegrationError),
     #[error("external OAuth secret initialization failed: {0}")]
     ExternalOAuthSecret(#[from] crate::oauth::providers::secrets::SecretError),
+    #[error("account portal secret initialization failed: {0}")]
+    AccountPortalSecret(#[from] CryptoError),
     #[error("persisted credential migration failed: {0}")]
     SecretMigration(#[from] SecretMigrationError),
     /// 静态根校验与密钥加载都放在阻塞线程池执行，线程 panic 或被取消时只能观察到
@@ -223,6 +227,7 @@ impl AppState {
         self.factors = self.factors.clone().with_clock(clock.clone());
         self.plans = self.plans.clone().with_clock(clock.clone());
         self.audit = self.audit.clone().with_clock(clock.clone());
+        self.account_portal = self.account_portal.clone().with_clock(clock.clone());
         self.clock = clock;
         self
     }
@@ -297,6 +302,10 @@ impl AppState {
                 .map_err(crate::db::DbError::from)?;
         let business_ciphertext_exists =
             crate::settings::account_providers::has_ciphertext(&database)
+                .await
+                .map_err(crate::db::DbError::from)?;
+        let portal_ciphertext_exists =
+            crate::account_portal::store::has_persisted_ciphertext(&database)
                 .await
                 .map_err(crate::db::DbError::from)?;
         let persisted_secret_ciphertext_exists =
@@ -433,6 +442,13 @@ impl AppState {
         let linked_accounts =
             LinkedAccountService::new(database.clone(), external_oauth.clone(), None)
                 .with_provider_settings(settings.clone());
+        let portal_key_directory = config.key_directory.clone();
+        let portal_secrets =
+            load_account_provider_secret_manager(&portal_key_directory, portal_ciphertext_exists)
+                .await?;
+        let account_portal =
+            AccountPortalService::new(database.clone(), portal_secrets, clock.clone())
+                .map_err(|_| StateError::AccountPortalSecret(CryptoError::BlockingTask))?;
 
         Ok(Self {
             config,
@@ -462,6 +478,7 @@ impl AppState {
             factors,
             external_oauth,
             linked_accounts,
+            account_portal,
             external_login_states,
             email_sender,
             email_outbox,

@@ -1,15 +1,32 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { apiFetch, type OwnedOAuthClient, type RegisteredOwnedOAuthClient } from '../../api'
+import { apiFetch, type ClientInput, type OwnedOAuthClient, type RegisteredOwnedOAuthClient } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Button, CopyValue, EmptyState, HudPanel, Icon, Notice } from '@chenxing/ui'
 import { AppRegisterDrawer } from './app-register-drawer'
 import { formatQuota, newIdempotencyKey } from './developer-shared'
+import { OfficialCallbackBlock, officialCallbackUrl, useIssuer, type OfficialCallbackState } from './official-callback'
+import { MAX_REDIRECT_URIS } from './redirect-uri-list'
 import { entitlementState, listAllOwnedOAuthClients, SelfServiceClosedBlock, useEntitlements } from './shared'
+
+type IssuedClient = { client: OwnedOAuthClient; secret: string | null }
+
+function clientInputOf(client: OwnedOAuthClient, redirectUris: string[]): ClientInput {
+  return {
+    client_name: client.client_name,
+    redirect_uris: redirectUris,
+    scopes: client.scopes,
+    logo_uri: client.logo_uri,
+    client_uri: client.client_uri,
+    description: client.description ?? null,
+  }
+}
 
 export function IntegratePage() {
   const [clients, setClients] = useState<OwnedOAuthClient[]>([])
   const [loading, setLoading] = useState(true)
-  const [issued, setIssued] = useState<{ clientId: string; secret: string | null } | null>(null)
+  const [issued, setIssued] = useState<IssuedClient | null>(null)
+  const [addingCallback, setAddingCallback] = useState(false)
+  const issuer = useIssuer()
   const [message, setMessage] = useState('')
   const [rotatingClientIds, setRotatingClientIds] = useState<Set<string>>(() => new Set())
   const rotatingClientIdsRef = useRef(new Set<string>())
@@ -27,6 +44,12 @@ export function IntegratePage() {
   // plan === null 是唯一判据：平台未开放自助接入，创建入口关闭，已有应用照常管理
   const selfServiceClosed = plans.kind === 'closed'
   const gateNoteId = useId()
+  const issuedOfficialUrl = issued ? officialCallbackUrl(issuer, issued.client.numeric_app_id) : null
+  const issuedCallbackState: OfficialCallbackState = issued && issuedOfficialUrl !== null && issued.client.redirect_uris.includes(issuedOfficialUrl)
+    ? 'present'
+    : issued && issued.client.redirect_uris.length >= MAX_REDIRECT_URIS
+      ? 'full'
+      : 'absent'
 
   const load = useCallback(() => {
     if (!mountedRef.current) return
@@ -75,9 +98,32 @@ export function IntegratePage() {
   }
 
   function handleCreated(client: RegisteredOwnedOAuthClient) {
-    setIssued({ clientId: client.client_id, secret: client.client_secret ?? null })
+    const { client_secret, ...rest } = client
+    setIssued({ client: rest, secret: client_secret ?? null })
     closeDrawer()
     load()
+  }
+
+  async function addOfficialCallback(url: string) {
+    if (!issued || addingCallback) return
+    const target = issued.client
+    setAddingCallback(true)
+    setMessage('')
+    try {
+      const redirectUris = [...target.redirect_uris, url]
+      await apiFetch<void>(`/api/v1/auth/oauth-clients/${encodeURIComponent(target.client_id)}`, {
+        method: 'PUT',
+        body: JSON.stringify(clientInputOf(target, redirectUris)),
+      })
+      setIssued((current) => (current && current.client.client_id === target.client_id
+        ? { ...current, client: { ...current.client, redirect_uris: redirectUris } }
+        : current))
+      load()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '加入官方回调失败。')
+    } finally {
+      setAddingCallback(false)
+    }
   }
 
   function handleUpdated() {
@@ -85,7 +131,8 @@ export function IntegratePage() {
     load()
   }
 
-  async function rotate(clientId: string) {
+  async function rotate(client: OwnedOAuthClient) {
+    const clientId = client.client_id
     if (rotatingClientIdsRef.current.has(clientId)) return
     if (!window.confirm('轮换后旧 Secret 将失效，且新 Secret 只显示这一次，继续吗？')) return
     rotatingClientIdsRef.current.add(clientId)
@@ -99,7 +146,7 @@ export function IntegratePage() {
         headers: { 'Idempotency-Key': key },
       })
       rotationIdempotencyKeysRef.current.delete(clientId)
-      setIssued({ clientId: response.client_id, secret: response.client_secret })
+      setIssued({ client, secret: response.client_secret })
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Secret 轮换失败。')
     } finally {
@@ -200,14 +247,24 @@ export function IntegratePage() {
               <Icon name={issued.secret ? 'key-round' : 'shield-check'} className="text-[var(--chenxing-cyan)]" size={18} />
             </div>
             <div className={`grid gap-4 ${issued.secret ? 'md:grid-cols-2' : ''}`}>
-              <div><span className="chenxing-label">Client ID</span><CopyValue value={issued.clientId} ariaLabel="复制 Client ID" /></div>
+              <div><span className="chenxing-label">Client ID</span><CopyValue value={issued.client.client_id} ariaLabel="复制 Client ID" /></div>
               {issued.secret ? (
                 <div><span className="chenxing-label">Client Secret</span><CopyValue value={issued.secret} ariaLabel="复制 Client Secret" /></div>
               ) : null}
             </div>
             {issued.secret ? (
               <div className="mt-4"><Notice tone="warning">Secret 不会再次从列表接口返回，请立即保存到受保护的服务端配置中。</Notice></div>
-            ) : null}
+            ) : (
+              <div className="mt-4">
+                <OfficialCallbackBlock
+                  numericAppId={issued.client.numeric_app_id}
+                  issuer={issuer}
+                  state={issuedCallbackState}
+                  busy={addingCallback}
+                  onAdd={(url) => void addOfficialCallback(url)}
+                />
+              </div>
+            )}
           </HudPanel>
         ) : null}
 
@@ -259,7 +316,7 @@ export function IntegratePage() {
                     {deletingClientIds.has(client.client_id) ? '删除中…' : '删除'}
                   </Button>
                   {client.auth_method === 'none' ? null : (
-                    <Button variant="ghost" icon="refresh-cw" disabled={rotatingClientIds.has(client.client_id)} onClick={() => void rotate(client.client_id)}>
+                    <Button variant="ghost" icon="refresh-cw" disabled={rotatingClientIds.has(client.client_id)} onClick={() => void rotate(client)}>
                       {rotatingClientIds.has(client.client_id) ? '轮换中…' : '轮换'}
                     </Button>
                   )}
@@ -294,7 +351,7 @@ export function IntegratePage() {
         <div className="mt-5 grid gap-4 lg:grid-cols-3">
           {[
             ['01', '注册应用', '创建应用并拿到 Client ID。机密客户端另发一次性 Secret；公开客户端用 PKCE，不签发 Secret。'],
-            ['02', '配置回调地址', '第三方登记自己的 HTTPS Redirect URI，并在自己的域名发布 assetlinks.json。官方手机应用用本 Issuer 的 /app/<数字ID>/oauth/callback，再由 Owner 在「软件链接」发布声明。'],
+            ['02', '配置回调地址', '第三方填自己的 HTTPS Redirect URI，并在自己域名发布 assetlinks.json。官方手机应用在编辑页一键加入本 Issuer 的官方回调，再由 Owner 在「软件链接」发布声明。'],
             ['03', '发起授权请求', '携带 PKCE 参数跳转授权端点，用授权码换取令牌。'],
           ].map(([n, title, copy]) => (
             <div className="flex gap-3" key={n}>

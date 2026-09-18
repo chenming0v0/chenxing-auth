@@ -100,7 +100,7 @@ use crate::{
 use super::discovery::{jwks, openid_configuration};
 
 pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
-    router
+    crate::account_portal::routes::register(router)
         .route(
             "/.well-known/openid-configuration",
             get(openid_configuration),

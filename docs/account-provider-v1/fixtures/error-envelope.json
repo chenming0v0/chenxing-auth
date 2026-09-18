@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "credential_invalid",
+    "message": "credentials rejected",
+    "retryable": false,
+    "request_id": "b6b9a1e2-6f0a-4d2f-8f7c-1c2d3e4f5a6b"
+  }
+}

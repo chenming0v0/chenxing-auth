@@ -1,0 +1,36 @@
+{
+  "protocol": "account-provider/v1",
+  "issuer": "https://provider.example.com",
+  "grant_id": "9f0c2b7e-3d41-4a88-b1c2-7e6f5d4c3b2a",
+  "client_binding_id": "5c1f9c3a-0a1b-4c2d-9e3f-1a2b3c4d5e6f",
+  "uid": "acct-1001",
+  "scope": "account:read",
+  "token_type": "Bearer",
+  "access_token": "cxap_at_AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+  "expires_in": 900,
+  "refresh_token": "cxap_rt_BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
+  "refresh_expires_at": "2026-10-18T00:05:00Z",
+  "grant_expires_at": "2026-12-17T00:00:00Z",
+  "snapshot": {
+    "schema_version": "1",
+    "issuer": "https://provider.example.com",
+    "uid": "acct-1001",
+    "account": "demo-account-1001",
+    "name": "示例用户",
+    "status": "active",
+    "subscription": {
+      "kind": "expires_at",
+      "expires_at": "2026-12-31T23:59:59Z"
+    },
+    "fields": [
+      { "key": "uid", "label": "UID", "type": "text", "value": "acct-1001" },
+      { "key": "account_status", "label": "账号状态", "type": "status", "value": "active" },
+      { "key": "is_subscribed", "label": "已订阅", "type": "boolean", "value": true },
+      { "key": "subscription_expires_at", "label": "订阅到期", "type": "datetime", "value": "2026-12-31T23:59:59Z" },
+      { "key": "remaining_seconds", "label": "剩余订阅", "type": "duration", "value": 9071699 },
+      { "key": "device_status", "label": "设备状态", "type": "status", "value": "bound" },
+      { "key": "homepage", "label": "主页", "type": "url", "value": "https://provider.example.com/user/1001" }
+    ],
+    "fetched_at": "2026-09-18T00:05:00Z"
+  }
+}

@@ -29,6 +29,26 @@ pub enum SecretContext {
     Provider(i64),
     Smtp,
     AccountProvider(uuid::Uuid),
+    /// Account Provider v1 门户客户端配置（`client_secret`）。AAD 只含 provider UUID。
+    ///
+    /// 与旧的 [`SecretContext::AccountProvider`] 刻意分离：旧变体属于既有
+    /// `linked_accounts` 设置注册表，两套数据的密文不得可互换。
+    AccountPortalProvider(uuid::Uuid),
+    /// Account Provider v1 可逆令牌包（access + refresh）。AAD = provider UUID + binding UUID。
+    AccountPortalBindingToken {
+        provider: uuid::Uuid,
+        binding: uuid::Uuid,
+    },
+    /// Account Provider v1 操作上下文（在途创建/刷新的持久化操作状态）。
+    AccountPortalOperation {
+        provider: uuid::Uuid,
+        binding: uuid::Uuid,
+    },
+    /// Account Provider v1 撤销任务载荷。与操作上下文分成不同 purpose，密文不可互换。
+    AccountPortalRevocation {
+        provider: uuid::Uuid,
+        binding: uuid::Uuid,
+    },
 }
 
 impl SecretContext {
@@ -44,9 +64,38 @@ impl SecretContext {
                 aad.extend_from_slice(b"account-provider\0");
                 aad.extend_from_slice(id.as_bytes());
             }
+            Self::AccountPortalProvider(provider) => {
+                aad.extend_from_slice(b"account-portal\0provider\0");
+                aad.extend_from_slice(provider.as_bytes());
+            }
+            Self::AccountPortalBindingToken { provider, binding } => {
+                account_portal_pair_aad(&mut aad, b"binding-token\0", provider, binding);
+            }
+            Self::AccountPortalOperation { provider, binding } => {
+                account_portal_pair_aad(&mut aad, b"operation\0", provider, binding);
+            }
+            Self::AccountPortalRevocation { provider, binding } => {
+                account_portal_pair_aad(&mut aad, b"revocation\0", provider, binding);
+            }
         }
         aad
     }
+}
+
+/// 追加 `account-portal` 命名空间下「provider + binding」型 AAD。
+///
+/// purpose 自带结尾 `\0`，两个 UUID 各为固定 16 字节，因此编码无歧义，不需要
+/// 用空 UUID 之类的哨兵值来补位。旧变体的字节序列不受本函数影响。
+fn account_portal_pair_aad(
+    aad: &mut Vec<u8>,
+    purpose: &[u8],
+    provider: uuid::Uuid,
+    binding: uuid::Uuid,
+) {
+    aad.extend_from_slice(b"account-portal\0");
+    aad.extend_from_slice(purpose);
+    aad.extend_from_slice(provider.as_bytes());
+    aad.extend_from_slice(binding.as_bytes());
 }
 
 #[derive(Debug, Error)]

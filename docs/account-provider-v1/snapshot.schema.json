@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/chenming0v0/chenxing-auth/dev/docs/account-provider-v1/snapshot.schema.json",
+  "title": "Account Provider v1 snapshot root",
+  "description": "Account Provider v1 快照根（PLANNED）。$id 仅为本仓库文档的规范标识，不要求任何外部抓取。语义以同目录 protocol.md 第 9 节为准。注意：JSON Schema 无法内在地强制 fields[].key 唯一，也无法按 UTF-8 字节执行上限（maxLength 计 Unicode 码点），实现 MUST 在运行时执行 key 唯一与字节上限校验；schema 只覆盖结构与标量约束。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "issuer",
+    "uid",
+    "account",
+    "name",
+    "status",
+    "subscription",
+    "fields",
+    "fetched_at"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "issuer": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://",
+      "maxLength": 255,
+      "description": "必须与提供方配置的规范 origin 一致；不从 Host 或反代头推导。"
+    },
+    "uid": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "description": "提供方侧稳定且不复用的账号标识。"
+    },
+    "account": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "非敏感展示账号，必须非空；不得是凭据、会话或设备标识。"
+    },
+    "name": {
+      "type": ["string", "null"],
+      "maxLength": 128,
+      "description": "展示名；提供方没有真实姓名来源时必须为 null。"
+    },
+    "status": {
+      "enum": ["active", "disabled", "unknown"]
+    },
+    "subscription": {
+      "$ref": "#/$defs/subscription"
+    },
+    "fields": {
+      "type": "array",
+      "maxItems": 64,
+      "description": "key MUST 在运行时校验唯一（schema 无法强制）。消费方 MUST 忽略未知 type，且不得把未知类型按对象渲染。",
+      "items": {
+        "$ref": "#/$defs/field"
+      }
+    },
+    "fetched_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "本快照来源数据的新鲜度；RFC3339 UTC。"
+    }
+  },
+  "$defs": {
+    "subscription": {
+      "description": "判别联合。每个变体在允许真正未知附加属性的同时，拒绝其他已知变体的字段（`required` 只看键是否存在，因此 `expires_at: null` 同样被拒）。kind 超出下表的快照是无效快照：消费方 MUST fail closed 或标记 stale，绝不得当作 permanent/none。",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "expires_at"],
+          "additionalProperties": true,
+          "properties": {
+            "kind": { "const": "expires_at" },
+            "expires_at": { "type": "string", "format": "date-time" }
+          },
+          "not": {
+            "anyOf": [
+              { "required": ["remaining_seconds"] },
+              { "required": ["as_of"] }
+            ]
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "remaining_seconds", "as_of"],
+          "additionalProperties": true,
+          "properties": {
+            "kind": { "const": "remaining" },
+            "remaining_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "秒。0 表示到期，不表示未知。"
+            },
+            "as_of": { "type": "string", "format": "date-time" }
+          },
+          "not": { "required": ["expires_at"] }
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": true,
+          "properties": {
+            "kind": { "const": "permanent" }
+          },
+          "not": {
+            "anyOf": [
+              { "required": ["expires_at"] },
+              { "required": ["remaining_seconds"] },
+              { "required": ["as_of"] }
+            ]
+          }
+        },
+        {
+          "type": "object",
+          "description": "无订阅时省略任何到期字段，不得写 expires_at: null。",
+          "required": ["kind"],
+          "additionalProperties": true,
+          "properties": {
+            "kind": { "const": "none" }
+          },
+          "not": {
+            "anyOf": [
+              { "required": ["expires_at"] },
+              { "required": ["remaining_seconds"] },
+              { "required": ["as_of"] }
+            ]
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": true,
+          "properties": {
+            "kind": { "const": "unknown" }
+          },
+          "not": {
+            "anyOf": [
+              { "required": ["expires_at"] },
+              { "required": ["remaining_seconds"] },
+              { "required": ["as_of"] }
+            ]
+          }
+        }
+      ]
+    },
+    "field": {
+      "type": "object",
+      "required": ["key", "label", "type", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9_.-]*$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "v1 已知取值：text/number/boolean/status/datetime/duration/url。消费方遇到未列出的 type MUST 忽略该 field，不得按对象渲染；提供方在 v1 只产出已知取值。"
+        },
+        "value": {
+          "description": "具体类型由同对象 type 决定；已知 type 的约束见下方 allOf。未知 type 的 value 不受本 schema 约束。"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "text" } } },
+          "then": { "properties": { "value": { "type": "string", "maxLength": 512 } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "status" } } },
+          "then": { "properties": { "value": { "type": "string", "maxLength": 64 } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "number" } } },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "number",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "boolean" } } },
+          "then": { "properties": { "value": { "type": "boolean" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "datetime" } } },
+          "then": {
+            "properties": { "value": { "type": "string", "format": "date-time" } }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "duration" } } },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991,
+                "description": "秒（非负整数）；不是天数。"
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "url" } } },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "string",
+                "format": "uri",
+                "maxLength": 2048,
+                "pattern": "^https://[^/?#@\\s]+([/?#][^\\s]*)?$",
+                "description": "仅 HTTPS、无 userinfo（authority 段不得出现 @）。"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
