@@ -10,7 +10,7 @@ info:
     的路由关闭，包括 OAuth/OIDC 协议与授权确认、Discovery、JWKS、外部登录及其 Provider 管理。Issuer 门禁发现 Runtime
     处于 AwaitingIssuer 时会立即回读 PostgreSQL：合法持久化值会应用到当前请求并继续处理；无记录、空值/无效值、数据库读取失败、
     Runtime 已是 Pending/Invalid，或 DB/Runtime 事实无法一致应用时才返回 503。readiness 独立要求 raw DB 与 Runtime 完全一致，
-    且五个关键后台 worker 的心跳与最近成功均在各自时限内，签名密钥同步状态允许令牌签发。
+    且六个关键后台 worker 的心跳与最近成功均在各自时限内，签名密钥同步状态允许令牌签发。
 
     ADMIN_TOKEN 为空时整个已初始化管理面 fail closed：系统 Bearer 与浏览器 Session 两条管理通道都返回 403
     admin_disabled；唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口。WebAuthn 的显式 WEBAUTHN_RP_ID / WEBAUTHN_ORIGIN
@@ -46,6 +46,7 @@ tags:
   - name: Admin Plans
   - name: Admin Clients
   - name: Admin OAuth Providers
+  - name: Admin Identity Providers
   - name: Admin Auth Factors
   - name: Admin Operations
 paths:
@@ -55,7 +56,7 @@ paths:
       summary: 就绪探针（与 /health/ready 相同）
       operationId: health
       description: |
-        兼容别名，处理逻辑与 GET /health/ready 相同：检查数据库、Redis、Issuer 收敛和五个关键后台 worker。
+        兼容别名，处理逻辑与 GET /health/ready 相同：检查数据库、Redis、Issuer 收敛和六个关键后台 worker。
         raw DB 没有 Issuer 记录且 Runtime 也未加载 Issuer 是合法的保护模式，此时数据库、Redis、worker 和签名密钥同步均就绪则返回 200。
         raw DB 存在合法 Issuer 且 generation/value 与 Runtime 完全一致时同样返回 200。raw 记录为空或无效、读取失败、
         Runtime 已加载但数据库无记录、数据库有记录但 Runtime 未加载，或值/代次不一致时返回 503。
@@ -63,7 +64,7 @@ paths:
         响应体只暴露聚合状态，不含连接串或错误细节。
       responses:
         '200':
-          description: 数据库、Redis、五个关键 worker 和签名密钥同步均就绪，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
+          description: 数据库、Redis、六个关键 worker 和签名密钥同步均就绪，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
           content:
             application/json:
               schema:
@@ -92,13 +93,13 @@ paths:
       summary: 就绪探针
       operationId: healthReady
       description: |
-        检查数据库、Redis、Issuer 收敛和五个关键后台 worker，并确认签名密钥同步允许令牌签发。raw DB 与 Runtime 都没有 Issuer 是合法的保护模式；raw DB 存在合法 Issuer
+        检查数据库、Redis、Issuer 收敛和六个关键后台 worker，并确认签名密钥同步允许令牌签发。raw DB 与 Runtime 都没有 Issuer 是合法的保护模式；raw DB 存在合法 Issuer
         且 generation/value 与 Runtime 完全一致时也就绪。raw 记录为空或无效、读取失败、任一侧缺失、值/代次不一致，
         任一依赖超时/未就绪，或任一关键 worker 未成功启动、心跳/最近成功过期、连续失败、panic/意外返回，或签名密钥同步异常时返回 503。
         响应体只暴露聚合状态，不含连接串、主机名或错误细节。
       responses:
         '200':
-          description: 数据库、Redis、五个关键 worker 和签名密钥同步均就绪，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
+          description: 数据库、Redis、六个关键 worker 和签名密钥同步均就绪，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
           content:
             application/json:
               schema:
@@ -1519,6 +1520,173 @@ paths:
         '502': { $ref: '#/components/responses/BadGateway' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
         '504': { $ref: '#/components/responses/GatewayTimeout' }
+  /api/v1/auth/account-portal/providers:
+    get:
+      tags: [User Auth/Security]
+      summary: 查询可绑定的通用账号提供方
+      operationId: listAccountPortalProviders
+      security: [{ sessionCookie: [] }]
+      description: >-
+        返回当前启用的 Account Provider v1 提供方卡片元数据。不含 client_secret、令牌或密文。
+        这不是 OAuth / OIDC 客户端列表，也不是旧的 CLtermux 适配器注册表。
+      responses:
+        '200':
+          description: 启用中的提供方列表
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AccountPortalPublicProvider' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/account-portal/bindings:
+    get:
+      tags: [User Auth/Security]
+      summary: 查询当前用户的账号门户绑定
+      operationId: listAccountPortalBindings
+      security: [{ sessionCookie: [] }]
+      description: 只返回当前用户未 tombstone 的绑定。响应含快照卡片字段，不含令牌或密文。
+      responses:
+        '200':
+          description: 当前用户的活绑定
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AccountPortalBinding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    post:
+      tags: [User Auth/Security]
+      summary: 绑定通用账号提供方
+      operationId: createAccountPortalBinding
+      security:
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      description: >-
+        门户采集凭据后，用提供方 Basic 认证创建只读 `account:read` 授权。
+        原始凭据不落库；成功后只保存可逆加密令牌包。Idempotency-Key 必须是 UUID。
+      parameters:
+        - { $ref: '#/components/parameters/AccountPortalIdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountPortalBindingCreateInput' }
+      responses:
+        '201':
+          description: 绑定成功
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountPortalBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/account-portal/bindings/{id}:
+    get:
+      tags: [User Auth/Security]
+      summary: 查询单个账号门户绑定
+      operationId: getAccountPortalBinding
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 绑定视图，不含令牌
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountPortalBinding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    delete:
+      tags: [User Auth/Security]
+      summary: 解绑账号门户授权
+      operationId: unlinkAccountPortalBinding
+      security:
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      description: >-
+        本地 tombstone 绑定并清空令牌密文；向提供方的撤销走 outbox 异步收敛。
+        已解绑的绑定再次删除返回 204。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: 已解绑或原本就不是活绑定 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/account-portal/bindings/{id}/refresh:
+    post:
+      tags: [User Auth/Security]
+      summary: 刷新账号门户令牌
+      operationId: refreshAccountPortalBinding
+      security:
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      description: >-
+        使用本地加密包中的 refresh_token 向提供方轮换令牌。grant_id / uid / grant_expires_at 必须保持不变。
+        Idempotency-Key 必须是 UUID。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/AccountPortalIdempotencyKey' }
+      responses:
+        '200':
+          description: 刷新成功
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountPortalBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/account-portal/bindings/{id}/sync:
+    post:
+      tags: [User Auth/Security]
+      summary: 同步账号门户快照
+      operationId: syncAccountPortalBinding
+      security:
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      description: >-
+        用当前 access_token 向提供方拉取最新账号快照。网络失败时返回本地缓存，不使令牌失效。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 最新或缓存的绑定视图
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountPortalBinding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/linked-accounts:
     get:
       tags: [User Auth/Security]
@@ -3631,6 +3799,157 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/account-portal/providers:
+    get:
+      tags: [Admin Identity Providers]
+      summary: 账号门户提供方列表
+      operationId: listAccountPortalAdminProviders
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+      description: Owner 专属，需要 `manage_identity_providers`。不返回 client_secret 或密文。
+      responses:
+        '200':
+          description: 提供方配置，不含密钥
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AccountPortalAdminProvider' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    post:
+      tags: [Admin Identity Providers]
+      summary: 登记账号门户提供方
+      operationId: createAccountPortalAdminProvider
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      description: >-
+        创建前会向提供方 `/.well-known/account-provider` 拉取凭据标签。
+        issuer 必须是 HTTPS origin。client_secret 只在创建时提交，后续查询不返回。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountPortalProviderInput' }
+      responses:
+        '201':
+          description: 已登记
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountPortalAdminProvider' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/account-portal/providers/{id}:
+    get:
+      tags: [Admin Identity Providers]
+      summary: 查询账号门户提供方
+      operationId: getAccountPortalAdminProvider
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 提供方配置，不含密钥
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountPortalAdminProvider' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    put:
+      tags: [Admin Identity Providers]
+      summary: 更新账号门户提供方
+      operationId: updateAccountPortalAdminProvider
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      description: >-
+        必须携带当前 revision。存在活绑定、未完成操作或撤销 outbox 时禁止改 issuer / client_id。
+        client_secret 缺省或空字符串表示保留原密文。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountPortalProviderInput' }
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountPortalAdminProvider' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/account-portal/providers/{id}/enable:
+    post:
+      tags: [Admin Identity Providers]
+      summary: 启用账号门户提供方
+      operationId: enableAccountPortalAdminProvider
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 已启用
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountPortalAdminProvider' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/account-portal/providers/{id}/disable:
+    post:
+      tags: [Admin Identity Providers]
+      summary: 停用账号门户提供方
+      operationId: disableAccountPortalAdminProvider
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 已停用
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountPortalAdminProvider' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/oauth/providers:
     get:
       tags: [Admin OAuth Providers]
@@ -3893,6 +4212,15 @@ components:
         同键更换购买类型或请求内容返回 409 idempotency_key_conflict；缺失或非法键返回 400。
         服务端只保存 SHA-256 摘要，不保存原始键。
       schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]{1,128}$' }
+    AccountPortalIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        账号门户创建与刷新绑定的必填 UUID。同一逻辑操作必须复用同一键；
+        同键同指纹重放已提交结果，同键不同指纹返回 409 conflict。
+        缺失或非 UUID 返回 400 invalid_request。
+      schema: { type: string, format: uuid }
     Page: { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
     PageSize: { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
     Search: { name: search, in: query, required: false, schema: { type: string, maxLength: 128 } }
@@ -5400,6 +5728,71 @@ components:
         version: { type: integer, format: int64, minimum: 1 }
         outbound_token_configured: { type: boolean }
         inbound_token_configured: { type: boolean }
+    AccountPortalAdminProvider:
+      type: object
+      required: [id, display_name, issuer, client_id, identifier_label, secret_label, identifier_sensitive, enabled, revision, identity_locked]
+      properties:
+        id: { type: string, format: uuid }
+        display_name: { type: string, minLength: 1, maxLength: 128 }
+        issuer: { type: string, format: uri, description: 提供方自身 HTTPS origin，不是辰星 OIDC issuer }
+        client_id: { type: string, minLength: 1, maxLength: 512 }
+        identifier_label: { type: string }
+        secret_label: { type: string }
+        identifier_sensitive: { type: boolean }
+        enabled: { type: boolean }
+        revision: { type: integer, format: int64, minimum: 1 }
+        identity_locked: { type: boolean, description: 存在活绑定、未完成操作或撤销 outbox 时为 true }
+    AccountPortalPublicProvider:
+      type: object
+      required: [id, display_name, issuer, identifier_label, secret_label, identifier_sensitive]
+      properties:
+        id: { type: string, format: uuid }
+        display_name: { type: string }
+        issuer: { type: string, format: uri }
+        identifier_label: { type: string }
+        secret_label: { type: string }
+        identifier_sensitive: { type: boolean }
+    AccountPortalBinding:
+      type: object
+      required: [id, provider_id, issuer, uid, snapshot]
+      properties:
+        id: { type: string, format: uuid }
+        provider_id: { type: string, format: uuid }
+        issuer: { type: string, format: uri }
+        uid: { type: string }
+        account: { type: string, nullable: true }
+        name: { type: string, nullable: true }
+        status: { type: string, nullable: true }
+        snapshot: { type: object, additionalProperties: true }
+        grant_expires_at: { type: string, nullable: true }
+        access_expires_at: { type: string, nullable: true }
+        refresh_expires_at: { type: string, nullable: true }
+    AccountPortalProviderInput:
+      type: object
+      required: [display_name, issuer, client_id, expected_revision]
+      properties:
+        display_name: { type: string, minLength: 1, maxLength: 128 }
+        issuer: { type: string, format: uri, description: HTTPS origin，禁止路径、query、fragment、userinfo }
+        client_id: { type: string, minLength: 1, maxLength: 512, description: 不得包含冒号 }
+        client_secret:
+          type: string
+          minLength: 32
+          maxLength: 512
+          writeOnly: true
+          description: 创建时必填；更新时缺省或空字符串表示保留原密文
+        expected_revision: { type: integer, format: int64, minimum: 0, description: 创建时可传 0；更新必须等于当前 revision }
+    AccountPortalBindingCreateInput:
+      type: object
+      required: [provider_id, identifier, secret]
+      properties:
+        provider_id: { type: string, format: uuid }
+        identifier: { type: string, minLength: 1, maxLength: 255 }
+        secret:
+          type: string
+          minLength: 1
+          maxLength: 255
+          writeOnly: true
+          description: 门户采集的一次性凭据，服务端不落库
     OAuthProviderSummary:
       type: object
       description: >-

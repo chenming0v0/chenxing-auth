@@ -341,21 +341,21 @@ fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
         openapi
             .matches("#/components/responses/PayloadTooLarge")
             .count(),
-        55,
+        58,
         "every JSON request-body operation must declare the unified 413 envelope"
     );
     assert_eq!(
         openapi
             .matches("#/components/responses/UnsupportedMediaType")
             .count(),
-        55,
+        58,
         "every JSON request-body operation must declare the unified 415 envelope"
     );
     assert_eq!(
         openapi
             .matches("#/components/responses/InvalidJsonData")
             .count(),
-        55,
+        58,
         "every JSON request-body operation must declare the unified 422 envelope"
     );
     assert_eq!(
@@ -445,6 +445,8 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
         ("get", "/api/v1/admin/settings/security-limits"),
         ("get", "/api/v1/admin/oauth/providers"),
         ("get", "/api/v1/admin/account-providers"),
+        ("get", "/api/v1/admin/account-portal/providers"),
+        ("get", "/api/v1/admin/account-portal/providers/{id}"),
         ("get", "/api/v1/admin/wallet/redemption-codes"),
         ("get", "/api/v1/admin/wallet/redemption-codes/{id}"),
         ("get", "/api/v1/admin/plans/{id}/quota-addons"),
@@ -482,6 +484,13 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
         ("post", "/api/v1/admin/oauth/providers"),
         ("put", "/api/v1/admin/oauth/providers/{slug}"),
         ("put", "/api/v1/admin/account-providers/{slug}"),
+        ("post", "/api/v1/admin/account-portal/providers"),
+        ("put", "/api/v1/admin/account-portal/providers/{id}"),
+        ("post", "/api/v1/admin/account-portal/providers/{id}/enable"),
+        (
+            "post",
+            "/api/v1/admin/account-portal/providers/{id}/disable",
+        ),
         ("post", "/api/v1/admin/oauth/providers/{slug}/disable"),
         ("post", "/api/v1/admin/oauth/providers/{slug}/enable"),
         ("post", "/api/v1/admin/keys/rotate"),
@@ -579,12 +588,12 @@ fn openapi_paths_match_all_static_axum_routes() {
     let paths = openapi_paths();
     assert_eq!(
         routes.len(),
-        128,
+        137,
         "route inventory changed; review contract"
     );
     assert_eq!(
         paths.len(),
-        128,
+        137,
         "OpenAPI path inventory changed; review contract"
     );
     assert_eq!(routes, paths, "Axum and OpenAPI path inventories diverged");

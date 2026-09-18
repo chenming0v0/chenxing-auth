@@ -15,6 +15,13 @@ import type {
   UserRole,
 } from './api-types'
 import { isManagedAccountProvider } from './account-provider-types'
+import {
+  isAccountPortalAdminProvider,
+  isAccountPortalAdminProviderList,
+  isAccountPortalBinding,
+  isAccountPortalBindingList,
+  isAccountPortalPublicProviderList,
+} from './account-portal-types'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -230,6 +237,21 @@ export function responseGuard(path: string, method: string): ResponseGuard | und
     return (value) => Array.isArray(value) && value.every(isManagedAccountProvider)
   }
   if (/^\/api\/v1\/admin\/account-providers\/[^/]+$/.test(endpoint) && method === 'PUT') return isManagedAccountProvider
+  if (endpoint === '/api/v1/admin/account-portal/providers' && method === 'GET') return isAccountPortalAdminProviderList
+  if (endpoint === '/api/v1/admin/account-portal/providers' && method === 'POST') return isAccountPortalAdminProvider
+  if (/^\/api\/v1\/admin\/account-portal\/providers\/[^/]+$/.test(endpoint) && (method === 'GET' || method === 'PUT')) {
+    return isAccountPortalAdminProvider
+  }
+  if (/^\/api\/v1\/admin\/account-portal\/providers\/[^/]+\/(enable|disable)$/.test(endpoint) && method === 'POST') {
+    return isAccountPortalAdminProvider
+  }
+  if (endpoint === '/api/v1/auth/account-portal/providers' && method === 'GET') return isAccountPortalPublicProviderList
+  if (endpoint === '/api/v1/auth/account-portal/bindings' && method === 'GET') return isAccountPortalBindingList
+  if (endpoint === '/api/v1/auth/account-portal/bindings' && method === 'POST') return isAccountPortalBinding
+  if (/^\/api\/v1\/auth\/account-portal\/bindings\/[^/]+$/.test(endpoint) && method === 'GET') return isAccountPortalBinding
+  if (/^\/api\/v1\/auth\/account-portal\/bindings\/[^/]+\/(refresh|sync)$/.test(endpoint) && method === 'POST') {
+    return isAccountPortalBinding
+  }
   if (endpoint === '/api/v1/auth/me') return isUserMeResponse
   // 头像的 PUT / DELETE 返回完整资料；GET 返回图片字节，不走 apiFetch。
   if (endpoint === '/api/v1/auth/me/avatar' && (method === 'PUT' || method === 'DELETE')) {

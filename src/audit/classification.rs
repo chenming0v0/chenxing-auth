@@ -78,6 +78,12 @@ audit_actions! {
     OauthProviderActive => "oauth_provider_active" => (Auth, Critical),
     OauthProviderDisabled => "oauth_provider_disabled" => (Auth, Warning),
     AccountProviderSave => "account_provider_save" => (Auth, Critical),
+    AccountPortalProviderSave => "account_portal_provider_save" => (Auth, Critical),
+    AccountPortalProviderDisable => "account_portal_provider_disable" => (Auth, Warning),
+    AccountPortalBind => "account_portal_bind" => (Account, Notice),
+    AccountPortalBindFailure => "account_portal_bind_failure" => (Account, Warning),
+    AccountPortalRefresh => "account_portal_refresh" => (Account, Notice),
+    AccountPortalUnlink => "account_portal_unlink" => (Account, Critical),
     ExternalIdentityLink => "external_identity_link" => (Account, Notice),
     ExternalIdentityUnlink => "external_identity_unlink" => (Account, Critical),
     // Issue #706：业务服务（CLtermux）绑定走 linked_accounts 表，与 OAuth 外部

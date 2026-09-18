@@ -427,6 +427,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "client quota exempt",
             include_str!("../../migrations/0057_client_quota_exempt.sql"),
         ),
+        (
+            58,
+            "account portal consumer tables",
+            include_str!("../../migrations/0058_account_portal.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

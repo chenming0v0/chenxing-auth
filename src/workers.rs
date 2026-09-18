@@ -15,7 +15,7 @@ pub use supervisor::{
     WORKER_DRAIN_TIMEOUT, WorkerContext, WorkerDrainError, WorkerFailure, WorkerSupervisor,
 };
 
-pub const WORKER_COUNT: usize = 5;
+pub const WORKER_COUNT: usize = 6;
 const NEVER_RECORDED: u64 = 0;
 const TEST_ALWAYS_FRESH: u64 = u64::MAX;
 
@@ -26,6 +26,7 @@ pub enum WorkerName {
     EmailOutbox,
     KeySync,
     QuotaRefund,
+    AccountPortalRevoke,
 }
 
 impl WorkerName {
@@ -35,6 +36,7 @@ impl WorkerName {
         Self::EmailOutbox,
         Self::KeySync,
         Self::QuotaRefund,
+        Self::AccountPortalRevoke,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -44,6 +46,7 @@ impl WorkerName {
             Self::EmailOutbox => "email_outbox",
             Self::KeySync => "key_sync",
             Self::QuotaRefund => "quota_refund",
+            Self::AccountPortalRevoke => "account_portal_revoke",
         }
     }
 
@@ -64,6 +67,9 @@ impl WorkerName {
             Self::QuotaRefund => {
                 WorkerPolicy::new(Duration::from_secs(150), Duration::from_secs(180))
             }
+            Self::AccountPortalRevoke => {
+                WorkerPolicy::new(Duration::from_secs(20), Duration::from_secs(60))
+            }
         }
     }
 
@@ -74,6 +80,7 @@ impl WorkerName {
             Self::EmailOutbox => 2,
             Self::KeySync => 3,
             Self::QuotaRefund => 4,
+            Self::AccountPortalRevoke => 5,
         }
     }
 }
@@ -163,6 +170,7 @@ impl WorkerHealth {
                 shutting_down: AtomicBool::new(false),
                 supervisor_failed: AtomicBool::new(false),
                 slots: [
+                    WorkerSlot::new(),
                     WorkerSlot::new(),
                     WorkerSlot::new(),
                     WorkerSlot::new(),

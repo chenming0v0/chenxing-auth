@@ -12,6 +12,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 beforeEach(() => {
   vi.stubGlobal('fetch', (path: string) => {
     if (String(path) === '/api/v1/admin/oauth/providers') return Promise.resolve(jsonResponse([]))
+    if (String(path) === '/api/v1/admin/account-providers') return Promise.resolve(jsonResponse([]))
+    if (String(path) === '/api/v1/admin/account-portal/providers') return Promise.resolve(jsonResponse([]))
     return Promise.resolve(jsonResponse({ code: 'internal' }, 500))
   })
 })

@@ -200,6 +200,10 @@ fn published_migrator() -> Migrator {
 
 async fn revert_migrations_after_description(pool: &chenxing_auth::sqlx::PgPool) {
     for statement in [
+        "DROP TABLE account_portal_revocation_outbox",
+        "DROP TABLE account_portal_operations",
+        "DROP TABLE account_portal_bindings",
+        "DROP TABLE account_portal_providers",
         "DROP TABLE wallet_purchase_idempotency",
         "DROP TABLE user_quota_addon_purchases",
         "DROP TABLE plan_quota_addons",
@@ -465,6 +469,10 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     // 步骤应用进来，先把这些 schema 变更回退，模拟才忠实。列/表均为空，
     // 回退不影响被保留的身份数据。
     for statement in [
+        "DROP TABLE account_portal_revocation_outbox",
+        "DROP TABLE account_portal_operations",
+        "DROP TABLE account_portal_bindings",
+        "DROP TABLE account_portal_providers",
         "DROP TABLE wallet_purchase_idempotency",
         "DROP TABLE user_quota_addon_purchases",
         "DROP TABLE plan_quota_addons",
@@ -601,6 +609,10 @@ async fn flattened_repair_rejects_trigger_names_from_other_schema_or_wrong_table
         .expect("initialize current target schema");
 
     for statement in [
+        "DROP TABLE account_portal_revocation_outbox",
+        "DROP TABLE account_portal_operations",
+        "DROP TABLE account_portal_bindings",
+        "DROP TABLE account_portal_providers",
         "DROP TABLE wallet_purchase_idempotency",
         "DROP TABLE user_quota_addon_purchases",
         "DROP TABLE plan_quota_addons",
