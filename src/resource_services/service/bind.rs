@@ -146,9 +146,15 @@ impl ResourceServiceService {
                     .await
             }
             Err(error) => {
-                self.fail_operation(provider.id, OPERATION_CREATE, idempotency_key)
-                    .await?;
-                Err(ServiceError::from(error))
+                self.handle_provider_error(
+                    provider.id,
+                    OPERATION_CREATE,
+                    idempotency_key,
+                    binding.id,
+                    binding.generation,
+                    error,
+                )
+                .await
             }
         }
     }
