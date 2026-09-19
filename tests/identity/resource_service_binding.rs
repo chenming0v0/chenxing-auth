@@ -213,12 +213,13 @@ async fn create_binding_persists_binding_before_operation_and_commits() {
     let binding_id = Uuid::parse_str(body["id"].as_str().expect("binding id")).expect("uuid");
 
     // 提供方桩收到的 client_binding_id 必须就是本地绑定行的 id。
-    let calls = env.stub.calls.lock().expect("calls");
-    assert_eq!(calls.len(), 1);
-    assert!(matches!(calls[0].method, HttpMethod::Post));
-    let sent: Value = serde_json::from_slice(&calls[0].body).expect("request json");
-    assert_eq!(sent["client_binding_id"], binding_id.to_string());
-    drop(calls);
+    {
+        let calls = env.stub.calls.lock().expect("calls");
+        assert_eq!(calls.len(), 1);
+        assert!(matches!(calls[0].method, HttpMethod::Post));
+        let sent: Value = serde_json::from_slice(&calls[0].body).expect("request json");
+        assert_eq!(sent["client_binding_id"], binding_id.to_string());
+    }
 
     let (bindings, committed): (i64, i64) = chenxing_auth::sqlx::query_as(
         "SELECT
