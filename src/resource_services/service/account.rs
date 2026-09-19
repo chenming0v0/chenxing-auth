@@ -5,6 +5,8 @@ use crate::users::domain::UserId;
 use super::ResourceServiceService;
 use crate::resource_services::bundle::TokenBundle;
 use crate::resource_services::service_error::ServiceError;
+use crate::resource_services::snapshot::AccountSnapshot;
+use crate::resource_services::store::{LiveSnapshotWrite, Store};
 use crate::resource_services::types::BindingRow;
 use crate::resource_services::views::BindingView;
 
@@ -49,11 +51,41 @@ impl ResourceServiceService {
         let client = self.provider_client(&provider)?;
         match client.account(&bundle.access_token, &binding.uid).await {
             Ok(snapshot) => {
-                let mut cached = binding.clone();
-                cached.snapshot_json = snapshot.to_value();
-                Ok(BindingView::from_row(&cached))
+                self.persist_synced_snapshot(user_id, provider.revision, &binding, snapshot)
+                    .await
             }
             Err(_) => Ok(BindingView::from_row(&binding)),
         }
+    }
+
+    /// 短事务条件写入本次 GET /account 快照。CAS 失败不改令牌包。
+    async fn persist_synced_snapshot(
+        &self,
+        user_id: UserId,
+        expected_provider_revision: i64,
+        binding: &BindingRow,
+        snapshot: AccountSnapshot,
+    ) -> Result<BindingView, ServiceError> {
+        let mut tx = self.pool.begin().await?;
+        let Some(persisted) = Store::update_live_snapshot(
+            &mut tx,
+            LiveSnapshotWrite {
+                binding_id: binding.id,
+                user_id,
+                expected_generation: binding.generation,
+                expected_provider_revision,
+                snapshot_json: snapshot.to_value(),
+            },
+        )
+        .await?
+        else {
+            let current = Store::lock_binding(&mut tx, binding.id).await?;
+            return match current {
+                Some(row) if row.user_id == user_id && row.is_live() => Err(ServiceError::Conflict),
+                _ => Err(ServiceError::BindingNotFound),
+            };
+        };
+        tx.commit().await?;
+        Ok(BindingView::from_row(&persisted))
     }
 }
