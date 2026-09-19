@@ -3,7 +3,6 @@
 use crate::sqlx::{PgPool, PgRow, Row};
 use serde_json::Value;
 
-
 use super::types::{BindingRow, OperationRow, OutboxRow, ProviderRow, ScopeAccess};
 
 mod binding;
