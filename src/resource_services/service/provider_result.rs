@@ -58,6 +58,15 @@ impl ResourceServiceService {
         observed_generation: i64,
         error: ClientError,
     ) -> Result<BindingView, ServiceError> {
+        // 对外统一收口为 provider_unavailable 等稳定错误码，但运维需要能区分
+        // 「连不上 / 对端拒绝 / 协议不合」；错误 Display 只含分类与状态码，不含凭据。
+        tracing::warn!(
+            provider_id = %provider_id,
+            operation = operation_type,
+            binding_id = %binding_id,
+            error = %error,
+            "resource service provider call failed"
+        );
         if provider_already_committed(&error) {
             if let Some(view) = self
                 .probe_committed_binding(binding_id, observed_generation)

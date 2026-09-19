@@ -41,16 +41,31 @@ impl ResourceServiceService {
         if !provider.enabled {
             return Err(ServiceError::ProviderDisabled);
         }
-        let live =
-            Store::lock_live_binding_for_user(&mut tx, provider_id, credential.user_id).await?;
-        let binding_id = match live.as_ref() {
-            Some(existing) if !existing.uid.is_empty() => {
-                tx.commit().await?;
-                return Ok(BindingView::from_row(existing));
-            }
-            Some(existing) => existing.id,
-            None => Uuid::new_v4(),
-        };
+        // 绑定行必须先于操作行存在：`resource_service_operations.binding_id` 有外键指向
+        // `resource_service_bindings(id)`，先 claim 操作再插绑定会直接撞外键。
+        // 在同一事务内先落 pending 绑定；后续任何早退（指纹冲突、已失败）都随事务回滚。
+        let binding =
+            match Store::lock_live_binding_for_user(&mut tx, provider_id, credential.user_id)
+                .await?
+            {
+                Some(existing) if !existing.uid.is_empty() => {
+                    tx.commit().await?;
+                    return Ok(BindingView::from_row(&existing));
+                }
+                Some(existing) => existing,
+                None => Store::insert_pending_binding(
+                    &mut tx,
+                    PendingBinding {
+                        id: Uuid::new_v4(),
+                        provider_id,
+                        user_id: credential.user_id,
+                        issuer: provider.issuer.clone(),
+                    },
+                )
+                .await
+                .map_err(map_store)?,
+            };
+        let binding_id = binding.id;
         let hmac_key =
             fingerprint_hmac_key(self.decrypt_provider_secret(&provider)?.expose().as_bytes());
         let fingerprint = keyed_fingerprint(
@@ -115,23 +130,7 @@ impl ResourceServiceService {
                     }
                 }
             }
-            ClaimedOperation::Created(operation) => {
-                let binding = match live {
-                    Some(existing) => existing,
-                    None => Store::insert_pending_binding(
-                        &mut tx,
-                        PendingBinding {
-                            id: binding_id,
-                            provider_id,
-                            user_id: credential.user_id,
-                            issuer: provider.issuer.clone(),
-                        },
-                    )
-                    .await
-                    .map_err(map_store)?,
-                };
-                (binding, operation, true)
-            }
+            ClaimedOperation::Created(operation) => (binding, operation, true),
         };
         tx.commit().await?;
         if !should_call {
