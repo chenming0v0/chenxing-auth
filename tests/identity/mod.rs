@@ -22,6 +22,7 @@ mod email_change_outbox_alerts;
 mod email_change_outbox_support;
 mod external_identity_binding;
 // Issue #709：辰星 Access Token 兑换资源服务会话令牌。
+mod resource_service_binding;
 mod resource_service_exchange;
 mod security_events_api;
 mod session_api;

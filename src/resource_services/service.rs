@@ -72,6 +72,12 @@ impl ResourceServiceService {
         self
     }
 
+    /// 替换出站传输层，供集成测试用桩提供方驱动完整绑定/刷新/撤销路径。
+    pub fn with_transport_override(mut self, transport: Arc<dyn ProviderTransport>) -> Self {
+        self.transport = transport;
+        self
+    }
+
     fn encrypt_provider_secret(
         &self,
         provider_id: uuid::Uuid,
