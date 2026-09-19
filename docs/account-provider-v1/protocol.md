@@ -1,6 +1,6 @@
 # Account Provider v1 — 冻结线上契约
 
-状态：**PLANNED**。本文档是协议正本；`snapshot.schema.json` 是快照根的机器可读约束。任何实现必须与本文逐字一致，改动需先改本文并同步夹具。
+状态：**Implemented**。本文档是协议正本；`snapshot.schema.json` 是快照根的机器可读约束。任何实现必须与本文逐字一致，改动需先改本文并同步夹具。协议令牌的 `scope` 只有 `account:read`；辰星 OAuth 侧资源服务声明的 `{slug}:access` 是另一套 scope，见 `plan.md` 第 13 节第 5 条与 `compatibility.md` §8。
 
 ## 0. 命名与合规声明
 
@@ -187,6 +187,7 @@ Authorization: Bearer <access_token>
 ```
 
 - `access_token`：≥256 bit 随机，带类型前缀（`cxap_at_`）。（`cxap_` 是协议级前缀，不含产品分支语义。）
+- `scope`：固定 `account:read`。这是本协议令牌的唯一作用域，**不是**辰星 OAuth 的 `{slug}:access`。
 - `refresh_token`：≥256 bit 随机，带类型前缀（`cxap_rt_`）。
 - **生命周期（不可续期）**：
   - `grant_expires_at` = 授权**首次创建时间 + 90 天**，刷新时**不重算**、不可延长。
@@ -291,3 +292,4 @@ Authorization: Bearer <access_token>
 - 不承诺 provider-hosted 授权码流的安全属性；提交的凭据可读写整个账号，只有新授权是 `account:read`。
 - 不承诺任意第三方业务字段的跨产品语义。
 - 不承诺令牌可跨 issuer 或跨客户端使用。
+- 不把辰星 OAuth 资源服务声明的 `{slug}:access` 当作本协议 scope。
