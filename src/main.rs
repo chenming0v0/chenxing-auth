@@ -167,9 +167,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     workers.spawn(WorkerName::QuotaRefund, move |worker| {
         quotas.run_refund_worker(quota_clock, QUOTA_REFUND_WORKER_INTERVAL, worker)
     });
-    let account_portal = state.account_portal.clone();
-    workers.spawn(WorkerName::AccountPortalRevoke, move |worker| {
-        account_portal.run_revocation_worker(worker)
+    let resource_services = state.resource_services.clone();
+    workers.spawn(WorkerName::ResourceServiceRevoke, move |worker| {
+        resource_services.run_revocation_worker(worker)
     });
 
     let app = api::router(state);

@@ -26,7 +26,7 @@ pub enum WorkerName {
     EmailOutbox,
     KeySync,
     QuotaRefund,
-    AccountPortalRevoke,
+    ResourceServiceRevoke,
 }
 
 impl WorkerName {
@@ -36,7 +36,7 @@ impl WorkerName {
         Self::EmailOutbox,
         Self::KeySync,
         Self::QuotaRefund,
-        Self::AccountPortalRevoke,
+        Self::ResourceServiceRevoke,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -46,7 +46,7 @@ impl WorkerName {
             Self::EmailOutbox => "email_outbox",
             Self::KeySync => "key_sync",
             Self::QuotaRefund => "quota_refund",
-            Self::AccountPortalRevoke => "account_portal_revoke",
+            Self::ResourceServiceRevoke => "resource_service_revoke",
         }
     }
 
@@ -67,7 +67,7 @@ impl WorkerName {
             Self::QuotaRefund => {
                 WorkerPolicy::new(Duration::from_secs(150), Duration::from_secs(180))
             }
-            Self::AccountPortalRevoke => {
+            Self::ResourceServiceRevoke => {
                 WorkerPolicy::new(Duration::from_secs(20), Duration::from_secs(60))
             }
         }
@@ -80,7 +80,7 @@ impl WorkerName {
             Self::EmailOutbox => 2,
             Self::KeySync => 3,
             Self::QuotaRefund => 4,
-            Self::AccountPortalRevoke => 5,
+            Self::ResourceServiceRevoke => 5,
         }
     }
 }

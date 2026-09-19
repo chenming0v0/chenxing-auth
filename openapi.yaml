@@ -37,6 +37,7 @@ tags:
   - name: User Auth/Security Events
   - name: User Auth/OAuth Clients
   - name: User Auth/Authorized Apps
+  - name: User Auth/Resource Services
   - name: User Entitlements
   - name: User Wallet
   - name: User Auth/Browser Login
@@ -46,7 +47,7 @@ tags:
   - name: Admin Plans
   - name: Admin Clients
   - name: Admin OAuth Providers
-  - name: Admin Identity Providers
+  - name: Admin Resource Services
   - name: Admin Auth Factors
   - name: Admin Operations
 paths:
@@ -1467,85 +1468,32 @@ paths:
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
-  /api/v1/auth/account-providers:
+  /api/v1/auth/resource-services:
     get:
-      tags: [User Auth/Security]
-      summary: 查询当前用户可绑定的业务账号供应商
-      operationId: listUserAccountProviders
-      security: [{ sessionCookie: [] }]
-      responses:
-        '200':
-          description: 当前启用且可供用户绑定的业务供应商，不包含服务端 URL 或凭据
-          headers:
-            Cache-Control: { schema: { type: string, example: no-store } }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AccountProviderListResponse' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-  /api/v1/auth/account-providers/{provider}/bindings:
-    post:
-      tags: [User Auth/Security]
-      summary: 绑定当前用户的业务服务账号
-      operationId: bindLinkedAccount
-      security:
-        - sessionCookie: []
-          csrfCookie: []
-          csrfHeader: []
-      description: >-
-        仅支持 provider=cltermux。请求中的公钥和私钥只在本次请求内转发给 CLtermux verify；服务端
-        先完成无副作用的供应商验证，再在同一数据库业务操作内重新校验精确 Session、session_epoch、用户状态
-        和 provider 唯一约束后保存已校验的 uid、subject 与快照。凭据、Token 和原始 subject 永不落库；同一用户
-        重复提交同一映射返回既有绑定，其他用户占用返回 409，且不泄露占用者。
-      parameters:
-        - { name: provider, in: path, required: true, schema: { type: string, enum: [cltermux] } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/LinkedAccountCredentialBindInput' }
-      responses:
-        '201':
-          description: 绑定成功，返回已校验的业务账号快照
-          headers:
-            Cache-Control: { schema: { type: string, example: no-store } }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/LinkedAccount' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '413': { $ref: '#/components/responses/PayloadTooLarge' }
-        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
-        '422': { $ref: '#/components/responses/InvalidJsonData' }
-        '502': { $ref: '#/components/responses/BadGateway' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
-        '504': { $ref: '#/components/responses/GatewayTimeout' }
-  /api/v1/auth/account-portal/providers:
-    get:
-      tags: [User Auth/Security]
-      summary: 查询可绑定的通用账号提供方
-      operationId: listAccountPortalProviders
+      tags: [User Auth/Resource Services]
+      summary: 查询可绑定的资源服务
+      operationId: listUserResourceServices
       security: [{ sessionCookie: [] }]
       description: >-
-        返回当前启用的 Account Provider v1 提供方卡片元数据。不含 client_secret、令牌或密文。
-        这不是 OAuth / OIDC 客户端列表，也不是旧的 CLtermux 适配器注册表。
+        返回当前启用的资源服务卡片元数据（Account Provider v1 消费方）。只含展示字段与 slug，
+        不含 client_id、allowed_client_ids、client_secret、令牌或密文。这不是 OAuth / OIDC 客户端列表。
       responses:
         '200':
-          description: 启用中的提供方列表
+          description: 启用中的资源服务列表
           headers:
             Cache-Control: { schema: { type: string, example: no-store } }
           content:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/AccountPortalPublicProvider' }
+                items: { $ref: '#/components/schemas/ResourceServicePublicProvider' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
-  /api/v1/auth/account-portal/bindings:
+  /api/v1/auth/resource-services/bindings:
     get:
-      tags: [User Auth/Security]
-      summary: 查询当前用户的账号门户绑定
-      operationId: listAccountPortalBindings
+      tags: [User Auth/Resource Services]
+      summary: 查询当前用户的资源服务绑定
+      operationId: listResourceServiceBindings
       security: [{ sessionCookie: [] }]
       description: 只返回当前用户未 tombstone 的绑定。响应含快照卡片字段，不含令牌或密文。
       responses:
@@ -1557,27 +1505,27 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/AccountPortalBinding' }
+                items: { $ref: '#/components/schemas/ResourceServiceBinding' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
     post:
-      tags: [User Auth/Security]
-      summary: 绑定通用账号提供方
-      operationId: createAccountPortalBinding
+      tags: [User Auth/Resource Services]
+      summary: 绑定资源服务账号
+      operationId: createResourceServiceBinding
       security:
         - sessionCookie: []
           csrfCookie: []
           csrfHeader: []
       description: >-
-        门户采集凭据后，用提供方 Basic 认证创建只读 `account:read` 授权。
+        采集凭据后，用资源服务的 Basic 认证创建只读 `account:read` 授权。
         原始凭据不落库；成功后只保存可逆加密令牌包。Idempotency-Key 必须是 UUID。
       parameters:
-        - { $ref: '#/components/parameters/AccountPortalIdempotencyKey' }
+        - { $ref: '#/components/parameters/ResourceServiceIdempotencyKey' }
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/AccountPortalBindingCreateInput' }
+            schema: { $ref: '#/components/schemas/ResourceServiceBindingCreateInput' }
       responses:
         '201':
           description: 绑定成功
@@ -1585,7 +1533,7 @@ paths:
             Cache-Control: { schema: { type: string, example: no-store } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AccountPortalBinding' }
+              schema: { $ref: '#/components/schemas/ResourceServiceBinding' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1596,11 +1544,11 @@ paths:
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
-  /api/v1/auth/account-portal/bindings/{id}:
+  /api/v1/auth/resource-services/bindings/{id}:
     get:
-      tags: [User Auth/Security]
-      summary: 查询单个账号门户绑定
-      operationId: getAccountPortalBinding
+      tags: [User Auth/Resource Services]
+      summary: 查询单个资源服务绑定
+      operationId: getResourceServiceBinding
       security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -1611,20 +1559,20 @@ paths:
             Cache-Control: { schema: { type: string, example: no-store } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AccountPortalBinding' }
+              schema: { $ref: '#/components/schemas/ResourceServiceBinding' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
     delete:
-      tags: [User Auth/Security]
-      summary: 解绑账号门户授权
-      operationId: unlinkAccountPortalBinding
+      tags: [User Auth/Resource Services]
+      summary: 解绑资源服务授权
+      operationId: deleteResourceServiceBinding
       security:
         - sessionCookie: []
           csrfCookie: []
           csrfHeader: []
       description: >-
-        本地 tombstone 绑定并清空令牌密文；向提供方的撤销走 outbox 异步收敛。
+        本地 tombstone 绑定并清空令牌密文；向资源服务的撤销走 outbox 异步收敛。
         已解绑的绑定再次删除返回 204。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -1633,21 +1581,21 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
-  /api/v1/auth/account-portal/bindings/{id}/refresh:
+  /api/v1/auth/resource-services/bindings/{id}/refresh:
     post:
-      tags: [User Auth/Security]
-      summary: 刷新账号门户令牌
-      operationId: refreshAccountPortalBinding
+      tags: [User Auth/Resource Services]
+      summary: 刷新资源服务令牌
+      operationId: refreshResourceServiceBinding
       security:
         - sessionCookie: []
           csrfCookie: []
           csrfHeader: []
       description: >-
-        使用本地加密包中的 refresh_token 向提供方轮换令牌。grant_id / uid / grant_expires_at 必须保持不变。
+        使用本地加密包中的 refresh_token 向资源服务轮换令牌。grant_id / uid / grant_expires_at 必须保持不变。
         Idempotency-Key 必须是 UUID。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
-        - { $ref: '#/components/parameters/AccountPortalIdempotencyKey' }
+        - { $ref: '#/components/parameters/ResourceServiceIdempotencyKey' }
       responses:
         '200':
           description: 刷新成功
@@ -1655,7 +1603,7 @@ paths:
             Cache-Control: { schema: { type: string, example: no-store } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AccountPortalBinding' }
+              schema: { $ref: '#/components/schemas/ResourceServiceBinding' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1663,17 +1611,17 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
-  /api/v1/auth/account-portal/bindings/{id}/sync:
+  /api/v1/auth/resource-services/bindings/{id}/sync:
     post:
-      tags: [User Auth/Security]
-      summary: 同步账号门户快照
-      operationId: syncAccountPortalBinding
+      tags: [User Auth/Resource Services]
+      summary: 同步资源服务快照
+      operationId: syncResourceServiceBinding
       security:
         - sessionCookie: []
           csrfCookie: []
           csrfHeader: []
       description: >-
-        用当前 access_token 向提供方拉取最新账号快照。网络失败时返回本地缓存，不使令牌失效。
+        用当前 access_token 向资源服务拉取最新账号快照。网络失败时返回本地缓存，不使令牌失效。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -1683,165 +1631,55 @@ paths:
             Cache-Control: { schema: { type: string, example: no-store } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AccountPortalBinding' }
+              schema: { $ref: '#/components/schemas/ResourceServiceBinding' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
-  /api/v1/auth/linked-accounts:
+  /api/v1/auth/oauth-scopes:
     get:
-      tags: [User Auth/Security]
-      summary: 查询当前用户已连接的账号
-      operationId: listLinkedAccounts
+      tags: [User Auth/OAuth Clients]
+      summary: 查询可申请的 OAuth scope 目录
+      operationId: listOauthScopeCatalog
       security: [{ sessionCookie: [] }]
       description: >-
-        聚合 OAuth 外部身份与业务服务账号。列表只读取辰星本地快照，不在读取请求中调用供应商；按 linked_at
-        与 id 稳定倒序分页。cursor 是服务端生成的不透明值，不能由客户端解码或修改。
+        返回当前登录用户在注册或编辑 OAuth 应用时可申请的 scope 目录：基础 scope（openid、profile、email）
+        加上已启用资源服务声明的 scope。scope_access 为 public 的资源服务 scope 对本站所有应用开放；
+        restricted 的只在 client_id 属于该资源服务 allowed_client_ids 时出现。未传 client_id 时只返回基础 scope
+        与 public 资源服务 scope。目录只读，不含 client_secret 或任何凭据。
       parameters:
-        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
-        - { name: cursor, in: query, required: false, schema: { type: string, maxLength: 512 } }
+        - { name: client_id, in: query, required: false, description: 编辑既有应用时传入，用于展开 restricted 资源服务 scope, schema: { type: string, maxLength: 255 } }
       responses:
         '200':
-          description: 当前用户的分页账号列表；无更多结果时 next_cursor 为 null
+          description: scope 目录
           headers:
             Cache-Control: { schema: { type: string, example: no-store } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/LinkedAccountListResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+              schema: { $ref: '#/components/schemas/ScopeCatalogResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-  /api/v1/auth/linked-accounts/{id}:
-    get:
-      tags: [User Auth/Security]
-      summary: 查询当前用户的单个已连接账号
-      operationId: getLinkedAccount
-      security: [{ sessionCookie: [] }]
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string, maxLength: 128 } }
-      responses:
-        '200':
-          description: 已连接账号及最近一次成功同步的快照
-          headers:
-            Cache-Control: { schema: { type: string, example: no-store } }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/LinkedAccount' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-    delete:
-      tags: [User Auth/Security]
-      summary: 解除当前用户的业务账号绑定
-      operationId: deleteLinkedAccount
-      security:
-        - sessionCookie: []
-          csrfCookie: []
-          csrfHeader: []
-      description: >-
-        必须通过 Session Cookie、CSRF Cookie、X-CSRF-Token 和当前密码复验。不存在或不属于当前用户的 id
-        统一返回 404；成功只删除辰星绑定关系，不撤销 CLtermux 自己的业务 Session。
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string, maxLength: 128 } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/LinkedAccountDeleteInput' }
-      responses:
-        '204': { description: 解绑成功 }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '413': { $ref: '#/components/responses/PayloadTooLarge' }
-        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
-        '422': { $ref: '#/components/responses/InvalidJsonData' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/auth/linked-accounts/{id}/refresh:
-    post:
-      tags: [User Auth/Security]
-      summary: 刷新当前用户的业务账号快照
-      operationId: refreshLinkedAccount
-      security:
-        - sessionCookie: []
-          csrfCookie: []
-          csrfHeader: []
-      description: >-
-        每个用户/provider 受 30 秒冷却保护。上游暂时不可用且已有成功快照时，返回旧快照并将 sync.status
-        标记为 failed；从未成功同步过时返回上游错误。明确 disabled/missing 只更新本地事实，不删除绑定关系。
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string, maxLength: 128 } }
-      responses:
-        '200':
-          description: 刷新后的快照，或上游暂时失败时保留的旧快照
-          headers:
-            Cache-Control: { schema: { type: string, example: no-store } }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/LinkedAccount' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '429':
-          description: 刷新冷却或供应商限流，响应带 Retry-After
-          headers:
-            Retry-After: { schema: { type: integer, minimum: 1 } }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
-        '502': { $ref: '#/components/responses/BadGateway' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
-        '504': { $ref: '#/components/responses/GatewayTimeout' }
-  /api/v1/integrations/cltermux/resolve:
-    post:
-      tags: [User Auth/Security]
-      summary: 为 CLtermux 解析已验证的辰星 Access Token
-      operationId: resolveCltermuxAccount
-      security: [{ integrationBearer: [] }]
-      description: >-
-        CLtermux 服务端调用的受保护解析接口。Authorization Bearer 是独立的服务间凭据；请求体中的 access_token
-        只在内存中验证，不记录日志。服务端从签名、Issuer、受撤销状态、aud allowlist、授权 scope 和当前用户状态
-        得到 subject、client_id 与 scope，不接受调用方自行声明这些字段。响应 valid_until 不超过辰星 Token 剩余寿命和
-        5 分钟，所有响应禁止缓存。
-        多供应商模式先验证用户令牌，再用 aud 选择已启用的供应商并校验其独立入站凭据。
-        401 invalid_chenxing_token 表示用户令牌无效或授权已撤销；
-        401 invalid_integration_credential 表示缺少服务凭据、aud 未匹配已启用供应商，或凭据与所选供应商不匹配。
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/CltermuxResolveInput' }
-      responses:
-        '200':
-          description: 当前授权范围内的 CLtermux 绑定
-          headers:
-            Cache-Control: { schema: { type: string, example: no-store } }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/CltermuxResolveResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '413': { $ref: '#/components/responses/PayloadTooLarge' }
-        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
-        '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/chenxing/exchange:
     post:
-      tags: [User Auth/Security]
-      summary: 用辰星 Access Token 换取会话令牌
+      tags: [User Auth/Resource Services]
+      summary: 用辰星 Access Token 换取资源服务会话令牌
       operationId: exchangeChenxingSession
       security: [{ bearerAuth: [] }]
       description: >-
-        使用 CLtermux 等客户端持有的辰星 Access Token 换取短期 Session Token。
-        Authorization Bearer 必须是有效的辰星用户 Access Token（OAuth 发行者签发）；令牌只在内存中验证，不记录日志。
-        session_token 是 RS256 签名的短期 JWT，有效期不超过 300 秒；响应体永远不包含 access_token、refresh_token
-        或 id_token。device_id 与 device_info 仅用于审计，不持久化；device_info 永不以明文写入日志。
-        错误码：401 invalid_chenxing_token；403 account_not_linked / account_disabled / insufficient_scope；
+        资源服务会话兑换。第三方应用持有的辰星用户 Access Token（OAuth 发行者签发）必须含某个已启用资源服务
+        声明的 scope；服务端据此定位资源服务，读取当前用户在该服务的活绑定，并签发面向该服务的短期 Session Token。
+        令牌只在内存中验证，不记录日志。session_token 是 RS256 签名的短期 JWT，有效期不超过 300 秒，claims 含
+        uid / binding_id / binding_version；响应体永远不包含 access_token、refresh_token 或 id_token。
+        device_id 与 device_info 仅用于审计，不持久化；device_info 永不以明文写入日志。
+        当 Access Token 同时覆盖多个资源服务的 scope 时，请求体必须用 `provider`（资源服务 slug）指明目标，
+        否则返回 400 invalid_request。scope_access 为 restricted 的资源服务只接受 aud 属于其 allowed_client_ids 的令牌，
+        其他令牌按 401 invalid_chenxing_token 拒绝。
+        错误码：400 invalid_request；401 invalid_chenxing_token；403 account_not_linked / account_disabled / insufficient_scope；
         429 rate_limited；503 provider_unavailable。
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/CltermuxExchangeInput' }
+            schema: { $ref: '#/components/schemas/ResourceServiceExchangeInput' }
       responses:
         '200':
           description: 会话令牌兑换成功；响应体只含 session_token、uid 与 expires_at，不包含任何长期凭据
@@ -1849,10 +1687,14 @@ paths:
             Cache-Control: { schema: { type: string, example: no-store } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/CltermuxExchangeResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+              schema: { $ref: '#/components/schemas/ResourceServiceExchangeResponse' }
+        '400':
+          description: 请求体非法，或令牌覆盖多个资源服务 scope 但未指明 provider，错误码 invalid_request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
         '401':
-          description: 辰星 Access Token 无效或已撤销，错误码 invalid_chenxing_token
+          description: 辰星 Access Token 无效、已撤销或不属于该资源服务允许的应用，错误码 invalid_chenxing_token
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -1872,7 +1714,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '503':
-          description: 供应商或依赖暂不可用，错误码 provider_unavailable
+          description: 资源服务或依赖暂不可用，错误码 provider_unavailable
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -1977,7 +1819,7 @@ paths:
         - { $ref: '#/components/parameters/ClientId' }
         - { name: redirect_uri, in: query, required: true, description: "canonicalize 后必须匹配注册值；授权码兑换时必须原样回送本次请求文本", schema: { type: string, format: uri } }
         - { name: response_type, in: query, required: true, schema: { type: string, enum: [code] } }
-        - { name: scope, in: query, required: true, description: "空格分隔的 scope；每个值必须同时属于服务端 OAUTH_CLIENT_ALLOWED_SCOPES allowlist（默认 openid、profile、email）和该 Client 已注册的 scope 集合", schema: { type: string, example: 'openid email profile' } }
+        - { name: scope, in: query, required: true, description: "空格分隔的 scope；每个值必须同时属于服务端 allowlist（OAUTH_CLIENT_ALLOWED_SCOPES 基础 scope，默认 openid、profile、email，加上该 Client 可申请的已启用资源服务 scope）和该 Client 已注册的 scope 集合", schema: { type: string, example: 'openid email profile' } }
         - { name: state, in: query, required: true, description: 最多 512 个字符, schema: { type: string, maxLength: 512 } }
         - { name: nonce, in: query, description: 最多 512 个字符, schema: { type: string, maxLength: 512 } }
         - { name: prompt, in: query, description: "OIDC 交互策略；空格分隔 login、none、consent、select_account。none 不得与其他值组合；重复或未知值返回 invalid_request。", schema: { type: string, example: login } }
@@ -2012,7 +1854,7 @@ paths:
                 client_id: { type: string }
                 redirect_uri: { type: string, format: uri, description: "canonicalize 后必须匹配注册值；授权码兑换时必须原样回送本次请求文本" }
                 response_type: { type: string, enum: [code] }
-                scope: { type: string, description: "空格分隔的 scope；受服务端 allowlist 和 Client 已注册 scopes 双重约束" }
+                scope: { type: string, description: "空格分隔的 scope；受服务端 allowlist（基础 scope 加该 Client 可申请的资源服务 scope）和 Client 已注册 scopes 双重约束" }
                 state: { type: string, maxLength: 512 }
                 nonce: { type: string, maxLength: 512 }
                 prompt: { type: string, description: "OIDC 交互策略；空格分隔 login、none、consent、select_account。none 不得与其他值组合；重复或未知值返回 invalid_request。" }
@@ -3741,107 +3583,50 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
-  /api/v1/admin/account-providers:
+  /api/v1/admin/resource-services:
     get:
-      tags: [Admin Identity Providers]
-      summary: 特殊业务供应商列表
-      operationId: listAccountProviders
-      security:
-        - adminBearer: []
-        - sessionCookie: []
-      responses:
-        '200':
-          description: CLtermux 特殊供应商列表，不包含服务凭据
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/AccountProviderSummary' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
-  /api/v1/admin/account-providers/{slug}:
-    put:
-      tags: [Admin Identity Providers]
-      summary: 保存特殊业务供应商
-      operationId: saveAccountProvider
-      security:
-        - adminBearer: []
-        - sessionCookie: []
-          csrfCookie: []
-          csrfHeader: []
-      parameters:
-        - name: slug
-          in: path
-          required: true
-          schema: { type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$' }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/AccountProviderInput' }
-      responses:
-        '200':
-          description: 更新成功，不返回服务凭据
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AccountProviderSummary' }
-        '201':
-          description: 创建成功，不返回服务凭据
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AccountProviderSummary' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '413': { $ref: '#/components/responses/PayloadTooLarge' }
-        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
-        '422': { $ref: '#/components/responses/InvalidJsonData' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
-  /api/v1/admin/account-portal/providers:
-    get:
-      tags: [Admin Identity Providers]
-      summary: 账号门户提供方列表
-      operationId: listAccountPortalAdminProviders
+      tags: [Admin Resource Services]
+      summary: 资源服务列表
+      operationId: listResourceServices
       security:
         - adminBearer: []
         - sessionCookie: []
       description: Owner 专属，需要 `manage_identity_providers`。不返回 client_secret 或密文。
       responses:
         '200':
-          description: 提供方配置，不含密钥
+          description: 资源服务配置，不含密钥
           content:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/AccountPortalAdminProvider' }
+                items: { $ref: '#/components/schemas/ResourceServiceAdminProvider' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
     post:
-      tags: [Admin Identity Providers]
-      summary: 登记账号门户提供方
-      operationId: createAccountPortalAdminProvider
+      tags: [Admin Resource Services]
+      summary: 登记资源服务
+      operationId: createResourceService
       security:
         - adminBearer: []
         - sessionCookie: []
           csrfCookie: []
           csrfHeader: []
       description: >-
-        创建前会向提供方 `/.well-known/account-provider` 拉取凭据标签。
+        创建前会向资源服务 `/.well-known/account-provider` 拉取凭据标签。
         issuer 必须是 HTTPS origin。client_secret 只在创建时提交，后续查询不返回。
+        slug 与 scope 全局唯一；scope 缺省为 `<slug>:access`，不得与 openid / profile / email / offline_access 冲突。
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/AccountPortalProviderInput' }
+            schema: { $ref: '#/components/schemas/ResourceServiceProviderInput' }
       responses:
         '201':
           description: 已登记
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AccountPortalAdminProvider' }
+              schema: { $ref: '#/components/schemas/ResourceServiceAdminProvider' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -3850,11 +3635,11 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
-  /api/v1/admin/account-portal/providers/{id}:
+  /api/v1/admin/resource-services/{id}:
     get:
-      tags: [Admin Identity Providers]
-      summary: 查询账号门户提供方
-      operationId: getAccountPortalAdminProvider
+      tags: [Admin Resource Services]
+      summary: 查询资源服务
+      operationId: getResourceService
       security:
         - adminBearer: []
         - sessionCookie: []
@@ -3862,18 +3647,18 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         '200':
-          description: 提供方配置，不含密钥
+          description: 资源服务配置，不含密钥
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AccountPortalAdminProvider' }
+              schema: { $ref: '#/components/schemas/ResourceServiceAdminProvider' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
     put:
-      tags: [Admin Identity Providers]
-      summary: 更新账号门户提供方
-      operationId: updateAccountPortalAdminProvider
+      tags: [Admin Resource Services]
+      summary: 更新资源服务
+      operationId: updateResourceService
       security:
         - adminBearer: []
         - sessionCookie: []
@@ -3881,20 +3666,21 @@ paths:
           csrfHeader: []
       description: >-
         必须携带当前 revision。存在活绑定、未完成操作或撤销 outbox 时禁止改 issuer / client_id。
-        client_secret 缺省或空字符串表示保留原密文。
+        client_secret 缺省或空字符串表示保留原密文。scope、scope_access 与 allowed_client_ids 的变更即时影响
+        应用可申请的 scope 目录与会话兑换的准入判断。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/AccountPortalProviderInput' }
+            schema: { $ref: '#/components/schemas/ResourceServiceProviderInput' }
       responses:
         '200':
           description: 已更新
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AccountPortalAdminProvider' }
+              schema: { $ref: '#/components/schemas/ResourceServiceAdminProvider' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -3904,11 +3690,11 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
-  /api/v1/admin/account-portal/providers/{id}/enable:
+  /api/v1/admin/resource-services/{id}/enable:
     post:
-      tags: [Admin Identity Providers]
-      summary: 启用账号门户提供方
-      operationId: enableAccountPortalAdminProvider
+      tags: [Admin Resource Services]
+      summary: 启用资源服务
+      operationId: enableResourceService
       security:
         - adminBearer: []
         - sessionCookie: []
@@ -3921,22 +3707,23 @@ paths:
           description: 已启用
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AccountPortalAdminProvider' }
+              schema: { $ref: '#/components/schemas/ResourceServiceAdminProvider' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
-  /api/v1/admin/account-portal/providers/{id}/disable:
+  /api/v1/admin/resource-services/{id}/disable:
     post:
-      tags: [Admin Identity Providers]
-      summary: 停用账号门户提供方
-      operationId: disableAccountPortalAdminProvider
+      tags: [Admin Resource Services]
+      summary: 停用资源服务
+      operationId: disableResourceService
       security:
         - adminBearer: []
         - sessionCookie: []
           csrfCookie: []
           csrfHeader: []
+      description: 停用后该服务的 scope 从目录与 Discovery 中移除，会话兑换按 insufficient_scope 拒绝。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -3944,7 +3731,7 @@ paths:
           description: 已停用
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AccountPortalAdminProvider' }
+              schema: { $ref: '#/components/schemas/ResourceServiceAdminProvider' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -4180,7 +3967,6 @@ paths:
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
-    integrationBearer: { type: http, scheme: bearer, description: CLtermux 到辰星的独立服务间 Bearer 凭据；仅用于 resolve，不得复用 ADMIN_TOKEN、OAuth Client Secret 或用户凭据 }
     adminBearer: { type: http, scheme: bearer, description: 系统 ADMIN_TOKEN 自动化通道，权限等价于 Owner 且无用户 ID，不需要浏览器 CSRF。ADMIN_TOKEN 为空时整个管理面关闭：Bearer 与 sessionCookie 两条通道都被拒绝，已初始化的管理接口统一返回 403 admin_disabled；唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口 }
     basicClientAuth: { type: http, scheme: basic }
     sessionCookie: { type: apiKey, in: cookie, name: __Host-chenxing_session, description: HTTPS 浏览器部署使用的 host-only Session Cookie；仅 loopback HTTP 本地开发使用不带前缀的兼容名称。数据库事务型管理写在精确 Session 行锁取得后，以数据库语句时间复核撤销、代际、绝对过期和该 Session 固化的 idle 窗口；锁等待期间失效返回 401 invalid_session，业务副作用及成功审计回滚。管理接口只有在 ADMIN_TOKEN 非空时才接受此通道；ADMIN_TOKEN 为空时统一返回 403 admin_disabled }
@@ -4212,12 +3998,12 @@ components:
         同键更换购买类型或请求内容返回 409 idempotency_key_conflict；缺失或非法键返回 400。
         服务端只保存 SHA-256 摘要，不保存原始键。
       schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]{1,128}$' }
-    AccountPortalIdempotencyKey:
+    ResourceServiceIdempotencyKey:
       name: Idempotency-Key
       in: header
       required: true
       description: >-
-        账号门户创建与刷新绑定的必填 UUID。同一逻辑操作必须复用同一键；
+        资源服务创建与刷新绑定的必填 UUID。同一逻辑操作必须复用同一键；
         同键同指纹重放已提交结果，同键不同指纹返回 409 conflict。
         缺失或非 UUID 返回 400 invalid_request。
       schema: { type: string, format: uuid }
@@ -4235,8 +4021,6 @@ components:
       schema: { type: string, enum: [invalid, corrupt] }
   responses:
     BadRequest: { description: 请求错误；JSON 请求体无法解析时返回 400 invalid_json，且不暴露 serde 字段或类型细节, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-    BadGateway: { description: 上游供应商返回无效响应或拒绝了服务凭据, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-    GatewayTimeout: { description: 上游供应商请求超时, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     PayloadTooLarge: { description: JSON 请求体超过端点允许的大小时返回 413 payload_too_large，响应不包含请求体或解析细节, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' }, example: { code: payload_too_large, message: request body exceeds the allowed size } } } }
     UnsupportedMediaType: { description: JSON 请求缺少正确的 Content-Type 时返回 415 unsupported_media_type, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' }, example: { code: unsupported_media_type, message: request Content-Type must be application/json } } } }
     InvalidJsonData: { description: JSON 语法正确但字段类型无法反序列化时返回 422 invalid_json，响应不包含字段或 Rust/serde 类型细节, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' }, example: { code: invalid_json, message: request body must be valid JSON } } } }
@@ -4335,129 +4119,15 @@ components:
           type: array
           maxItems: 32
           items: { $ref: '#/components/schemas/ExternalIdentityExtension' }
-    AccountProviderListResponse:
-      type: object
-      required: [items]
-      additionalProperties: false
-      properties:
-        items:
-          type: array
-          items: { $ref: '#/components/schemas/AccountProvider' }
-    AccountProvider:
-      type: object
-      required: [id, name, icon_url, kind, binding_method, can_refresh]
-      additionalProperties: false
-      properties:
-        id: { type: string, maxLength: 128 }
-        name: { type: string, maxLength: 256 }
-        icon_url: { type: string, format: uri, nullable: true, maxLength: 4096 }
-        kind: { type: string, enum: [service_account] }
-        binding_method: { type: string, enum: [credentials] }
-        can_refresh: { type: boolean }
-    LinkedAccountListResponse:
-      type: object
-      required: [items, next_cursor]
-      additionalProperties: false
-      properties:
-        items:
-          type: array
-          items: { $ref: '#/components/schemas/LinkedAccount' }
-        next_cursor: { type: string, nullable: true, maxLength: 512 }
-    LinkedAccount:
-      type: object
-      required: [id, kind, provider, uid, subject_hint, display, account_status, linked_at, capabilities, sync, extensions]
-      additionalProperties: false
-      properties:
-        id: { type: string, maxLength: 128 }
-        kind: { type: string, enum: [service_account, oauth_identity] }
-        provider: { $ref: '#/components/schemas/LinkedAccountProvider' }
-        uid: { type: string, nullable: true, maxLength: 255 }
-        subject_hint: { type: string, nullable: true, maxLength: 512 }
-        display: { $ref: '#/components/schemas/LinkedAccountDisplay' }
-        account_status: { type: string, enum: [active, disabled, missing, unknown] }
-        linked_at: { type: string, format: date-time }
-        capabilities: { $ref: '#/components/schemas/LinkedAccountCapabilities' }
-        sync: { $ref: '#/components/schemas/LinkedAccountSync' }
-        extensions:
-          type: array
-          maxItems: 32
-          items: { $ref: '#/components/schemas/ExternalIdentityExtension' }
-    LinkedAccountProvider:
-      type: object
-      required: [id, name, icon_url]
-      additionalProperties: false
-      properties:
-        id: { type: string, maxLength: 128 }
-        name: { type: string, maxLength: 256 }
-        icon_url: { type: string, format: uri, nullable: true, maxLength: 4096 }
-    LinkedAccountDisplay:
-      type: object
-      required: [name, email, avatar_url]
-      additionalProperties: false
-      properties:
-        name: { type: string, nullable: true, maxLength: 512 }
-        email: { type: string, nullable: true, format: email, maxLength: 512 }
-        avatar_url: { type: string, nullable: true, format: uri, maxLength: 4096 }
-    LinkedAccountCapabilities:
-      type: object
-      required: [can_login, can_refresh]
-      additionalProperties: false
-      properties:
-        can_login: { type: boolean }
-        can_refresh: { type: boolean }
-    LinkedAccountSync:
-      type: object
-      required: [status, last_attempt_at, last_success_at, stale_after, refresh_after, error]
-      additionalProperties: false
-      properties:
-        status: { type: string, enum: [never, success, failed, unsupported] }
-        last_attempt_at: { type: string, format: date-time, nullable: true }
-        last_success_at: { type: string, format: date-time, nullable: true }
-        stale_after: { type: string, format: date-time, nullable: true }
-        refresh_after: { type: string, format: date-time, nullable: true }
-        error: { type: string, nullable: true, maxLength: 128 }
-    LinkedAccountCredentialBindInput:
-      type: object
-      required: [public_key, private_key]
-      additionalProperties: false
-      properties:
-        public_key: { type: string, minLength: 1, maxLength: 255, writeOnly: true }
-        private_key: { type: string, minLength: 1, maxLength: 255, writeOnly: true }
-    LinkedAccountDeleteInput:
-      type: object
-      required: [password]
-      additionalProperties: false
-      properties:
-        password: { type: string, format: password, minLength: 1, maxLength: 128, writeOnly: true }
-    CltermuxResolveInput:
-      type: object
-      required: [access_token]
-      additionalProperties: false
-      properties:
-        access_token: { type: string, minLength: 1, maxLength: 16384, writeOnly: true, description: 辰星签发的 Access Token；服务端仅在内存中处理且不记录 }
-    CltermuxResolveResponse:
-      type: object
-      required: [issuer, subject, client_id, scope, provider, uid, binding_id, binding_version, resolved_at, valid_until]
-      additionalProperties: false
-      properties:
-        issuer: { type: string, format: uri }
-        subject: { type: string, maxLength: 255 }
-        client_id: { type: string, maxLength: 128 }
-        scope: { type: string }
-        provider: { type: string, enum: [cltermux] }
-        uid: { type: string, maxLength: 255 }
-        binding_id: { type: string, maxLength: 128 }
-        binding_version: { type: integer, format: int32, minimum: 1 }
-        resolved_at: { type: string, format: date-time }
-        valid_until: { type: string, format: date-time }
-    CltermuxExchangeInput:
+    ResourceServiceExchangeInput:
       type: object
       required: [device_id]
       additionalProperties: false
       properties:
         device_id: { type: string, minLength: 1, maxLength: 255, description: 客户端设备标识，仅用于审计，不持久化 }
         device_info: { type: string, maxLength: 1024, description: 客户端设备信息，仅用于审计，永不以明文写入日志 }
-    CltermuxExchangeResponse:
+        provider: { type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$', description: 目标资源服务 slug；令牌只覆盖一个资源服务 scope 时可省略，覆盖多个时必填 }
+    ResourceServiceExchangeResponse:
       type: object
       required: [session_token, uid, expires_at]
       additionalProperties: false
@@ -4465,9 +4135,28 @@ components:
         短期会话令牌兑换结果。响应体永远不包含 access_token、refresh_token 或 id_token；
         也不包含签名密钥、服务间凭据或任何长期秘密。
       properties:
-        session_token: { type: string, description: RS256 签名的短期会话 JWT，有效期不超过 300 秒 }
-        uid: { type: string, maxLength: 255, description: 当前用户的辰星用户 ID }
+        session_token: { type: string, description: RS256 签名的短期会话 JWT，有效期不超过 300 秒，claims 含 uid / binding_id / binding_version }
+        uid: { type: string, maxLength: 255, description: 当前用户在该资源服务的账号 ID }
         expires_at: { type: string, format: date-time, description: session_token 的过期时间 }
+    ScopeCatalogResponse:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ScopeCatalogItem' }
+    ScopeCatalogItem:
+      type: object
+      required: [scope, title, description, source, access, provider_slug]
+      additionalProperties: false
+      properties:
+        scope: { type: string, maxLength: 128 }
+        title: { type: string, maxLength: 128, description: 基础 scope 为固定标题；资源服务 scope 为该服务的 display_name }
+        description: { type: string, maxLength: 256, description: 基础 scope 为固定说明；资源服务 scope 为其 scope_description }
+        source: { type: string, enum: [base, resource_service] }
+        access: { type: string, enum: [restricted, public], nullable: true, description: 基础 scope 为 null }
+        provider_slug: { type: string, nullable: true, pattern: '^[a-z][a-z0-9_-]{0,63}$', description: 基础 scope 为 null }
     ExternalIdentityExtension:
       type: object
       required: [namespace, version, fields, fetched_at]
@@ -5688,71 +5377,40 @@ components:
       required: [state_version]
       properties:
         state_version: { type: integer, format: int64, minimum: 1 }
-    AccountProviderInput:
+    ResourceServiceAdminProvider:
       type: object
-      required: [slug, name, adapter, base_url, allowed_client_ids, enabled, expected_version]
-      properties:
-        slug: { type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$' }
-        name: { type: string, minLength: 1, maxLength: 128 }
-        adapter: { type: string, enum: [cltermux] }
-        base_url: { type: string, format: uri, description: HTTPS root URL of the CLtermux service }
-        allowed_client_ids:
-          type: array
-          minItems: 1
-          maxItems: 100
-          items: { type: string, minLength: 1, maxLength: 128 }
-        enabled: { type: boolean }
-        expected_version: { type: integer, format: int64, minimum: 0 }
-        outbound_token:
-          type: string
-          minLength: 32
-          maxLength: 4096
-          writeOnly: true
-          description: Optional on update; blank means keep the encrypted value.
-        inbound_token:
-          type: string
-          minLength: 32
-          maxLength: 4096
-          writeOnly: true
-          description: Optional on update; blank means keep the encrypted value.
-    AccountProviderSummary:
-      type: object
-      required: [slug, name, adapter, base_url, allowed_client_ids, enabled, version, outbound_token_configured, inbound_token_configured]
-      properties:
-        slug: { type: string }
-        name: { type: string }
-        adapter: { type: string, enum: [cltermux] }
-        base_url: { type: string, format: uri }
-        allowed_client_ids: { type: array, items: { type: string } }
-        enabled: { type: boolean }
-        version: { type: integer, format: int64, minimum: 1 }
-        outbound_token_configured: { type: boolean }
-        inbound_token_configured: { type: boolean }
-    AccountPortalAdminProvider:
-      type: object
-      required: [id, display_name, issuer, client_id, identifier_label, secret_label, identifier_sensitive, enabled, revision, identity_locked]
+      required: [id, slug, display_name, issuer, client_id, scope, scope_description, scope_access, allowed_client_ids, identifier_label, secret_label, identifier_sensitive, enabled, revision, identity_locked]
       properties:
         id: { type: string, format: uuid }
+        slug: { type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$', description: 全局唯一的资源服务标识，会话兑换用它指明目标 }
         display_name: { type: string, minLength: 1, maxLength: 128 }
-        issuer: { type: string, format: uri, description: 提供方自身 HTTPS origin，不是辰星 OIDC issuer }
+        issuer: { type: string, format: uri, description: 资源服务自身 HTTPS origin，不是辰星 OIDC issuer }
         client_id: { type: string, minLength: 1, maxLength: 512 }
+        scope: { type: string, pattern: '^[a-z][a-z0-9_.:-]{0,127}$', description: 该资源服务声明的 OAuth scope，全局唯一 }
+        scope_description: { type: string, maxLength: 256 }
+        scope_access: { type: string, enum: [restricted, public], description: restricted 仅 allowed_client_ids 中的应用可申请；public 对本站所有应用开放 }
+        allowed_client_ids:
+          type: array
+          maxItems: 100
+          items: { type: string, minLength: 1, maxLength: 255 }
         identifier_label: { type: string }
         secret_label: { type: string }
         identifier_sensitive: { type: boolean }
         enabled: { type: boolean }
         revision: { type: integer, format: int64, minimum: 1 }
         identity_locked: { type: boolean, description: 存在活绑定、未完成操作或撤销 outbox 时为 true }
-    AccountPortalPublicProvider:
+    ResourceServicePublicProvider:
       type: object
-      required: [id, display_name, issuer, identifier_label, secret_label, identifier_sensitive]
+      required: [id, slug, display_name, issuer, identifier_label, secret_label, identifier_sensitive]
       properties:
         id: { type: string, format: uuid }
+        slug: { type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$' }
         display_name: { type: string }
         issuer: { type: string, format: uri }
         identifier_label: { type: string }
         secret_label: { type: string }
         identifier_sensitive: { type: boolean }
-    AccountPortalBinding:
+    ResourceServiceBinding:
       type: object
       required: [id, provider_id, issuer, uid, snapshot]
       properties:
@@ -5767,11 +5425,12 @@ components:
         grant_expires_at: { type: string, nullable: true }
         access_expires_at: { type: string, nullable: true }
         refresh_expires_at: { type: string, nullable: true }
-    AccountPortalProviderInput:
+    ResourceServiceProviderInput:
       type: object
-      required: [display_name, issuer, client_id, expected_revision]
+      required: [display_name, slug, issuer, client_id, scope_description, scope_access, allowed_client_ids, expected_revision]
       properties:
         display_name: { type: string, minLength: 1, maxLength: 128 }
+        slug: { type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$', description: 全局唯一 }
         issuer: { type: string, format: uri, description: HTTPS origin，禁止路径、query、fragment、userinfo }
         client_id: { type: string, minLength: 1, maxLength: 512, description: 不得包含冒号 }
         client_secret:
@@ -5780,8 +5439,16 @@ components:
           maxLength: 512
           writeOnly: true
           description: 创建时必填；更新时缺省或空字符串表示保留原密文
+        scope: { type: string, pattern: '^[a-z][a-z0-9_.:-]{0,127}$', description: 缺省为 `<slug>:access`；全局唯一，不得为 openid / profile / email / offline_access }
+        scope_description: { type: string, maxLength: 256 }
+        scope_access: { type: string, enum: [restricted, public] }
+        allowed_client_ids:
+          type: array
+          maxItems: 100
+          description: 允许申请该 scope 的应用 client_id；scope_access 为 public 时可为空
+          items: { type: string, minLength: 1, maxLength: 255 }
         expected_revision: { type: integer, format: int64, minimum: 0, description: 创建时可传 0；更新必须等于当前 revision }
-    AccountPortalBindingCreateInput:
+    ResourceServiceBindingCreateInput:
       type: object
       required: [provider_id, identifier, secret]
       properties:
@@ -5792,7 +5459,7 @@ components:
           minLength: 1
           maxLength: 255
           writeOnly: true
-          description: 门户采集的一次性凭据，服务端不落库
+          description: 采集的一次性凭据，服务端不落库
     OAuthProviderSummary:
       type: object
       description: >-
@@ -5843,7 +5510,7 @@ components:
           type: array
           minItems: 1
           maxItems: 32
-          description: 服务端仅接受 OAUTH_CLIENT_ALLOWED_SCOPES allowlist 中的 scope；默认 allowlist 为 openid、profile、email。
+          description: 服务端接受基础 allowlist（OAUTH_CLIENT_ALLOWED_SCOPES，默认 openid、profile、email）以及已启用资源服务声明的 scope；资源服务 scope 为 public 时对所有应用开放，为 restricted 时仅 allowed_client_ids 中的应用可申请。完整目录见 GET /api/v1/auth/oauth-scopes。
           items: { type: string, minLength: 1, maxLength: 64 }
         auth_method:
           type: string

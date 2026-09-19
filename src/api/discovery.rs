@@ -120,9 +120,17 @@ pub(super) async fn openid_configuration(
     issuer: RequestIssuer,
     headers: HeaderMap,
 ) -> Response {
+    let base = &state.config.client_registration_limits.allowed_scopes;
+    let scopes_supported = match state.resource_services.all_enabled_scopes(base).await {
+        Ok(scopes) => scopes,
+        Err(error) => {
+            tracing::warn!(error = %error, "resource service scope lookup failed for discovery");
+            base.clone()
+        }
+    };
     let mut response = Json(OpenIdConfiguration::for_issuer_with_scopes(
         issuer.issuer().as_str(),
-        &state.config.client_registration_limits.allowed_scopes,
+        &scopes_supported,
     ))
     .into_response();
     apply_public_cors(&headers, &mut response);

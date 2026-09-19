@@ -15,7 +15,7 @@ pub struct AccessTokenClaims {
     pub exp: usize,
     pub iat: usize,
     pub scope: String,
-    /// 辰星到 CLtermux 的会话令牌扩展（Issue #709）。
+    /// 资源服务会话令牌扩展：由 exchange 端点签发，携带业务绑定标识。
     ///
     /// 普通 Access Token 不携带这些 claim：`skip_serializing_if` 让缺失值在
     /// 序列化时完全消失，`default` 让旧的、没有这些键的令牌仍可被解码成 `None`。
@@ -152,7 +152,7 @@ pub fn issue_access_token_at(
     encode_claims(keys, &claims)
 }
 
-/// 签发携带 CLtermux 业务绑定扩展的会话令牌（Issue #709）。
+/// 签发携带资源服务绑定扩展的会话令牌。
 ///
 /// 与 [`issue_access_token_at`] 共用 RS256 + active `kid` 的签发路径，只在标准
 /// claims 之外填充 `uid` / `binding_id` / `binding_version`。普通 Access Token

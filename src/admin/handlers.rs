@@ -114,8 +114,8 @@ pub async fn update_client(
         Err(response) => return response,
     };
     let actor = authorization.actor();
-    match state
-        .clients
+    let clients = crate::resource_services::scoped_client_service(&state, Some(&client_id)).await;
+    match clients
         .update_with_audit(
             &client_id,
             input,

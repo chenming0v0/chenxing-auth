@@ -7,14 +7,11 @@ pub const DEFAULT_MAX_REDIRECT_URIS: usize = 10;
 pub const DEFAULT_MAX_REDIRECT_URI_LENGTH: usize = 2_048;
 pub const DEFAULT_MAX_SCOPES: usize = 32;
 pub const DEFAULT_MAX_SCOPE_LENGTH: usize = 64;
-/// 新客户端注册默认。不含 legacy `cltermux:access`（#714）。
-pub const DEFAULT_REGISTRATION_SCOPES: &[&str] = &["openid", "profile", "email"];
-/// 环境变量未设置时的冻结运行期兼容上界。既有 grants / 显式配置的
-/// `cltermux:access` 仍可在 authorize / token / grant gate 使用。
-pub const IMPLICIT_RUNTIME_SCOPE_UPPER_BOUND: &[&str] =
-    &["openid", "profile", "email", "cltermux:access"];
-/// 兼容别名：未配置 `OAUTH_CLIENT_ALLOWED_SCOPES` 时的平台 allowlist。
-pub const DEFAULT_ALLOWED_SCOPES: &[&str] = IMPLICIT_RUNTIME_SCOPE_UPPER_BOUND;
+/// 未配置 `OAUTH_CLIENT_ALLOWED_SCOPES` 时的基础 allowlist。资源服务声明的
+/// scope 不在这里硬编码，由 `resource_services` 在运行时按客户端动态追加。
+pub const DEFAULT_ALLOWED_SCOPES: &[&str] = &["openid", "profile", "email"];
+/// OIDC 保留 scope：资源服务不得声明这些名字。
+pub const RESERVED_SCOPES: &[&str] = &["openid", "profile", "email", "offline_access"];
 pub const ABSOLUTE_MAX_REDIRECT_URIS: usize = 100;
 pub const ABSOLUTE_MAX_REDIRECT_URI_LENGTH: usize = 8_192;
 pub const ABSOLUTE_MAX_SCOPES: usize = 100;

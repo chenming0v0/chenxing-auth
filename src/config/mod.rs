@@ -7,7 +7,6 @@ use crate::redis_keyspace::RedisKeyspace;
 
 mod admin;
 mod audit;
-mod cltermux;
 mod construction;
 mod issuer;
 mod limit_bounds;
@@ -35,8 +34,6 @@ const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 const DEFAULT_HTTP_GRACEFUL_DRAIN_SECONDS: u64 = 15;
 
 pub use audit::AuditRetentionConfig;
-pub(crate) use cltermux::validate_interop_token;
-pub use cltermux::{CltermuxConfig, cltermux_config_from_env};
 // 上界常量必须公开可达 `crate::config::MAX_*`：`for_each_security_limit!` 用绝对路径
 // 引用它们，才能在 config 之外（settings）的调用点正确解析。
 pub(crate) use limit_bounds::for_each_security_limit;
@@ -157,8 +154,6 @@ pub struct Config {
     pub security_limits: SecurityLimits,
     /// 审计热表保留和显式归档维护命令配置（#159）。
     pub audit_retention: AuditRetentionConfig,
-    /// CLtermux 服务端到服务端集成（#706）。`None` = 集成禁用。
-    pub cltermux: Option<CltermuxConfig>,
 }
 
 impl fmt::Debug for Config {
@@ -230,7 +225,6 @@ impl fmt::Debug for Config {
             .field("trusted_proxies", &self.trusted_proxies)
             .field("security_limits", &self.security_limits)
             .field("audit_retention", &self.audit_retention)
-            .field("cltermux", &self.cltermux)
             .finish()
     }
 }

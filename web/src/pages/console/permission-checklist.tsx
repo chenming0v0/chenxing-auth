@@ -19,6 +19,9 @@ function PermissionRow({
         <p className="chenxing-body text-sm font-semibold">
           {item.title}{' '}
           <span className="chenxing-mono text-[11px] font-normal text-[var(--chenxing-muted-foreground)]">{item.scope}</span>
+          {item.source === 'resource_service' ? (
+            <span className="ml-2 text-[11px] font-normal text-[var(--chenxing-muted-foreground)]">资源服务</span>
+          ) : null}
         </p>
         <p className="chenxing-caption mt-0.5">{item.desc}</p>
       </div>
@@ -34,15 +37,18 @@ export function PermissionChecklist({
   selected,
   onChange,
   errorText,
+  choices,
 }: {
   id: string
   selected: string[]
   onChange: (scopes: string[]) => void
   errorText?: string
+  /** 服务端 scope 目录映射结果；未提供（目录未加载或加载失败）时回落到离线基础目录。 */
+  choices?: OAuthPermission[]
 }) {
   const labelId = useId()
   const messageId = `${id}-message`
-  const rows = permissionChoices(selected)
+  const rows = choices ?? permissionChoices(selected)
   const selectedSet = new Set(selected)
 
   function toggle(scope: string, checked: boolean) {

@@ -53,11 +53,6 @@ use crate::{
         remove_security_passkey_factor, remove_security_totp_factor,
         start_security_passkey_registration, start_security_totp_enrollment,
     },
-    linked_accounts::exchange::exchange,
-    linked_accounts::handlers::{
-        account_providers, bind_linked_account, delete_linked_account, get_linked_account,
-        list_linked_accounts, refresh_linked_account, resolve,
-    },
     oauth::handlers::{authorize, authorize_post, token},
     oauth::providers::handlers::{
         external_binding_callback, external_callback, list_linked_identities,
@@ -69,6 +64,7 @@ use crate::{
         bind_authorization_request, decide_authorization_request, inspect_authorization_request,
     },
     oauth::userinfo::{userinfo, userinfo_post},
+    resource_services::exchange::exchange,
     state::AppState,
     users::avatar_handlers::{
         current_user_avatar, delete_current_user_avatar, upload_current_user_avatar,
@@ -100,7 +96,7 @@ use crate::{
 use super::discovery::{jwks, openid_configuration};
 
 pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
-    crate::account_portal::routes::register(router)
+    crate::resource_services::routes::register(router)
         .route(
             "/.well-known/openid-configuration",
             get(openid_configuration),
@@ -336,14 +332,6 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
             get(list_providers).post(create_provider),
         )
         .route(
-            "/api/v1/admin/account-providers",
-            get(crate::admin::account_provider_handlers::list),
-        )
-        .route(
-            "/api/v1/admin/account-providers/{slug}",
-            axum::routing::put(crate::admin::account_provider_handlers::save),
-        )
-        .route(
             "/api/v1/admin/oauth/providers/{slug}",
             axum::routing::put(update_provider),
         )
@@ -383,21 +371,6 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
             "/api/v1/auth/external-identities/{slug}",
             delete(unlink_external_identity),
         )
-        .route("/api/v1/auth/account-providers", get(account_providers))
-        .route(
-            "/api/v1/auth/account-providers/{provider}/bindings",
-            post(bind_linked_account),
-        )
-        .route("/api/v1/auth/linked-accounts", get(list_linked_accounts))
-        .route(
-            "/api/v1/auth/linked-accounts/{id}",
-            get(get_linked_account).delete(delete_linked_account),
-        )
-        .route(
-            "/api/v1/auth/linked-accounts/{id}/refresh",
-            post(refresh_linked_account),
-        )
-        .route("/api/v1/integrations/cltermux/resolve", post(resolve))
         .route("/api/v1/auth/chenxing/exchange", post(exchange))
         .route(
             "/api/v1/auth/session",

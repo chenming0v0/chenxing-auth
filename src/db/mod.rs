@@ -432,6 +432,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "account portal consumer tables",
             include_str!("../../migrations/0058_account_portal.sql"),
         ),
+        (
+            59,
+            "resource services rename and scope declaration",
+            include_str!("../../migrations/0059_resource_services.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

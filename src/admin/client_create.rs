@@ -101,6 +101,8 @@ pub async fn create_client(
             return error::bad_request("invalid_idempotency_key", "idempotency key is invalid");
         }
     };
+    // 新应用尚无 client_id：allowlist = 基础 scope + public 资源服务 scope。
+    let clients = crate::resource_services::scoped_client_service(&state, None).await;
     let result = match idempotency_key {
         Some(key) => {
             let actor_scope = format!(
@@ -108,8 +110,7 @@ pub async fn create_client(
                 actor_type,
                 actor_id.as_deref().unwrap_or("system")
             );
-            state
-                .clients
+            clients
                 .register_with_audit_idempotent(
                     owner_user_id,
                     input,
@@ -129,8 +130,7 @@ pub async fn create_client(
                 .await
         }
         None => {
-            state
-                .clients
+            clients
                 .register_with_audit(owner_user_id, input, move |client| {
                     AuditEvent::new(
                         actor_type.to_owned(),

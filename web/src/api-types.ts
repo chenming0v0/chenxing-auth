@@ -42,23 +42,13 @@ export type SecurityRemovalResult = {
 }
 
 export type {
-  AccountProvider,
-  AccountProviderListResponse,
   ExternalIdentity,
   ExternalIdentityExtension,
   ExternalIdentityExtensionField,
   ExternalIdentityExtensionFieldType,
   ExternalIdentityListResponse,
-  LinkedAccount,
-  LinkedAccountCapabilities,
-  LinkedAccountCredentialBindInput,
-  LinkedAccountDeleteInput,
-  LinkedAccountDisplay,
-  LinkedAccountKind,
-  LinkedAccountListResponse,
-  LinkedAccountProvider,
-  LinkedAccountSync,
 } from './external-identity-types'
+export type { ScopeCatalogItem, ScopeCatalogResponse } from './oauth-permissions'
 export type ExternalIdentityUnlinkInput = { password: string }
 
 /** 登录页可见的外部身份源，仅包含渲染入口所需的公开字段。 */

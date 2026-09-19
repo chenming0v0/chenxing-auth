@@ -6,7 +6,7 @@ import { getDocumentTitle } from './data'
 import { LandingPage } from './pages/landing'
 import { AuthPage, BootstrapPage } from './pages/auth'
 import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './pages/oauth'
-import { ConsoleOverview, ConsolePlans, ConsoleProfile, ConsoleWallet, AuthorizedApps, OAuthIdentitiesPage, AccountPortalPage, SecurityLogsPage } from './pages/console/account'
+import { ConsoleOverview, ConsolePlans, ConsoleProfile, ConsoleWallet, AuthorizedApps, ResourceServicesPage, SecurityLogsPage } from './pages/console/account'
 import { IntegratePage, PlaygroundPage } from './pages/console/developer'
 import { AdminAppLinks, AdminAudit, AdminClients, AdminDashboard, AdminInvitations, AdminOAuthProviders, AdminPlans, AdminUsers, AdminSettings } from './pages/admin'
 import { AuthPanel, AuthShell } from './components/shells'
@@ -85,9 +85,7 @@ function AppContent() {
     '/console': <ConsoleOverview />,
     '/console/plans': <ConsolePlans />,
     '/console/profile': <ConsoleProfile />,
-    // 已连接账号聚合页（Issue #706）：同时承载 OAuth 身份与业务服务账号（CLtermux）
-    '/console/account/oauth-identities': <OAuthIdentitiesPage />,
-    '/console/account/portal': <AccountPortalPage />,
+    '/console/account/resource-services': <ResourceServicesPage />,
     '/console/wallet': <ConsoleWallet />,
     '/console/security': <ConsoleProfile />,
     '/settings/security': <ConsoleProfile />,

@@ -110,16 +110,14 @@ pub async fn issue_authorization_code_result(
     };
     let redirect_target = canonicalize_redirect_uri(&validated.redirect_uri)
         .ok_or(AuthorizationCodeIssueError::InvalidRequest)?;
+    let allowlist =
+        crate::resource_services::client_scope_allowlist(state, Some(&client.client_id)).await;
     if validated.client_id != client.client_id
         || !client
             .redirect_uris
             .iter()
             .any(|uri| redirect_uri_matches(uri, &redirect_target))
-        || !scopes_are_allowed(
-            &client,
-            &validated.scopes,
-            &state.config.client_registration_limits.allowed_scopes,
-        )
+        || !scopes_are_allowed(&client, &validated.scopes, &allowlist)
     {
         return Err(AuthorizationCodeIssueError::InvalidRequest);
     }

@@ -4,8 +4,7 @@ import { Notice, PageIntro } from '@chenxing/ui'
 import { AdminGate, useAdminAccess } from './shared'
 import { useDraftLeaveGuard, useFlashMessage } from './settings/panel'
 import { OAuthProvidersPanel } from './settings/oauth-providers-panel'
-import { AccountProvidersPanel } from './settings/account-providers-panel'
-import { AccountPortalPanel } from './settings/account-portal-panel'
+import { ResourceServicesPanel } from './settings/resource-services-panel'
 
 export function AdminOAuthProviders() {
   const access = useAdminAccess()
@@ -21,9 +20,8 @@ export function AdminOAuthProviders() {
 export function OAuthProvidersPageBody() {
   const { flash, message } = useFlashMessage()
   const [dirty, setDirty] = useState(false)
-  const [accountDirty, setAccountDirty] = useState(false)
-  const [portalDirty, setPortalDirty] = useState(false)
-  useDraftLeaveGuard(dirty || accountDirty || portalDirty)
+  const [resourceServicesDirty, setResourceServicesDirty] = useState(false)
+  useDraftLeaveGuard(dirty || resourceServicesDirty)
   return (
     <>
       <PageIntro
@@ -34,10 +32,7 @@ export function OAuthProvidersPageBody() {
       {message ? <div className="mb-6"><Notice tone={message.tone}>{message.text}</Notice></div> : null}
       <OAuthProvidersPanel onMessage={flash} onDirtyChange={setDirty} />
       <div className="mt-6">
-        <AccountProvidersPanel onMessage={flash} onDirtyChange={setAccountDirty} />
-      </div>
-      <div className="mt-6">
-        <AccountPortalPanel onMessage={flash} onDirtyChange={setPortalDirty} />
+        <ResourceServicesPanel onMessage={flash} onDirtyChange={setResourceServicesDirty} />
       </div>
     </>
   )

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import {
   apiFetch,
+  fetchScopeCatalog,
   type ClientAuthMethod,
   type ClientCreateInput,
   type ClientInput,
@@ -10,7 +11,7 @@ import {
 import { Drawer } from '@chenxing/ui'
 import { SelectField } from '@chenxing/ui'
 import { Button, Field, HudPanel, Icon, Notice, TextAreaField } from '@chenxing/ui'
-import { DEFAULT_SELECTED_SCOPES } from '../../oauth-permissions'
+import { catalogPermissionChoices, DEFAULT_SELECTED_SCOPES, type ScopeCatalogItem } from '../../oauth-permissions'
 import { useMutationLock } from '../../use-mutation-lock'
 import {
   findInvalidRedirectUri,
@@ -145,6 +146,7 @@ export function AppRegisterDrawer({
   const [errors, setErrors] = useState<FieldErrors>({})
   const [message, setMessage] = useState('')
   const [logoFailed, setLogoFailed] = useState(false)
+  const [scopeCatalog, setScopeCatalog] = useState<ScopeCatalogItem[] | null>(null)
   const createIdempotencyRef = useRef<{ fingerprint: string; key: string } | null>(null)
   const redirectUrisRef = useRef<RedirectUriListHandle>(null)
   const { busy, run } = useMutationLock()
@@ -162,6 +164,17 @@ export function AppRegisterDrawer({
   useEffect(() => {
     setLogoFailed(false)
   }, [previewLogo])
+
+  // 目录来自服务端：编辑时带上 client_id，让「仅指定应用」的受限 scope 也能列出。
+  // 拉取失败时 scopeCatalog 保持 null，清单回落到离线基础目录。
+  const editingClientId = editing?.client_id
+  useEffect(() => {
+    let cancelled = false
+    fetchScopeCatalog(editingClientId)
+      .then((response) => { if (!cancelled) setScopeCatalog(response.items) })
+      .catch(() => { if (!cancelled) setScopeCatalog(null) })
+    return () => { cancelled = true }
+  }, [editingClientId])
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }))
@@ -392,6 +405,7 @@ export function AppRegisterDrawer({
           selected={form.scopes}
           onChange={(scopes) => update('scopes', scopes)}
           errorText={errors.scopes}
+          choices={scopeCatalog ? catalogPermissionChoices(scopeCatalog, form.scopes) : undefined}
         />
       </HudPanel>
     </Drawer>
