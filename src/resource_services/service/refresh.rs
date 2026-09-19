@@ -142,9 +142,15 @@ impl ResourceServiceService {
                 Ok(BindingView::from_row(&committed))
             }
             Err(error) => {
-                self.fail_operation(provider.id, OPERATION_REFRESH, idempotency_key)
-                    .await?;
-                Err(ServiceError::from(error))
+                self.handle_provider_error(
+                    provider.id,
+                    OPERATION_REFRESH,
+                    idempotency_key,
+                    binding.id,
+                    binding.generation,
+                    error,
+                )
+                .await
             }
         }
     }

@@ -100,10 +100,13 @@ impl From<ClientError> for ServiceError {
             ClientError::InvalidResponse(protocol) => Self::Protocol(protocol),
             ClientError::Provider(failure) => match failure.code {
                 KnownErrorCode::CredentialInvalid => Self::CredentialInvalid,
-                KnownErrorCode::InvalidRefreshToken
-                | KnownErrorCode::InvalidAccessToken
-                | KnownErrorCode::IssuanceAlreadyCommitted
-                | KnownErrorCode::RefreshAlreadyCommitted => Self::ReauthorizationRequired,
+                KnownErrorCode::InvalidRefreshToken | KnownErrorCode::InvalidAccessToken => {
+                    Self::ReauthorizationRequired
+                }
+                // 提供方已提交且不能重放 raw token。naive From 不能确认本地是否已落库，
+                // 不得直接改成重新授权或当成可重试传输错误；创建/刷新路径会先再探本地。
+                KnownErrorCode::IssuanceAlreadyCommitted
+                | KnownErrorCode::RefreshAlreadyCommitted => Self::Conflict,
                 KnownErrorCode::AccountDisabled => Self::BindingTombstoned,
                 KnownErrorCode::AccountNotFound => Self::BindingNotFound,
                 KnownErrorCode::BindingConflict => Self::Conflict,
@@ -130,6 +133,24 @@ mod tests {
     fn committed_issuance_cannot_be_treated_as_a_retryable_transport_error() {
         let error = ClientError::Provider(ProviderFailure {
             code: KnownErrorCode::IssuanceAlreadyCommitted,
+            retry_after: None,
+        });
+        assert!(matches!(ServiceError::from(error), ServiceError::Conflict));
+    }
+
+    #[test]
+    fn committed_refresh_cannot_be_treated_as_a_retryable_transport_error() {
+        let error = ClientError::Provider(ProviderFailure {
+            code: KnownErrorCode::RefreshAlreadyCommitted,
+            retry_after: None,
+        });
+        assert!(matches!(ServiceError::from(error), ServiceError::Conflict));
+    }
+
+    #[test]
+    fn invalid_refresh_token_still_requires_reauthorization() {
+        let error = ClientError::Provider(ProviderFailure {
+            code: KnownErrorCode::InvalidRefreshToken,
             retry_after: None,
         });
         assert!(matches!(
