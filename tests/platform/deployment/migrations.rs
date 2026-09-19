@@ -301,19 +301,20 @@ fn migration_checksum_manifest_lists_every_sql_file() {
         "checksum manifest must list every migration"
     );
 
+    // 已发布账本必须是当前清单的严格前缀：已发布迁移字节不可变，dev 上未发布的
+    // 迁移允许暂不入账。行数不在这里硬编码——发布分支/标签上账本必须与清单完全
+    // 相等，由 CI 的发布门强制，避免账本靠人记忆更新而长期滞后。
     let published = PUBLISHED_MIGRATION_CHECKSUMS.lines().collect::<Vec<_>>();
     let current = manifest.lines().collect::<Vec<_>>();
-    assert_eq!(published.len(), 47);
+    assert!(!published.is_empty(), "published ledger must not be empty");
+    assert!(published.len() <= current.len());
     assert_eq!(published, current[..published.len()]);
-    assert!(
-        published
-            .last()
-            .is_some_and(|line| { line.ends_with("  0047_oauth_client_description.sql") })
-    );
     for marker in [
         "sha256sum -c published-checksums.sha256",
         "published_count=\"$(wc -l < published-checksums.sha256)\"",
         "head -n \"$published_count\" checksums.sha256",
+        "refs/heads/releases|refs/tags/v*)",
+        "diff -u published-checksums.sha256 checksums.sha256",
     ] {
         assert!(
             CI_WORKFLOW.contains(marker),
