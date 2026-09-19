@@ -182,13 +182,15 @@ Gate0 此项不重开。
 
 无遗留待确认项；如需变更以上裁定，回到本文件显式修改。不重开 Gate0。
 
-## 14. 剩余缺口（实现缺陷，不是「尚未实现协议」）
+## 14. 已关闭的实现缺口
 
-正本状态是 Implemented。下列是已落地代码上的已知缺口，跟踪在父 issue #715：
+正本状态是 Implemented。下列缺口已在消费方落地，跟踪 issue 已关闭：
 
-| Issue | 缺口 |
+| Issue | 已落地 |
 | --- | --- |
-| [#716](https://github.com/chenming0v0/chenxing-auth/issues/716) | 匿名 Discovery 不得输出 restricted 资源服务 scope（正本目标态见第 13 节第 5 条） |
-| [#717](https://github.com/chenming0v0/chenxing-auth/issues/717) | 消费方操作指纹须走 keyed HMAC；创建不得用 `Uuid::nil()` 代替真实 `client_binding_id` |
-| [#718](https://github.com/chenming0v0/chenxing-auth/issues/718) | 提供方 `409 issuance_already_committed` / `refresh_already_committed` 不得 `fail_operation` 后改成盲目重新授权 |
-| [#719](https://github.com/chenming0v0/chenxing-auth/issues/719) | `sync_binding` 在提供方 200 时必须落库 `snapshot_json` |
+| [#716](https://github.com/chenming0v0/chenxing-auth/issues/716) | 匿名 Discovery 只宣布 public 资源服务 scope |
+| [#717](https://github.com/chenming0v0/chenxing-auth/issues/717) | keyed HMAC；创建用真实 `binding_id`；刷新指纹绑 binding 身份，不绑会旋转的 refresh token |
+| [#718](https://github.com/chenming0v0/chenxing-auth/issues/718) | 提供方 `already_committed` 先探本地，不 `fail_operation` |
+| [#719](https://github.com/chenming0v0/chenxing-auth/issues/719) | 同步在提供方 200 时落库 `snapshot_json`；CAS 未命中返回当前 live 行，不 409 |
+
+无新的正本级剩余缺口。后续缺陷另开 issue，跟踪在父 issue [#715](https://github.com/chenming0v0/chenxing-auth/issues/715)。

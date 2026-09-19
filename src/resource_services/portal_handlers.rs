@@ -145,11 +145,10 @@ pub async fn sync_binding(
     session: SessionWrite,
     Path(id): Path<Uuid>,
 ) -> Response {
-    match state
-        .resource_services
-        .sync_binding(session.user_id, id)
-        .await
-    {
+    let Some(credential) = session.user_session_credential() else {
+        return service_error(ServiceError::SessionInvalid);
+    };
+    match state.resource_services.sync_binding(credential, id).await {
         Ok(item) => json_ok(item),
         Err(error) => service_error(error),
     }

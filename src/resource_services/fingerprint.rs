@@ -40,34 +40,32 @@ pub fn create_message(
     identifier: &[u8],
     secret: &[u8],
 ) -> Vec<u8> {
-    let mut message = Vec::new();
-    push_field(&mut message, b"create");
-    push_field(&mut message, provider_id.as_bytes());
-    push_field(&mut message, binding_id.as_bytes());
-    push_field(&mut message, &user_id.to_be_bytes());
+    let mut message = identity_message(b"create", provider_id, binding_id, user_id);
     push_field(&mut message, identifier);
     push_field(&mut message, secret);
     message
 }
 
-pub fn refresh_message(
-    provider_id: Uuid,
-    binding_id: Uuid,
-    user_id: UserId,
-    refresh_token: &[u8],
-) -> Vec<u8> {
-    let mut message = Vec::new();
-    push_field(&mut message, b"refresh");
-    push_field(&mut message, provider_id.as_bytes());
-    push_field(&mut message, binding_id.as_bytes());
-    push_field(&mut message, &user_id.to_be_bytes());
-    push_field(&mut message, refresh_token);
-    message
+/// 刷新指纹只标识「谁在刷哪条绑定」，不含会旋转的 refresh token。
+///
+/// 同 `Idempotency-Key` 在本地提交后重试必须还能 `ReplayCommitted`。发给提供方
+/// 的 HTTP 请求仍带当前 refresh token，那是协议载荷，不是本地操作指纹。
+pub fn refresh_message(provider_id: Uuid, binding_id: Uuid, user_id: UserId) -> Vec<u8> {
+    identity_message(b"refresh", provider_id, binding_id, user_id)
 }
 
 pub fn revoke_message(provider_id: Uuid, binding_id: Uuid, user_id: UserId) -> Vec<u8> {
+    identity_message(b"revoke", provider_id, binding_id, user_id)
+}
+
+fn identity_message(
+    operation: &[u8],
+    provider_id: Uuid,
+    binding_id: Uuid,
+    user_id: UserId,
+) -> Vec<u8> {
     let mut message = Vec::new();
-    push_field(&mut message, b"revoke");
+    push_field(&mut message, operation);
     push_field(&mut message, provider_id.as_bytes());
     push_field(&mut message, binding_id.as_bytes());
     push_field(&mut message, &user_id.to_be_bytes());
@@ -146,11 +144,25 @@ mod tests {
         );
         assert_ne!(
             create,
-            keyed_fingerprint(&key, &refresh_message(provider, binding, 9, b"token"))
+            keyed_fingerprint(&key, &refresh_message(provider, binding, 9))
+        );
+        let refresh = keyed_fingerprint(&key, &refresh_message(provider, binding, 9));
+        assert_eq!(
+            refresh,
+            keyed_fingerprint(&key, &refresh_message(provider, binding, 9)),
+            "refresh fingerprint must stay stable after token rotation"
         );
         assert_ne!(
-            keyed_fingerprint(&key, &refresh_message(provider, binding, 9, b"token-a")),
-            keyed_fingerprint(&key, &refresh_message(provider, binding, 9, b"token-b"))
+            refresh,
+            keyed_fingerprint(&key, &refresh_message(provider, Uuid::from_u128(3), 9))
+        );
+        assert_ne!(
+            refresh,
+            keyed_fingerprint(&key, &refresh_message(provider, binding, 8))
+        );
+        assert_ne!(
+            refresh,
+            keyed_fingerprint(&key, &revoke_message(provider, binding, 9))
         );
         assert!(!create.contains("secret"));
         assert_ne!(key, fingerprint_hmac_key(b"other-client-secret"));

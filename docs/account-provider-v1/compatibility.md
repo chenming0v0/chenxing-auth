@@ -73,7 +73,7 @@
   3. 在途陈旧响应不能复活已 tombstone 的绑定。
 - **歧义刷新重试**：网络错误/5xx 时用**同操作 ID + 同 refresh_token** 重试以发现结果；不用新操作 ID 盲重试，不恢复旧一代。
 - **本地新一代优先**：若消费方已持久化新一代令牌包，则它以本地为准覆盖重复响应；若提供方已提交而令牌包丢失，只能显式重新授权并清理。
-- **账号查询网络中断不使令牌失效**；成功同步必须落库 `snapshot_json`（缺口 #719）。
+- **账号查询网络中断不使令牌失效**；成功同步落库 `snapshot_json`。并发 CAS 未命中（generation/revision 已前进）返回当前 live 行，不 409、不改令牌包（#719）。
 - provider 身份（端点/客户端）在有未完成 grants/operations/outbox 时**不可编辑**。
 
 ## 8. 作用域（三类，彼此正交）
@@ -143,4 +143,4 @@
 - 消费方令牌包加密 AAD = providerUUID + bindingID + purpose。
 - SSRF/恶意字段：未知字段类型忽略、未知顶层字段忽略、URL 仅 HTTPS 无 userinfo。
 - UI 可信渲染：无 HTML/JS/CSS 注入、不自动加载远程媒体。
-- 已知实现缺口 #717 / #718 / #719 关闭前，不得声称创建指纹、409 提交语义与同步落库已满足正本。
+- 创建/刷新操作指纹为 keyed HMAC（#717）：刷新指纹只绑 provider/binding/user，不含会旋转的 refresh token。提供方 409 `already_committed` 先探本地（#718）。同步在提供方 200 时落库 `snapshot_json`；CAS 未命中返回当前 live 行（#719）。

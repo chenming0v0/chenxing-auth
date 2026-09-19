@@ -57,12 +57,7 @@ impl ResourceServiceService {
             fingerprint_hmac_key(self.decrypt_provider_secret(&provider)?.expose().as_bytes());
         let fingerprint = keyed_fingerprint(
             &hmac_key,
-            &refresh_message(
-                provider.id,
-                binding.id,
-                credential.user_id,
-                stored.refresh_token.expose().as_bytes(),
-            ),
+            &refresh_message(provider.id, binding.id, credential.user_id),
         );
         let lease = OperationLease {
             idempotency_key,
@@ -79,8 +74,16 @@ impl ResourceServiceService {
         if let ClaimedOperation::Existing(existing) = &claimed {
             match classify_existing_operation(existing, &fingerprint, now) {
                 ExistingOperation::ReplayCommitted => {
+                    let row = self
+                        .store
+                        .get_binding(existing.binding_id)
+                        .await?
+                        .ok_or(ServiceError::BindingNotFound)?;
+                    if row.user_id != credential.user_id {
+                        return Err(ServiceError::BindingNotFound);
+                    }
                     tx.commit().await?;
-                    return Ok(BindingView::from_row(&binding));
+                    return Ok(BindingView::from_row(&row));
                 }
                 ExistingOperation::FingerprintConflict | ExistingOperation::Failed => {
                     return Err(ServiceError::Conflict);
