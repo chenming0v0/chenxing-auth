@@ -115,12 +115,16 @@ fn if_none_match_matches(request_headers: &HeaderMap, etag: &HeaderValue) -> boo
 ///
 /// Issuer 取自配置而非请求 Host：`APP_ISSUER` 是 OIDC 发行者标识，
 /// 从反向代理输入推导会让攻击者能改写发行者。
+///
+/// `scopes_supported` 是匿名元数据：只含基础 scope 与已启用 public 服务
+/// scope。restricted 服务 scope 不得出现在这份清单里（#716）。
 pub(super) async fn openid_configuration(
     State(state): State<AppState>,
     issuer: RequestIssuer,
     headers: HeaderMap,
 ) -> Response {
     let base = &state.config.client_registration_limits.allowed_scopes;
+    // 匿名 Discovery：all_enabled_scopes 只返回基础 + public，不含 restricted。
     let scopes_supported = match state.resource_services.all_enabled_scopes(base).await {
         Ok(scopes) => scopes,
         Err(error) => {
