@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::users::domain::UserId;
 
 const DOMAIN: &[u8] = b"resource-service\0operation-fingerprint\0v1\0";
+const KEY_DOMAIN: &[u8] = b"resource-service\0operation-fingerprint-key\0v1\0";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -18,6 +19,18 @@ pub fn keyed_fingerprint(hmac_key: &[u8], message: &[u8]) -> String {
     mac.update(DOMAIN);
     mac.update(message);
     encode_hex(&mac.finalize().into_bytes())
+}
+
+/// 从门户 `client_secret` 派生 HMAC 密钥。purpose 与 HTTP Basic 材料分离，
+/// 不能把用户凭据或裸 `client_secret` 直接当 HMAC key。
+pub fn fingerprint_hmac_key(client_secret: &[u8]) -> [u8; 32] {
+    let mut mac = HmacSha256::new_from_slice(client_secret)
+        .unwrap_or_else(|_| unreachable!("HMAC-SHA256 accepts any key length"));
+    mac.update(KEY_DOMAIN);
+    let bytes = mac.finalize().into_bytes();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&bytes);
+    key
 }
 
 pub fn create_message(
@@ -83,31 +96,64 @@ mod tests {
 
     #[test]
     fn fingerprints_are_keyed_and_purpose_separated() {
-        let key = b"portal-client-secret-material";
+        let client_secret = b"portal-client-secret-material";
+        let key = fingerprint_hmac_key(client_secret);
         let provider = Uuid::from_u128(1);
         let binding = Uuid::from_u128(2);
-        let create =
-            keyed_fingerprint(key, &create_message(provider, binding, 9, b"id", b"secret"));
+        let create = keyed_fingerprint(
+            &key,
+            &create_message(provider, binding, 9, b"id", b"secret"),
+        );
         assert_eq!(create.len(), 64);
         assert_eq!(
             create,
-            keyed_fingerprint(key, &create_message(provider, binding, 9, b"id", b"secret"))
-        );
-        assert_ne!(
-            create,
             keyed_fingerprint(
-                b"other-key",
+                &key,
                 &create_message(provider, binding, 9, b"id", b"secret")
             )
         );
         assert_ne!(
             create,
-            keyed_fingerprint(key, &create_message(provider, binding, 9, b"id", b"other"))
+            keyed_fingerprint(
+                &fingerprint_hmac_key(b"other-client-secret"),
+                &create_message(provider, binding, 9, b"id", b"secret")
+            )
         );
         assert_ne!(
             create,
-            keyed_fingerprint(key, &refresh_message(provider, binding, 9, b"token"))
+            keyed_fingerprint(
+                client_secret,
+                &create_message(provider, binding, 9, b"id", b"secret")
+            )
+        );
+        assert_ne!(
+            create,
+            keyed_fingerprint(&key, &create_message(provider, binding, 9, b"id", b"other"))
+        );
+        assert_ne!(
+            create,
+            keyed_fingerprint(
+                &key,
+                &create_message(provider, binding, 9, b"other", b"secret")
+            )
+        );
+        assert_ne!(
+            create,
+            keyed_fingerprint(
+                &key,
+                &create_message(provider, Uuid::nil(), 9, b"id", b"secret")
+            )
+        );
+        assert_ne!(
+            create,
+            keyed_fingerprint(&key, &refresh_message(provider, binding, 9, b"token"))
+        );
+        assert_ne!(
+            keyed_fingerprint(&key, &refresh_message(provider, binding, 9, b"token-a")),
+            keyed_fingerprint(&key, &refresh_message(provider, binding, 9, b"token-b"))
         );
         assert!(!create.contains("secret"));
+        assert_ne!(key, fingerprint_hmac_key(b"other-client-secret"));
+        assert_eq!(key, fingerprint_hmac_key(client_secret));
     }
 }

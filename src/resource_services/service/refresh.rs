@@ -7,11 +7,14 @@ use crate::users::{
 
 use super::ResourceServiceService;
 use crate::resource_services::bundle::{RefreshBinding, TokenBundle};
+use crate::resource_services::fingerprint::{
+    fingerprint_hmac_key, keyed_fingerprint, refresh_message,
+};
 use crate::resource_services::request::RefreshLinkSessionRequest;
 use crate::resource_services::scalar::UtcTime;
 use crate::resource_services::service_error::ServiceError;
 use crate::resource_services::store::{
-    ClaimedOperation, CommittedBundle, OperationLease, Store, StoreError, operation_fingerprint,
+    ClaimedOperation, CommittedBundle, OperationLease, Store, StoreError,
 };
 use crate::resource_services::types::{
     ExistingOperation, OPERATION_REFRESH, classify_existing_operation,
@@ -50,11 +53,16 @@ impl ResourceServiceService {
         let plaintext = self.decrypt_bundle(provider.id, binding.id, ciphertext)?;
         let stored =
             TokenBundle::parse(plaintext.expose().as_bytes()).map_err(ServiceError::Protocol)?;
-        let fingerprint = operation_fingerprint(
-            OPERATION_REFRESH,
-            provider.id,
-            binding.id,
-            credential.user_id,
+        let hmac_key =
+            fingerprint_hmac_key(self.decrypt_provider_secret(&provider)?.expose().as_bytes());
+        let fingerprint = keyed_fingerprint(
+            &hmac_key,
+            &refresh_message(
+                provider.id,
+                binding.id,
+                credential.user_id,
+                stored.refresh_token.expose().as_bytes(),
+            ),
         );
         let lease = OperationLease {
             idempotency_key,

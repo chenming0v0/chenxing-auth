@@ -2,10 +2,9 @@
 
 use crate::sqlx::{PgPool, PgRow, Row};
 use serde_json::Value;
-use uuid::Uuid;
+
 
 use super::types::{BindingRow, OperationRow, OutboxRow, ProviderRow, ScopeAccess};
-use crate::users::domain::UserId;
 
 mod binding;
 mod operation;
@@ -71,22 +70,6 @@ pub async fn has_persisted_ciphertext(pool: &PgPool) -> Result<bool, crate::sqlx
     )
     .fetch_one(pool)
     .await
-}
-
-pub fn operation_fingerprint(
-    operation_type: &str,
-    provider_id: Uuid,
-    binding_id: Uuid,
-    user_id: UserId,
-) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(operation_type.as_bytes());
-    hasher.update([0]);
-    hasher.update(provider_id.as_bytes());
-    hasher.update(binding_id.as_bytes());
-    hasher.update(user_id.to_be_bytes());
-    format!("{:x}", hasher.finalize())
 }
 
 pub(crate) fn unique_violation(error: &crate::sqlx::Error, constraint: &str) -> bool {
