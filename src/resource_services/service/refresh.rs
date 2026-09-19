@@ -7,11 +7,14 @@ use crate::users::{
 
 use super::ResourceServiceService;
 use crate::resource_services::bundle::{RefreshBinding, TokenBundle};
+use crate::resource_services::fingerprint::{
+    fingerprint_hmac_key, keyed_fingerprint, refresh_message,
+};
 use crate::resource_services::request::RefreshLinkSessionRequest;
 use crate::resource_services::scalar::UtcTime;
 use crate::resource_services::service_error::ServiceError;
 use crate::resource_services::store::{
-    ClaimedOperation, CommittedBundle, OperationLease, Store, StoreError, operation_fingerprint,
+    ClaimedOperation, CommittedBundle, OperationLease, Store, StoreError,
 };
 use crate::resource_services::types::{
     ExistingOperation, OPERATION_REFRESH, classify_existing_operation,
@@ -50,11 +53,11 @@ impl ResourceServiceService {
         let plaintext = self.decrypt_bundle(provider.id, binding.id, ciphertext)?;
         let stored =
             TokenBundle::parse(plaintext.expose().as_bytes()).map_err(ServiceError::Protocol)?;
-        let fingerprint = operation_fingerprint(
-            OPERATION_REFRESH,
-            provider.id,
-            binding.id,
-            credential.user_id,
+        let hmac_key =
+            fingerprint_hmac_key(self.decrypt_provider_secret(&provider)?.expose().as_bytes());
+        let fingerprint = keyed_fingerprint(
+            &hmac_key,
+            &refresh_message(provider.id, binding.id, credential.user_id),
         );
         let lease = OperationLease {
             idempotency_key,
@@ -71,8 +74,16 @@ impl ResourceServiceService {
         if let ClaimedOperation::Existing(existing) = &claimed {
             match classify_existing_operation(existing, &fingerprint, now) {
                 ExistingOperation::ReplayCommitted => {
+                    let row = self
+                        .store
+                        .get_binding(existing.binding_id)
+                        .await?
+                        .ok_or(ServiceError::BindingNotFound)?;
+                    if row.user_id != credential.user_id {
+                        return Err(ServiceError::BindingNotFound);
+                    }
                     tx.commit().await?;
-                    return Ok(BindingView::from_row(&binding));
+                    return Ok(BindingView::from_row(&row));
                 }
                 ExistingOperation::FingerprintConflict | ExistingOperation::Failed => {
                     return Err(ServiceError::Conflict);
@@ -142,9 +153,15 @@ impl ResourceServiceService {
                 Ok(BindingView::from_row(&committed))
             }
             Err(error) => {
-                self.fail_operation(provider.id, OPERATION_REFRESH, idempotency_key)
-                    .await?;
-                Err(ServiceError::from(error))
+                self.handle_provider_error(
+                    provider.id,
+                    OPERATION_REFRESH,
+                    idempotency_key,
+                    binding.id,
+                    binding.generation,
+                    error,
+                )
+                .await
             }
         }
     }

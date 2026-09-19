@@ -6,6 +6,11 @@
 //! 基础 scope + 所有 `public` 服务 scope + 该应用被列入 `allowed_client_ids`
 //! 的 `restricted` 服务 scope。
 //!
+//! 匿名 Discovery 的 `scopes_supported` 只有基础 scope + 已启用 public 服务
+//! scope；restricted 不得出现在公开清单里。已登记客户端通过
+//! [`filter_scopes`] / [`client_scope_allowlist`] 按 `allowed_client_ids` 拿到
+//! 自己的 restricted。
+//!
 //! 查库失败时调用方一律退回基础 scope：资源 scope 对外 fail closed。
 
 use serde::Serialize;
@@ -156,10 +161,13 @@ impl ResourceServiceService {
         Ok(filter_scopes(base, &providers, client_id))
     }
 
-    /// Discovery 用：基础 scope + 全部已启用服务 scope，不区分开放范围。
+    /// Discovery 用：基础 scope + 已启用 public 服务 scope。
+    ///
+    /// 匿名端点不得暴露 restricted 服务 scope；那些只通过
+    /// [`Self::allowed_scopes_for_client`] 发给已列入 `allowed_client_ids` 的应用。
     pub async fn all_enabled_scopes(&self, base: &[String]) -> Result<Vec<String>, ServiceError> {
         let providers = self.provider_scopes().await?;
-        Ok(merge_scopes(base, providers.iter()))
+        Ok(filter_scopes(base, &providers, None))
     }
 
     /// 权限清单目录：基础项 + 对该应用可见的服务项。
@@ -210,4 +218,57 @@ pub async fn client_scope_allowlist(state: &AppState, client_id: Option<&str>) -
 pub async fn scoped_client_service(state: &AppState, client_id: Option<&str>) -> ClientService {
     let allowlist = client_scope_allowlist(state, client_id).await;
     state.clients.with_scope_allowlist(allowlist)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::types::ScopeAccess;
+    use super::*;
+
+    fn base() -> Vec<String> {
+        ["openid", "profile", "email"]
+            .iter()
+            .map(|scope| (*scope).to_owned())
+            .collect()
+    }
+
+    fn provider(slug: &str, scope: &str, access: ScopeAccess, clients: &[&str]) -> ProviderScope {
+        ProviderScope {
+            provider_id: Uuid::new_v4(),
+            scope: scope.to_owned(),
+            slug: slug.to_owned(),
+            display_name: slug.to_uppercase(),
+            description: format!("{slug} description"),
+            access,
+            allowed_client_ids: clients.iter().map(|id| (*id).to_owned()).collect(),
+        }
+    }
+
+    /// `all_enabled_scopes` 走 `filter_scopes(..., None)`：公开清单含 public、不含 restricted。
+    #[test]
+    fn anonymous_discovery_keeps_public_and_omits_restricted() {
+        let providers = vec![
+            provider("public-svc", "public-svc:access", ScopeAccess::Public, &[]),
+            provider(
+                "secret-svc",
+                "secret-svc:access",
+                ScopeAccess::Restricted,
+                &["cx_listed"],
+            ),
+        ];
+        assert_eq!(
+            filter_scopes(&base(), &providers, None),
+            vec!["openid", "profile", "email", "public-svc:access"]
+        );
+        assert_eq!(
+            filter_scopes(&base(), &providers, Some("cx_listed")),
+            vec![
+                "openid",
+                "profile",
+                "email",
+                "public-svc:access",
+                "secret-svc:access"
+            ]
+        );
+    }
 }

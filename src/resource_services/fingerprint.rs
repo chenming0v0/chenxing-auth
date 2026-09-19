@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::users::domain::UserId;
 
 const DOMAIN: &[u8] = b"resource-service\0operation-fingerprint\0v1\0";
+const KEY_DOMAIN: &[u8] = b"resource-service\0operation-fingerprint-key\0v1\0";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -20,6 +21,18 @@ pub fn keyed_fingerprint(hmac_key: &[u8], message: &[u8]) -> String {
     encode_hex(&mac.finalize().into_bytes())
 }
 
+/// 从门户 `client_secret` 派生 HMAC 密钥。purpose 与 HTTP Basic 材料分离，
+/// 不能把用户凭据或裸 `client_secret` 直接当 HMAC key。
+pub fn fingerprint_hmac_key(client_secret: &[u8]) -> [u8; 32] {
+    let mut mac = HmacSha256::new_from_slice(client_secret)
+        .unwrap_or_else(|_| unreachable!("HMAC-SHA256 accepts any key length"));
+    mac.update(KEY_DOMAIN);
+    let bytes = mac.finalize().into_bytes();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&bytes);
+    key
+}
+
 pub fn create_message(
     provider_id: Uuid,
     binding_id: Uuid,
@@ -27,34 +40,32 @@ pub fn create_message(
     identifier: &[u8],
     secret: &[u8],
 ) -> Vec<u8> {
-    let mut message = Vec::new();
-    push_field(&mut message, b"create");
-    push_field(&mut message, provider_id.as_bytes());
-    push_field(&mut message, binding_id.as_bytes());
-    push_field(&mut message, &user_id.to_be_bytes());
+    let mut message = identity_message(b"create", provider_id, binding_id, user_id);
     push_field(&mut message, identifier);
     push_field(&mut message, secret);
     message
 }
 
-pub fn refresh_message(
-    provider_id: Uuid,
-    binding_id: Uuid,
-    user_id: UserId,
-    refresh_token: &[u8],
-) -> Vec<u8> {
-    let mut message = Vec::new();
-    push_field(&mut message, b"refresh");
-    push_field(&mut message, provider_id.as_bytes());
-    push_field(&mut message, binding_id.as_bytes());
-    push_field(&mut message, &user_id.to_be_bytes());
-    push_field(&mut message, refresh_token);
-    message
+/// 刷新指纹只标识「谁在刷哪条绑定」，不含会旋转的 refresh token。
+///
+/// 同 `Idempotency-Key` 在本地提交后重试必须还能 `ReplayCommitted`。发给提供方
+/// 的 HTTP 请求仍带当前 refresh token，那是协议载荷，不是本地操作指纹。
+pub fn refresh_message(provider_id: Uuid, binding_id: Uuid, user_id: UserId) -> Vec<u8> {
+    identity_message(b"refresh", provider_id, binding_id, user_id)
 }
 
 pub fn revoke_message(provider_id: Uuid, binding_id: Uuid, user_id: UserId) -> Vec<u8> {
+    identity_message(b"revoke", provider_id, binding_id, user_id)
+}
+
+fn identity_message(
+    operation: &[u8],
+    provider_id: Uuid,
+    binding_id: Uuid,
+    user_id: UserId,
+) -> Vec<u8> {
     let mut message = Vec::new();
-    push_field(&mut message, b"revoke");
+    push_field(&mut message, operation);
     push_field(&mut message, provider_id.as_bytes());
     push_field(&mut message, binding_id.as_bytes());
     push_field(&mut message, &user_id.to_be_bytes());
@@ -83,31 +94,78 @@ mod tests {
 
     #[test]
     fn fingerprints_are_keyed_and_purpose_separated() {
-        let key = b"portal-client-secret-material";
+        let client_secret = b"portal-client-secret-material";
+        let key = fingerprint_hmac_key(client_secret);
         let provider = Uuid::from_u128(1);
         let binding = Uuid::from_u128(2);
-        let create =
-            keyed_fingerprint(key, &create_message(provider, binding, 9, b"id", b"secret"));
+        let create = keyed_fingerprint(
+            &key,
+            &create_message(provider, binding, 9, b"id", b"secret"),
+        );
         assert_eq!(create.len(), 64);
         assert_eq!(
             create,
-            keyed_fingerprint(key, &create_message(provider, binding, 9, b"id", b"secret"))
-        );
-        assert_ne!(
-            create,
             keyed_fingerprint(
-                b"other-key",
+                &key,
                 &create_message(provider, binding, 9, b"id", b"secret")
             )
         );
         assert_ne!(
             create,
-            keyed_fingerprint(key, &create_message(provider, binding, 9, b"id", b"other"))
+            keyed_fingerprint(
+                &fingerprint_hmac_key(b"other-client-secret"),
+                &create_message(provider, binding, 9, b"id", b"secret")
+            )
         );
         assert_ne!(
             create,
-            keyed_fingerprint(key, &refresh_message(provider, binding, 9, b"token"))
+            keyed_fingerprint(
+                client_secret,
+                &create_message(provider, binding, 9, b"id", b"secret")
+            )
+        );
+        assert_ne!(
+            create,
+            keyed_fingerprint(&key, &create_message(provider, binding, 9, b"id", b"other"))
+        );
+        assert_ne!(
+            create,
+            keyed_fingerprint(
+                &key,
+                &create_message(provider, binding, 9, b"other", b"secret")
+            )
+        );
+        assert_ne!(
+            create,
+            keyed_fingerprint(
+                &key,
+                &create_message(provider, Uuid::nil(), 9, b"id", b"secret")
+            )
+        );
+        assert_ne!(
+            create,
+            keyed_fingerprint(&key, &refresh_message(provider, binding, 9))
+        );
+        let refresh = keyed_fingerprint(&key, &refresh_message(provider, binding, 9));
+        assert_eq!(
+            refresh,
+            keyed_fingerprint(&key, &refresh_message(provider, binding, 9)),
+            "refresh fingerprint must stay stable after token rotation"
+        );
+        assert_ne!(
+            refresh,
+            keyed_fingerprint(&key, &refresh_message(provider, Uuid::from_u128(3), 9))
+        );
+        assert_ne!(
+            refresh,
+            keyed_fingerprint(&key, &refresh_message(provider, binding, 8))
+        );
+        assert_ne!(
+            refresh,
+            keyed_fingerprint(&key, &revoke_message(provider, binding, 9))
         );
         assert!(!create.contains("secret"));
+        assert_ne!(key, fingerprint_hmac_key(b"other-client-secret"));
+        assert_eq!(key, fingerprint_hmac_key(client_secret));
     }
 }

@@ -1,10 +1,15 @@
 use uuid::Uuid;
 
 use crate::users::domain::UserId;
+use crate::users::{
+    UserSessionCredential, UserSessionValidation, validate_user_session_in_transaction,
+};
 
 use super::ResourceServiceService;
 use crate::resource_services::bundle::TokenBundle;
 use crate::resource_services::service_error::ServiceError;
+use crate::resource_services::snapshot::AccountSnapshot;
+use crate::resource_services::store::{LiveSnapshotWrite, Store};
 use crate::resource_services::types::BindingRow;
 use crate::resource_services::views::BindingView;
 
@@ -18,23 +23,27 @@ impl ResourceServiceService {
         Ok(self.store.find_live_binding(provider_id, user_id).await?)
     }
 
-    /// 向提供方拉取最新快照。网络失败时返回本地缓存，不使令牌失效。
+    /// 向提供方拉取最新快照。网络失败或并发 CAS 未命中时返回当前 live 行，不使令牌失效。
     pub async fn sync_binding(
         &self,
-        user_id: UserId,
+        credential: UserSessionCredential,
         binding_id: Uuid,
     ) -> Result<BindingView, ServiceError> {
-        let binding = self
-            .store
-            .get_binding(binding_id)
-            .await?
-            .ok_or(ServiceError::BindingNotFound)?;
-        if binding.user_id != user_id || !binding.is_live() {
+        let mut tx = self.pool.begin().await?;
+        match validate_user_session_in_transaction(&mut tx, credential).await? {
+            UserSessionValidation::Valid => {}
+            other => return Err(ServiceError::from(other)),
+        }
+        let Some(binding) = Store::lock_binding(&mut tx, binding_id).await? else {
+            return Err(ServiceError::BindingNotFound);
+        };
+        if binding.user_id != credential.user_id || !binding.is_live() {
             return Err(ServiceError::BindingNotFound);
         }
-        let Some(provider) = self.store.get_provider(binding.provider_id).await? else {
+        let Some(provider) = Store::lock_provider(&mut tx, binding.provider_id).await? else {
             return Err(ServiceError::ProviderNotFound);
         };
+        tx.commit().await?;
         let Some(ciphertext) = binding.token_bundle_ciphertext.as_deref() else {
             return Ok(BindingView::from_row(&binding));
         };
@@ -49,11 +58,48 @@ impl ResourceServiceService {
         let client = self.provider_client(&provider)?;
         match client.account(&bundle.access_token, &binding.uid).await {
             Ok(snapshot) => {
-                let mut cached = binding.clone();
-                cached.snapshot_json = snapshot.to_value();
-                Ok(BindingView::from_row(&cached))
+                self.persist_synced_snapshot(credential, provider.revision, &binding, snapshot)
+                    .await
             }
             Err(_) => Ok(BindingView::from_row(&binding)),
         }
+    }
+
+    /// 短事务条件写入本次 GET /account 快照。CAS 失败不改令牌包，返回当前 live 行。
+    async fn persist_synced_snapshot(
+        &self,
+        credential: UserSessionCredential,
+        expected_provider_revision: i64,
+        binding: &BindingRow,
+        snapshot: AccountSnapshot,
+    ) -> Result<BindingView, ServiceError> {
+        let mut tx = self.pool.begin().await?;
+        match validate_user_session_in_transaction(&mut tx, credential).await? {
+            UserSessionValidation::Valid => {}
+            other => return Err(ServiceError::from(other)),
+        }
+        let Some(persisted) = Store::update_live_snapshot(
+            &mut tx,
+            LiveSnapshotWrite {
+                binding_id: binding.id,
+                user_id: credential.user_id,
+                expected_generation: binding.generation,
+                expected_provider_revision,
+                snapshot_json: snapshot.to_value(),
+            },
+        )
+        .await?
+        else {
+            let current = Store::lock_binding(&mut tx, binding.id).await?;
+            return match current {
+                Some(row) if row.user_id == credential.user_id && row.is_live() => {
+                    tx.commit().await?;
+                    Ok(BindingView::from_row(&row))
+                }
+                _ => Err(ServiceError::BindingNotFound),
+            };
+        };
+        tx.commit().await?;
+        Ok(BindingView::from_row(&persisted))
     }
 }

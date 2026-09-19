@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/chenming0v0/chenxing-auth/dev/docs/account-provider-v1/snapshot.schema.json",
   "title": "Account Provider v1 snapshot root",
-  "description": "Account Provider v1 快照根（PLANNED）。$id 仅为本仓库文档的规范标识，不要求任何外部抓取。语义以同目录 protocol.md 第 9 节为准。注意：JSON Schema 无法内在地强制 fields[].key 唯一，也无法按 UTF-8 字节执行上限（maxLength 计 Unicode 码点），实现 MUST 在运行时执行 key 唯一与字节上限校验；schema 只覆盖结构与标量约束。",
+  "description": "Account Provider v1 快照根（Implemented）。$id 仅为本仓库文档的规范标识，不要求任何外部抓取。语义以同目录 protocol.md 第 9 节为准。注意：JSON Schema 无法内在地强制 fields[].key 唯一，也无法按 UTF-8 字节执行上限（maxLength 计 Unicode 码点），实现 MUST 在运行时执行 key 唯一与字节上限校验；schema 只覆盖结构与标量约束。",
   "type": "object",
   "required": [
     "schema_version",

@@ -7,11 +7,13 @@ use crate::users::{
 
 use super::ResourceServiceService;
 use crate::resource_services::bundle::TokenBundle;
+use crate::resource_services::fingerprint::{
+    create_message, fingerprint_hmac_key, keyed_fingerprint,
+};
 use crate::resource_services::request::CreateLinkSessionRequest;
 use crate::resource_services::service_error::ServiceError;
 use crate::resource_services::store::{
     ClaimedOperation, CommittedBundle, OperationLease, PendingBinding, Store, StoreError,
-    operation_fingerprint,
 };
 use crate::resource_services::types::{
     ExistingOperation, OPERATION_CREATE, classify_existing_operation,
@@ -49,11 +51,17 @@ impl ResourceServiceService {
             Some(existing) => existing.id,
             None => Uuid::new_v4(),
         };
-        let fingerprint = operation_fingerprint(
-            OPERATION_CREATE,
-            provider_id,
-            Uuid::nil(),
-            credential.user_id,
+        let hmac_key =
+            fingerprint_hmac_key(self.decrypt_provider_secret(&provider)?.expose().as_bytes());
+        let fingerprint = keyed_fingerprint(
+            &hmac_key,
+            &create_message(
+                provider_id,
+                binding_id,
+                credential.user_id,
+                identifier.as_bytes(),
+                secret.as_bytes(),
+            ),
         );
         let lease = OperationLease {
             idempotency_key,
@@ -138,9 +146,15 @@ impl ResourceServiceService {
                     .await
             }
             Err(error) => {
-                self.fail_operation(provider.id, OPERATION_CREATE, idempotency_key)
-                    .await?;
-                Err(ServiceError::from(error))
+                self.handle_provider_error(
+                    provider.id,
+                    OPERATION_CREATE,
+                    idempotency_key,
+                    binding.id,
+                    binding.generation,
+                    error,
+                )
+                .await
             }
         }
     }

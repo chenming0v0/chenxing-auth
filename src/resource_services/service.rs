@@ -18,6 +18,7 @@ use super::types::ProviderRow;
 mod account;
 mod admin;
 mod bind;
+mod provider_result;
 mod refresh;
 mod revoke;
 mod scope_input;

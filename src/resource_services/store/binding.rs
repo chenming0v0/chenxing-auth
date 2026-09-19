@@ -28,6 +28,15 @@ pub struct CommittedBundle {
     pub refresh_expires_at: OffsetDateTime,
 }
 
+/// 账号同步只覆盖 snapshot_json（含 fetched_at）。不改令牌包、不抬 generation。
+pub struct LiveSnapshotWrite {
+    pub binding_id: Uuid,
+    pub user_id: UserId,
+    pub expected_generation: i64,
+    pub expected_provider_revision: i64,
+    pub snapshot_json: Value,
+}
+
 impl super::Store {
     pub async fn lock_live_binding_for_user(
         tx: &mut Transaction<'_, Postgres>,
@@ -178,6 +187,38 @@ impl super::Store {
         )
         .bind(id)
         .bind(expected_generation)
+        .fetch_optional(&mut **tx)
+        .await
+    }
+
+    /// 条件更新 live 快照。session user、generation、provider revision、未 tombstone 必须同时成立。
+    pub async fn update_live_snapshot(
+        tx: &mut Transaction<'_, Postgres>,
+        write: LiveSnapshotWrite,
+    ) -> Result<Option<BindingRow>, crate::sqlx::Error> {
+        crate::sqlx::query_as(
+            "UPDATE resource_service_bindings
+             SET snapshot_json = $5,
+                 updated_at = statement_timestamp()
+             WHERE id = $1
+               AND user_id = $2
+               AND generation = $3
+               AND tombstoned_at IS NULL
+               AND EXISTS (
+                    SELECT 1
+                    FROM resource_service_providers
+                    WHERE id = resource_service_bindings.provider_id
+                      AND revision = $4
+               )
+             RETURNING id, provider_id, user_id, uid, issuer, grant_id,
+                       grant_expires_at, generation, tombstoned_at, token_bundle_ciphertext,
+                       snapshot_json, access_expires_at, refresh_expires_at, created_at, updated_at",
+        )
+        .bind(write.binding_id)
+        .bind(write.user_id)
+        .bind(write.expected_generation)
+        .bind(write.expected_provider_revision)
+        .bind(crate::sqlx::types::Json(&write.snapshot_json))
         .fetch_optional(&mut **tx)
         .await
     }
