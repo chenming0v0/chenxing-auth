@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Badge, Button, EmptyState, HudPanel, Notice, PageIntro } from '@chenxing/ui'
+import { Button, EmptyState, HudPanel, Notice, PageIntro } from '@chenxing/ui'
 import {
   createResourceServiceBinding,
   listResourceServiceBindings,
@@ -11,8 +11,8 @@ import {
 } from '../../resource-services-api'
 import type { ResourceServiceBinding, ResourceServicePublicProvider } from '../../resource-services-types'
 import { ConsoleLayout } from '../../components/shells'
-import { formatDate } from '../../data'
 import { useMutationLock } from '../../use-mutation-lock'
+import { ResourceServiceBindingCard } from './resource-service-binding-card'
 import { BindResourceServiceDialog, UnlinkResourceServiceDialog } from './resource-services-dialogs'
 
 type LoadState = { kind: 'loading' } | { kind: 'ready' } | { kind: 'error'; message: string }
@@ -151,37 +151,18 @@ export function ResourceServicesPage() {
       ) : null}
       {bindings.length ? (
         <div className="space-y-4">
-          {bindings.map((binding) => {
-            const name = providerName(binding.provider_id, binding.issuer)
-            const title = binding.name || binding.account || binding.uid || name
-            return (
-              <HudPanel key={binding.id} as="article" className="!p-5 sm:!p-6">
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="chenxing-h3">{name}</h2>
-                      <Badge tone={binding.status && binding.status !== 'active' ? 'warning' : 'success'}>
-                        {binding.status || '已绑定'}
-                      </Badge>
-                    </div>
-                    <p className="chenxing-caption mt-1">{title}</p>
-                    <p className="chenxing-caption chenxing-mono mt-1">{binding.uid || binding.issuer}</p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Button variant="ghost" icon="refresh-cw" disabled={mutationLock.busy || pendingId === binding.id} onClick={() => void runBindingAction(binding, 'sync')}>
-                      {pendingId === binding.id ? '同步中…' : '同步'}
-                    </Button>
-                    <Button variant="ghost" disabled={mutationLock.busy || pendingId === binding.id} onClick={() => void runBindingAction(binding, 'refresh')}>刷新令牌</Button>
-                    <Button variant="danger" icon="unlink" disabled={mutationLock.busy} onClick={() => { setDialogError(null); setDialog({ kind: 'unlink', binding }) }}>解绑</Button>
-                  </div>
-                </div>
-                <dl className="mt-5 grid grid-cols-1 gap-4 border-t border-[var(--chenxing-border)] pt-5 sm:grid-cols-2">
-                  <div><dt className="chenxing-caption">账号</dt><dd className="chenxing-body">{binding.account || '—'}</dd></div>
-                  <div><dt className="chenxing-caption">授权到期</dt><dd className="chenxing-body">{formatDate(binding.grant_expires_at)}</dd></div>
-                </dl>
-              </HudPanel>
-            )
-          })}
+          {bindings.map((binding) => (
+            <ResourceServiceBindingCard
+              key={binding.id}
+              binding={binding}
+              providerName={providerName(binding.provider_id, binding.issuer)}
+              busy={mutationLock.busy}
+              pending={pendingId === binding.id}
+              onSync={() => void runBindingAction(binding, 'sync')}
+              onRefresh={() => void runBindingAction(binding, 'refresh')}
+              onUnlink={() => { setDialogError(null); setDialog({ kind: 'unlink', binding }) }}
+            />
+          ))}
         </div>
       ) : null}
       {dialog?.kind === 'bind' ? (
