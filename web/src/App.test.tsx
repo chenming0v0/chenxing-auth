@@ -39,6 +39,15 @@ vi.mock('./pages/auth', () => ({
   BootstrapPage: () => <div />,
 }))
 
+vi.mock('./pages/oauth-app-link', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./pages/oauth-app-link')>()),
+  AppLinkCallbackPage: () => <div data-testid="app-link-callback-page" />,
+}))
+
+vi.mock('./pages/not-found', () => ({
+  NotFoundPage: () => <div data-testid="not-found-page" />,
+}))
+
 import App from './App'
 
 afterEach(() => {
@@ -61,5 +70,23 @@ describe('auth route instance isolation (#528)', () => {
 
     await waitFor(() => expect(screen.getByTestId('auth-page').dataset.mode).toBe('register'))
     expect(screen.getByTestId('auth-page').dataset.mountId).not.toBe(firstMountId)
+  })
+})
+
+describe('App Link 回调与未知路径不再静默弹回首页', () => {
+  it('未登录时 /app/<id>/oauth/callback 直接渲染回调页', () => {
+    routeState.path = '/app/1/oauth/callback'
+    window.history.replaceState({}, '', '/app/1/oauth/callback')
+    render(<App />)
+
+    expect(screen.getByTestId('app-link-callback-page')).toBeTruthy()
+  })
+
+  it('未知路径渲染 404 页而不是跳回首页', () => {
+    routeState.path = '/definitely/unknown'
+    window.history.replaceState({}, '', '/definitely/unknown')
+    render(<App />)
+
+    expect(screen.getByTestId('not-found-page')).toBeTruthy()
   })
 })

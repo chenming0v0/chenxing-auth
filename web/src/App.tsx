@@ -6,6 +6,8 @@ import { getDocumentTitle } from './data'
 import { LandingPage } from './pages/landing'
 import { AuthPage, BootstrapPage } from './pages/auth'
 import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './pages/oauth'
+import { AppLinkCallbackPage, matchAppLinkCallback } from './pages/oauth-app-link'
+import { NotFoundPage } from './pages/not-found'
 import { ConsoleOverview, ConsolePlans, ConsoleProfile, ConsoleWallet, AuthorizedApps, ResourceServicesPage, SecurityLogsPage } from './pages/console/account'
 import { IntegratePage, PlaygroundPage } from './pages/console/developer'
 import { AdminAppLinks, AdminAudit, AdminClients, AdminDashboard, AdminInvitations, AdminOAuthProviders, AdminPlans, AdminUsers, AdminSettings } from './pages/admin'
@@ -104,7 +106,12 @@ function AppContent() {
     '/admin/settings': <AdminSettings />,
   }
 
-  return <Fragment key={generation}>{pages[path] ?? <Navigate replace to="/" />}</Fragment>
+  // 移动端 App Link 回调（/app/<id>/oauth/callback）不是受保护路径：系统没把链接
+  // 交给应用时，浏览器会带着 code/state 落到这里，无论有没有会话都必须接住。
+  // 未知路径不再静默跳回 `/`：那个弹回曾把丢失的 OAuth 回调藏成一次首页开场动画，
+  // 用户既拿不到授权码也不知道发生了什么，改为明确的 404 页。
+  const page = matchAppLinkCallback(path) !== null ? <AppLinkCallbackPage /> : pages[path] ?? <NotFoundPage />
+  return <Fragment key={generation}>{page}</Fragment>
 }
 
 export default function App() {

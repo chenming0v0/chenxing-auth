@@ -117,7 +117,7 @@ function ClientMark({ name, logoUri }: { name?: string; logoUri?: string | null 
  * 浏览器历史也会保留当前条目。在离开确认页前、或进入回调结果页后立即 replaceState
  * 掉查询参数，可同时堵住 Referer 与历史两条泄露路径。无查询时不动，避免无谓改写。
  */
-function scrubLocationQuery(): void {
+export function scrubLocationQuery(): void {
   if (!window.location.search) return
   replaceUrl(window.location.pathname)
 }
