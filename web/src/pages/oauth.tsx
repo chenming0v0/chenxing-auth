@@ -294,8 +294,6 @@ function OAuthConsentContent({ requestId }: { requestId: string | null }) {
               <>
                 {/* #199：信任提示以不可伪造的接入域名为准，不依赖可自定义的应用名 */}
                 <p className="oauth-copy">除非你确认上方接入域名「{pending.redirect_host}」正是你要授权的应用，否则请勿继续授权。应用名称可被自定义，请以服务端校验的接入域名与 Client ID 为准。</p>
-                <p className="oauth-copy">如果该应用最近更新过权限范围，可能会再次要求你确认授权。</p>
-                <p className="oauth-copy">本次请求将在 {pending.expires_in} 秒内失效，且只绑定当前 Session。</p>
                 <div className="mt-5">
                   <div className="mb-2 text-[13px] font-medium text-[var(--chenxing-muted-foreground)]">授权后将获得以下权限</div>
                   {pending.scopes.map((scope) => {
