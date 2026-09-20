@@ -5421,10 +5421,13 @@ components:
         account: { type: string, nullable: true }
         name: { type: string, nullable: true }
         status: { type: string, nullable: true }
-        snapshot: { type: object, additionalProperties: true }
-        grant_expires_at: { type: string, nullable: true }
-        access_expires_at: { type: string, nullable: true }
-        refresh_expires_at: { type: string, nullable: true }
+        snapshot:
+          type: object
+          additionalProperties: true
+          description: 已按 Account Provider v1 校验的快照根（`docs/account-provider-v1/snapshot.schema.json`）：`subscription` 判别联合与 `fields[]` 展示字段。
+        grant_expires_at: { type: string, format: date-time, nullable: true }
+        access_expires_at: { type: string, format: date-time, nullable: true }
+        refresh_expires_at: { type: string, format: date-time, nullable: true }
     ResourceServiceProviderInput:
       type: object
       required: [display_name, slug, issuer, client_id, scope_description, scope_access, allowed_client_ids, expected_revision]

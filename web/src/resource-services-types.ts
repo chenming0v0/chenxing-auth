@@ -36,6 +36,41 @@ export type ResourceServiceBinding = {
   refresh_expires_at: string | null
 }
 
+/** Account Provider v1 的订阅描述（protocol.md §9）。 */
+export type ResourceServiceSubscription =
+  | { kind: 'expires_at'; expires_at: string }
+  | { kind: 'remaining'; remaining_seconds: number; as_of: string }
+  | { kind: 'permanent' }
+  | { kind: 'none' }
+  | { kind: 'unknown' }
+
+export type ResourceServiceAccountStatus = 'active' | 'disabled' | 'unknown'
+
+/** 提供方自述的展示字段，按 `type` 区分取值类型；未知类型在解析阶段丢弃。 */
+export type ResourceServiceSnapshotField = { key: string; label: string } & (
+  | { type: 'text'; value: string }
+  | { type: 'number'; value: number }
+  | { type: 'boolean'; value: boolean }
+  | { type: 'status'; value: string }
+  | { type: 'datetime'; value: string }
+  | { type: 'duration'; value: number }
+  | { type: 'url'; value: string }
+)
+
+/**
+ * 页面使用的快照视图。服务端已经校验过协议，这里只做宽松归一化：
+ * 缺失的顶层键退化为 null / 空数组，绝不因为快照不完整而拒绝渲染绑定。
+ */
+export type ResourceServiceSnapshot = {
+  uid: string | null
+  account: string | null
+  name: string | null
+  status: ResourceServiceAccountStatus
+  subscription: ResourceServiceSubscription | null
+  fields: ResourceServiceSnapshotField[]
+  fetched_at: string | null
+}
+
 export type ResourceServiceProviderInput = {
   display_name: string
   slug: string
@@ -127,4 +162,79 @@ export function isResourceServicePublicProviderList(value: unknown): value is Re
 
 export function isResourceServiceBindingList(value: unknown): value is ResourceServiceBinding[] {
   return Array.isArray(value) && value.every(isResourceServiceBinding)
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === 'string' ? value : null
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function isHttpsUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  try {
+    return new URL(value).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function parseAccountStatus(value: unknown): ResourceServiceAccountStatus {
+  return value === 'active' || value === 'disabled' ? value : 'unknown'
+}
+
+/** 认得的 kind 但取值残缺，与完全陌生的 kind 一样按 unknown 处理，页面只需应对五种情况。 */
+function parseSubscription(value: unknown): ResourceServiceSubscription | null {
+  if (!isRecord(value)) return null
+  switch (value.kind) {
+    case 'expires_at':
+      return typeof value.expires_at === 'string' ? { kind: 'expires_at', expires_at: value.expires_at } : { kind: 'unknown' }
+    case 'remaining':
+      return isFiniteNumber(value.remaining_seconds) && typeof value.as_of === 'string'
+        ? { kind: 'remaining', remaining_seconds: value.remaining_seconds, as_of: value.as_of }
+        : { kind: 'unknown' }
+    case 'permanent':
+    case 'none':
+      return { kind: value.kind }
+    default:
+      return { kind: 'unknown' }
+  }
+}
+
+function parseField(value: unknown): ResourceServiceSnapshotField | null {
+  if (!isRecord(value) || typeof value.key !== 'string' || typeof value.label !== 'string') return null
+  const base = { key: value.key, label: value.label }
+  switch (value.type) {
+    case 'text':
+    case 'status':
+    case 'datetime':
+      return typeof value.value === 'string' ? { ...base, type: value.type, value: value.value } : null
+    case 'url':
+      return isHttpsUrl(value.value) ? { ...base, type: 'url', value: value.value } : null
+    case 'number':
+    case 'duration':
+      return isFiniteNumber(value.value) ? { ...base, type: value.type, value: value.value } : null
+    case 'boolean':
+      return typeof value.value === 'boolean' ? { ...base, type: 'boolean', value: value.value } : null
+    default:
+      return null
+  }
+}
+
+export function parseResourceServiceSnapshot(value: unknown): ResourceServiceSnapshot | null {
+  if (!isRecord(value)) return null
+  const fields = Array.isArray(value.fields)
+    ? value.fields.map(parseField).filter((field): field is ResourceServiceSnapshotField => field !== null)
+    : []
+  return {
+    uid: optionalString(value.uid),
+    account: optionalString(value.account),
+    name: optionalString(value.name),
+    status: parseAccountStatus(value.status),
+    subscription: parseSubscription(value.subscription),
+    fields,
+    fetched_at: optionalString(value.fetched_at),
+  }
 }

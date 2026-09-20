@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 use serde_json::Value;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use super::types::{BindingRow, ProviderRow, ScopeAccess};
@@ -114,9 +115,51 @@ impl BindingView {
             name,
             status,
             snapshot: row.snapshot_json.clone(),
-            grant_expires_at: row.grant_expires_at.map(|value| value.to_string()),
-            access_expires_at: row.access_expires_at.map(|value| value.to_string()),
-            refresh_expires_at: row.refresh_expires_at.map(|value| value.to_string()),
+            grant_expires_at: row.grant_expires_at.map(rfc3339),
+            access_expires_at: row.access_expires_at.map(rfc3339),
+            refresh_expires_at: row.refresh_expires_at.map(rfc3339),
         }
+    }
+}
+
+/// 浏览器只认 RFC3339；`OffsetDateTime::to_string()` 的 `2026-12-17 0:00:00.0 +00:00:00`
+/// 会让 `new Date()` 得到 `Invalid Date`。
+fn rfc3339(value: OffsetDateTime) -> String {
+    value.format(&Rfc3339).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resource_services::types::BindingRow;
+    use serde_json::json;
+    use time::macros::datetime;
+
+    #[test]
+    fn binding_view_serializes_timestamps_as_rfc3339() {
+        let now = datetime!(2026-09-19 10:00:00 UTC);
+        let row = BindingRow {
+            id: Uuid::nil(),
+            provider_id: Uuid::nil(),
+            user_id: 1,
+            uid: "acct-1".to_owned(),
+            issuer: "https://provider.example.com".to_owned(),
+            grant_id: None,
+            grant_expires_at: Some(datetime!(2026-12-17 00:00:00 UTC)),
+            generation: 1,
+            tombstoned_at: None,
+            token_bundle_ciphertext: None,
+            snapshot_json: json!({ "account": "acct-1", "name": null, "status": "active" }),
+            access_expires_at: None,
+            refresh_expires_at: Some(datetime!(2026-10-18 00:00:00.5 UTC)),
+            created_at: now,
+            updated_at: now,
+        };
+        let value = serde_json::to_value(BindingView::from_row(&row)).expect("json");
+        assert_eq!(value["grant_expires_at"], json!("2026-12-17T00:00:00Z"));
+        assert_eq!(value["access_expires_at"], Value::Null);
+        assert_eq!(value["refresh_expires_at"], json!("2026-10-18T00:00:00.5Z"));
+        assert_eq!(value["account"], json!("acct-1"));
+        assert_eq!(value["name"], Value::Null);
     }
 }
