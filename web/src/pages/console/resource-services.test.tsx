@@ -117,10 +117,12 @@ describe('ResourceServicesPage', () => {
     expect(new Headers(bindCall?.init?.headers).get('Idempotency-Key')).toBe('33333333-3333-4333-8333-333333333333')
   })
 
-  it('renders the account snapshot with UID, subscription summary and typed fields', async () => {
+  it('renders the account snapshot with account, subscription summary and typed fields', async () => {
     registerBindings([BINDING])
     render(<ResourceServicesPage />)
-    expect(await screen.findByText('acct-1001')).toBeTruthy()
+    // 头部展示提供方给的展示账号；uid 字段按提供方自带 label 渲染，绑定键不单独标成 UID
+    expect(await screen.findByText('demo-account-1001')).toBeTruthy()
+    expect(screen.getByText('账号')).toBeTruthy()
     expect(screen.getByText('UID')).toBeTruthy()
     expect(screen.getAllByText('acct-1001')).toHaveLength(1)
     expect(screen.getByText('正常')).toBeTruthy()
@@ -151,9 +153,11 @@ describe('ResourceServicesPage', () => {
   it('still renders a binding whose snapshot is partial', async () => {
     registerBindings([{ ...BINDING, name: null, status: null, snapshot: { account: 'demo-account-1001', name: null, status: 'active' } }])
     render(<ResourceServicesPage />)
-    expect(await screen.findByText('acct-1001')).toBeTruthy()
+    expect(await screen.findByText('demo-account-1001')).toBeTruthy()
     expect(screen.getByText('正常')).toBeTruthy()
-    expect(screen.getByText('demo-account-1001')).toBeTruthy()
+    // 没有 fields[].uid 时不会把绑定键当 UID 展示
+    expect(screen.queryByText('acct-1001')).toBeNull()
+    expect(screen.queryByText('UID')).toBeNull()
     expect(screen.queryByText('订阅')).toBeNull()
     expect(screen.queryByText('最近同步')).toBeNull()
     expect(screen.getByText('授权到期')).toBeTruthy()

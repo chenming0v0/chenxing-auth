@@ -61,8 +61,8 @@ export function formatDuration(seconds: number): string {
   return `${minutes} 分钟`
 }
 
-/** 头部已经展示 UID 和账号状态，列表里不再重复。 */
-const HEADER_FIELD_KEYS = new Set(['uid', 'account_status'])
+/** 头部已经展示账号状态，列表里不再重复；uid 字段由提供方自带 label，正常渲染。 */
+const HEADER_FIELD_KEYS = new Set(['account_status'])
 /** 订阅摘要已覆盖这几项，有摘要时不再逐条列出。 */
 const SUBSCRIPTION_FIELD_KEYS = new Set(['is_subscribed', 'subscription_expires_at', 'remaining_seconds'])
 
