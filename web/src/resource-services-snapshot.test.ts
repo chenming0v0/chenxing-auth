@@ -156,10 +156,10 @@ describe('visibleSnapshotFields', () => {
   ]
 
   it('hides header and subscription duplicates when a summary is shown', () => {
-    expect(visibleSnapshotFields(fields, true).map((field) => field.key)).toEqual(['device_status'])
+    expect(visibleSnapshotFields(fields, true).map((field) => field.key)).toEqual(['uid', 'device_status'])
   })
 
   it('keeps subscription fields when there is no summary to replace them', () => {
-    expect(visibleSnapshotFields(fields, false).map((field) => field.key)).toEqual(['is_subscribed', 'remaining_seconds', 'device_status'])
+    expect(visibleSnapshotFields(fields, false).map((field) => field.key)).toEqual(['uid', 'is_subscribed', 'remaining_seconds', 'device_status'])
   })
 })

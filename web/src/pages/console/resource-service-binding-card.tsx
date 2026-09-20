@@ -41,11 +41,11 @@ function FieldValue({ field }: { field: ResourceServiceSnapshotField }) {
   }
 }
 
-function Item({ label, mono, children }: { label: string; mono?: boolean; children: ReactNode }) {
+function Item({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="min-w-0">
       <dt className="chenxing-caption">{label}</dt>
-      <dd className={`chenxing-body mt-0.5 break-all${mono ? ' chenxing-mono' : ''}`}>{children}</dd>
+      <dd className="chenxing-body mt-0.5 break-all">{children}</dd>
     </div>
   )
 }
@@ -56,6 +56,9 @@ export function ResourceServiceBindingCard({ binding, providerName, busy, pendin
   const subscription = snapshot?.subscription ? subscriptionSummary(snapshot.subscription, new Date()) : null
   const fields = visibleSnapshotFields(snapshot?.fields ?? [], subscription !== null)
   const displayName = binding.name ?? snapshot?.name ?? null
+  // 头部展示提供方给出的展示账号；顶层 uid 是绑定键，不作为「UID」展示。
+  // 提供方想展示什么 UID，由它自己在 fields[] 里用 uid 字段和 label 决定。
+  const account = binding.account ?? snapshot?.account ?? binding.uid
 
   return (
     <HudPanel as="article" className="!p-5 sm:!p-6">
@@ -67,8 +70,8 @@ export function ResourceServiceBindingCard({ binding, providerName, busy, pendin
           </div>
           {displayName ? <p className="chenxing-body mt-1">{displayName}</p> : null}
           <p className="chenxing-caption mt-1 flex flex-wrap items-baseline gap-x-2">
-            <span>UID</span>
-            <span className="chenxing-mono break-all">{binding.uid}</span>
+            <span>账号</span>
+            <span className="chenxing-mono break-all">{account}</span>
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -81,7 +84,6 @@ export function ResourceServiceBindingCard({ binding, providerName, busy, pendin
       </div>
 
       <dl className="mt-5 grid grid-cols-1 gap-4 border-t border-[var(--chenxing-border)] pt-5 sm:grid-cols-2">
-        {binding.account && binding.account !== binding.uid ? <Item label="账号" mono>{binding.account}</Item> : null}
         {subscription ? (
           <Item label="订阅">
             <span className="flex flex-wrap items-center gap-2">
