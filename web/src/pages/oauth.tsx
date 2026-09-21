@@ -117,7 +117,7 @@ function ClientMark({ name, logoUri }: { name?: string; logoUri?: string | null 
  * 浏览器历史也会保留当前条目。在离开确认页前、或进入回调结果页后立即 replaceState
  * 掉查询参数，可同时堵住 Referer 与历史两条泄露路径。无查询时不动，避免无谓改写。
  */
-function scrubLocationQuery(): void {
+export function scrubLocationQuery(): void {
   if (!window.location.search) return
   replaceUrl(window.location.pathname)
 }
@@ -294,8 +294,6 @@ function OAuthConsentContent({ requestId }: { requestId: string | null }) {
               <>
                 {/* #199：信任提示以不可伪造的接入域名为准，不依赖可自定义的应用名 */}
                 <p className="oauth-copy">除非你确认上方接入域名「{pending.redirect_host}」正是你要授权的应用，否则请勿继续授权。应用名称可被自定义，请以服务端校验的接入域名与 Client ID 为准。</p>
-                <p className="oauth-copy">如果该应用最近更新过权限范围，可能会再次要求你确认授权。</p>
-                <p className="oauth-copy">本次请求将在 {pending.expires_in} 秒内失效，且只绑定当前 Session。</p>
                 <div className="mt-5">
                   <div className="mb-2 text-[13px] font-medium text-[var(--chenxing-muted-foreground)]">授权后将获得以下权限</div>
                   {pending.scopes.map((scope) => {
