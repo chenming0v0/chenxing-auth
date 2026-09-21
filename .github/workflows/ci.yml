@@ -121,7 +121,7 @@ jobs:
       - run: cargo check --all-targets --all-features
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Install cargo-audit
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908 # v2.87.15
         with:
           tool: cargo-audit@0.22.2
           fallback: none
@@ -219,7 +219,7 @@ jobs:
           shared-key: rust-coverage
           save-if: ${{ matrix.shard == 1 }}
       - name: Install cargo-nextest and cargo-llvm-cov
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908 # v2.87.15
         with:
           tool: nextest@0.9.143,cargo-llvm-cov@0.9.0
           fallback: none
