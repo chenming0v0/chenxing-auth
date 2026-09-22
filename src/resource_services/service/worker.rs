@@ -56,8 +56,9 @@ impl ResourceServiceService {
             }
         };
         let request = RevokeLinkSessionRequest::new(row.binding_id);
+        let revoked = client.revoke_link_session(None, &request).await;
         let mut tx = self.pool.begin().await?;
-        match client.revoke_link_session(None, &request).await {
+        match revoked {
             Ok(()) => {
                 Store::mark_outbox_processed(&mut tx, row.id).await?;
             }
