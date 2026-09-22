@@ -5,12 +5,15 @@ use axum::{
 use chenxing_auth::{
     audit::{AuditAction, AuditEvent},
     clients::idempotency::IdempotencyKey,
-    plans::addons::{QuotaAddonError, QuotaAddonPurchaseInput},
-    sqlx::{Connection, PgConnection},
+    plans::addons::{QuotaAddon, QuotaAddonError, QuotaAddonPurchaseInput},
+    sqlx::{Connection, PgConnection, Postgres, Transaction},
     users::UserSessionCredential,
     wallet::{
-        domain::PurchaseInput, idempotency::WalletIdempotencyContext,
-        redemption_service::RedemptionError, service::WalletServiceError,
+        domain::{LedgerKind, PurchaseInput},
+        idempotency::WalletIdempotencyContext,
+        redemption_repository,
+        redemption_service::RedemptionError,
+        service::WalletServiceError,
     },
 };
 use serde_json::Value;
@@ -979,4 +982,550 @@ async fn session_expiry_while_waiting_for_plan_lock_prevents_purchase() {
     assert_eq!(user_plan(&env.database, user_id).await, (None, None));
 
     env.cleanup().await;
+}
+
+/// Issue #730: `NOW()` is pinned at `BEGIN`. After real time moves, a code that
+/// is still after `transaction_timestamp()` must miss `statement_timestamp()`.
+#[tokio::test]
+async fn redemption_lock_rejects_code_that_outlives_transaction_timestamp() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let code_id = insert_redemption_code(&env.database, &suffix, "interval '1 day'").await;
+
+    let mut tx = env.database.begin().await.expect("begin");
+    chenxing_auth::sqlx::query("SELECT pg_sleep(0.3)")
+        .execute(&mut *tx)
+        .await
+        .expect("let transaction time fall behind");
+    dial_redemption_expiry(&env.database, code_id, "statement_timestamp()").await;
+    let now_would_accept: bool = chenxing_auth::sqlx::query_scalar(
+        "SELECT disabled_at IS NULL
+            AND (expires_at IS NULL OR expires_at > transaction_timestamp())
+            AND use_count < max_uses
+         FROM wallet_redemption_codes WHERE id = $1",
+    )
+    .bind(code_id)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("transaction-time predicate");
+    assert!(
+        now_would_accept,
+        "fixture must still pass NOW(), otherwise the test does not prove statement_timestamp"
+    );
+    let digest = redemption_digest(&suffix);
+    let found = redemption_repository::lock_redeemable(&mut tx, &digest, user_id)
+        .await
+        .expect("lock code");
+    assert!(found.is_none());
+    tx.rollback().await.expect("rollback");
+    assert_eq!(redemption_use_count(&env.database, code_id).await, 0);
+
+    env.cleanup().await;
+}
+
+/// Issue #730: the wallet row lock sits between the redeemable read and consume.
+/// The code is still live when that lock is reached, then expires before the
+/// update. The update must match nothing and the credit must not commit.
+#[tokio::test]
+async fn redemption_expiring_during_wallet_lock_does_not_credit() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let session = persisted_user_session(&env.state, user_id).await;
+    let credential = UserSessionCredential::from_session(user_id, &session).expect("credential");
+    assert_eq!(
+        credit_wallet(&router, user_id, 100, None).await.0,
+        StatusCode::OK
+    );
+    let code_id = insert_redemption_code(&env.database, &suffix, "interval '1 day'").await;
+    let code = redemption_code(&suffix);
+
+    let mut wallet_lock = env.database.begin().await.expect("begin wallet lock");
+    let blocker_pid = backend_pid(&mut wallet_lock).await;
+    chenxing_auth::sqlx::query("SELECT balance FROM user_wallets WHERE user_id = $1 FOR UPDATE")
+        .bind(user_id)
+        .fetch_one(&mut *wallet_lock)
+        .await
+        .expect("lock wallet");
+    dial_redemption_expiry(
+        &env.database,
+        code_id,
+        "statement_timestamp() + interval '8 seconds'",
+    )
+    .await;
+
+    let redemptions = env.state.redemptions.clone();
+    let task = tokio::spawn(async move {
+        redemptions
+            .redeem(
+                credential,
+                &code,
+                wallet_audit(
+                    user_id,
+                    AuditAction::WalletRedemption,
+                    "wallet_redemption_code",
+                ),
+            )
+            .await
+    });
+    wait_for_database_block(blocker_pid).await;
+    let still_live: bool = chenxing_auth::sqlx::query_scalar(
+        "SELECT expires_at > statement_timestamp() FROM wallet_redemption_codes WHERE id = $1",
+    )
+    .bind(code_id)
+    .fetch_one(&mut *wallet_lock)
+    .await
+    .expect("code still live at the wallet lock");
+    assert!(
+        still_live,
+        "code expired before consume was reachable; widen the horizon"
+    );
+    wait_until(
+        &mut wallet_lock,
+        "SELECT expires_at <= statement_timestamp() FROM wallet_redemption_codes WHERE id = $1",
+        code_id,
+    )
+    .await;
+    wallet_lock.commit().await.expect("release wallet lock");
+
+    let result = task.await.expect("redeem task");
+    assert!(
+        matches!(result, Err(RedemptionError::InvalidCode)),
+        "got {result:?}"
+    );
+    assert_eq!(wallet_balance(&env.database, user_id).await, 100);
+    assert_eq!(redemption_use_count(&env.database, code_id).await, 0);
+    assert_eq!(redemption_rows(&env.database, code_id).await, 0);
+
+    env.cleanup().await;
+}
+
+/// Issue #730: an already-expired code updates zero rows. A credit in the same
+/// transaction must roll back with it.
+#[tokio::test]
+async fn expired_redemption_consume_updates_zero_rows_and_rolls_back() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let code_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO wallet_redemption_codes
+            (code_digest, points, max_uses, created_at, expires_at)
+         VALUES ($1, 40, 1,
+                 statement_timestamp() - interval '2 minutes',
+                 statement_timestamp() - interval '1 second')
+         RETURNING id",
+    )
+    .bind(redemption_digest(&suffix).as_slice())
+    .fetch_one(&env.database)
+    .await
+    .expect("insert expired code");
+
+    let mut tx = env.database.begin().await.expect("begin");
+    chenxing_auth::wallet::repository::ensure_for_update(&mut tx, user_id)
+        .await
+        .expect("wallet");
+    chenxing_auth::wallet::repository::apply_delta(
+        &mut tx,
+        user_id,
+        40,
+        LedgerKind::Credit,
+        Some("must roll back"),
+        Some("wallet_redemption_code"),
+        Some(&code_id.to_string()),
+    )
+    .await
+    .expect("provisional credit");
+    let consumed = redemption_repository::consume(&mut tx, code_id, user_id, 40)
+        .await
+        .expect("consume");
+    assert!(!consumed);
+    assert_eq!(redemption_use_count_tx(&mut tx, code_id).await, 0);
+    assert_eq!(redemption_rows_tx(&mut tx, code_id).await, 0);
+    tx.rollback().await.expect("rollback");
+    assert_eq!(wallet_balance(&env.database, user_id).await, 0);
+    assert_eq!(ledger_count(&env.database, user_id).await, 0);
+
+    env.cleanup().await;
+}
+
+/// Issue #730: same transaction-time hole for the add-on plan read.
+#[tokio::test]
+async fn addon_plan_lock_rejects_period_that_outlives_transaction_timestamp() {
+    let env = test_state().await;
+    let fixture = seed_priced_addon(&env, "plan-lock").await;
+
+    let mut tx = env.database.begin().await.expect("begin");
+    chenxing_auth::sqlx::query("SELECT pg_sleep(0.3)")
+        .execute(&mut *tx)
+        .await
+        .expect("let transaction time fall behind");
+    dial_plan_expiry(&env.database, fixture.user_id, "statement_timestamp()").await;
+    let now_would_accept: bool = chenxing_auth::sqlx::query_scalar(
+        "SELECT plan_id IS NOT NULL AND plan_expires_at > transaction_timestamp()
+         FROM users WHERE id = $1",
+    )
+    .bind(fixture.user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("transaction-time predicate");
+    assert!(
+        now_would_accept,
+        "fixture must still pass NOW(), otherwise the test does not prove statement_timestamp"
+    );
+    let plan = chenxing_auth::plans::addons::lock_unexpired_plan(&mut tx, fixture.user_id)
+        .await
+        .expect("lock plan");
+    assert!(plan.is_none());
+    tx.rollback().await.expect("rollback");
+
+    env.cleanup().await;
+}
+
+/// Issue #730: the add-on row lock sits between the plan read and the grant.
+/// The period is still live at the lock, then expires before the debit. The
+/// grant must not store that timestamp or charge points.
+#[tokio::test]
+async fn quota_addon_expiring_during_addon_lock_does_not_debit() {
+    let env = test_state().await;
+    let fixture = seed_priced_addon(&env, "addon-lock").await;
+
+    let mut addon_lock = env.database.begin().await.expect("begin addon lock");
+    let blocker_pid = backend_pid(&mut addon_lock).await;
+    chenxing_auth::sqlx::query("SELECT id FROM plan_quota_addons WHERE id = $1 FOR UPDATE")
+        .bind(fixture.addon_id)
+        .fetch_one(&mut *addon_lock)
+        .await
+        .expect("lock addon");
+    dial_plan_expiry(
+        &env.database,
+        fixture.user_id,
+        "statement_timestamp() + interval '8 seconds'",
+    )
+    .await;
+
+    let wallets = env.state.wallets.clone();
+    let user_id = fixture.user_id;
+    let addon_id = fixture.addon_id;
+    let credential = fixture.credential;
+    let task = tokio::spawn(async move {
+        wallets
+            .purchase_quota_addon(
+                credential,
+                QuotaAddonPurchaseInput { addon_id },
+                addon_idempotency(user_id, addon_id),
+                wallet_audit(user_id, AuditAction::QuotaAddonPurchase, "user"),
+            )
+            .await
+    });
+    wait_for_database_block(blocker_pid).await;
+    let still_live: bool = chenxing_auth::sqlx::query_scalar(
+        "SELECT plan_expires_at > statement_timestamp() FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *addon_lock)
+    .await
+    .expect("plan still live at the addon lock");
+    assert!(
+        still_live,
+        "plan expired before grant was reachable; widen the horizon"
+    );
+    wait_until(
+        &mut addon_lock,
+        "SELECT plan_expires_at <= statement_timestamp() FROM users WHERE id = $1",
+        user_id,
+    )
+    .await;
+    addon_lock.commit().await.expect("release addon lock");
+
+    let result = task.await.expect("addon purchase task");
+    assert!(
+        matches!(result, Err(QuotaAddonError::NoActivePlan)),
+        "got {result:?}"
+    );
+    assert_eq!(wallet_balance(&env.database, user_id).await, 100);
+    assert_eq!(addon_purchase_count(&env.database, user_id).await, 0);
+    assert_eq!(addon_debit_count(&env.database, user_id).await, 0);
+
+    env.cleanup().await;
+}
+
+/// Issue #730: a period that is already over inserts zero purchase rows. A
+/// sibling credit in that transaction rolls back with the miss.
+#[tokio::test]
+async fn expired_quota_addon_grant_inserts_nothing_and_rolls_back() {
+    let env = test_state().await;
+    let fixture = seed_priced_addon(&env, "addon-expire").await;
+    dial_plan_expiry(
+        &env.database,
+        fixture.user_id,
+        "statement_timestamp() - interval '1 second'",
+    )
+    .await;
+    let addon = addon_record(fixture.addon_id, fixture.plan_id);
+
+    let mut tx = env.database.begin().await.expect("begin");
+    chenxing_auth::wallet::repository::ensure_for_update(&mut tx, fixture.user_id)
+        .await
+        .expect("wallet");
+    chenxing_auth::wallet::repository::apply_delta(
+        &mut tx,
+        fixture.user_id,
+        15,
+        LedgerKind::Credit,
+        Some("must roll back"),
+        None,
+        None,
+    )
+    .await
+    .expect("provisional credit");
+    let granted = chenxing_auth::plans::addons::grant(&mut tx, fixture.user_id, &addon, 1)
+        .await
+        .expect("grant");
+    assert!(granted.is_none());
+    assert_eq!(addon_purchase_count_tx(&mut tx, fixture.user_id).await, 0);
+    tx.rollback().await.expect("rollback");
+    assert_eq!(wallet_balance(&env.database, fixture.user_id).await, 100);
+    assert_eq!(
+        addon_purchase_count(&env.database, fixture.user_id).await,
+        0
+    );
+    assert_eq!(ledger_count(&env.database, fixture.user_id).await, 1);
+
+    env.cleanup().await;
+}
+
+fn redemption_code(suffix: &str) -> String {
+    format!("cxp-{suffix}")
+}
+
+fn redemption_digest(suffix: &str) -> [u8; 32] {
+    chenxing_auth::wallet::redemption_domain::digest(&redemption_code(suffix)).expect("digest")
+}
+
+async fn insert_redemption_code(
+    database: &chenxing_auth::sqlx::PgPool,
+    suffix: &str,
+    expires_in: &str,
+) -> i64 {
+    let sql = format!(
+        "INSERT INTO wallet_redemption_codes (code_digest, points, max_uses, expires_at)
+         VALUES ($1, 40, 1, statement_timestamp() + {expires_in})
+         RETURNING id"
+    );
+    chenxing_auth::sqlx::query_scalar(&sql)
+        .bind(redemption_digest(suffix).as_slice())
+        .fetch_one(database)
+        .await
+        .expect("insert redemption code")
+}
+
+async fn dial_redemption_expiry(
+    database: &chenxing_auth::sqlx::PgPool,
+    code_id: i64,
+    expiry: &str,
+) {
+    let sql = format!("UPDATE wallet_redemption_codes SET expires_at = {expiry} WHERE id = $1");
+    let updated = chenxing_auth::sqlx::query(&sql)
+        .bind(code_id)
+        .execute(database)
+        .await
+        .expect("dial redemption expiry")
+        .rows_affected();
+    assert_eq!(updated, 1);
+}
+
+async fn dial_plan_expiry(database: &chenxing_auth::sqlx::PgPool, user_id: i64, expiry: &str) {
+    let sql = format!("UPDATE users SET plan_expires_at = {expiry} WHERE id = $1");
+    let updated = chenxing_auth::sqlx::query(&sql)
+        .bind(user_id)
+        .execute(database)
+        .await
+        .expect("dial plan expiry")
+        .rows_affected();
+    assert_eq!(updated, 1);
+}
+
+struct PricedAddon {
+    user_id: i64,
+    plan_id: i64,
+    addon_id: i64,
+    credential: UserSessionCredential,
+}
+
+async fn seed_priced_addon(env: &support::PlanTestEnv, label: &str) -> PricedAddon {
+    let router = env.router();
+    let suffix = format!("{label}-{}", Uuid::new_v4().simple());
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let session = persisted_user_session(&env.state, user_id).await;
+    let credential = UserSessionCredential::from_session(user_id, &session).expect("credential");
+    let plan = create_plan(
+        &router,
+        &format!("addon-{suffix}"),
+        priced_plan_limits(10, "monthly"),
+    )
+    .await;
+    let plan_id = plan["id"].as_i64().expect("plan id");
+    chenxing_auth::sqlx::query(
+        "UPDATE users
+         SET plan_id = $2,
+             plan_expires_at = statement_timestamp() + interval '30 days',
+             plan_entitlement_version = 1
+         WHERE id = $1",
+    )
+    .bind(user_id)
+    .bind(plan_id)
+    .execute(&env.database)
+    .await
+    .expect("assign plan");
+    let addon_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO plan_quota_addons
+            (plan_id, code, name, price_points, daily_auth_limit, monthly_auth_limit)
+         VALUES ($1, 'extra', 'Extra', 20, 100, 1000)
+         RETURNING id",
+    )
+    .bind(plan_id)
+    .fetch_one(&env.database)
+    .await
+    .expect("insert addon");
+    assert_eq!(
+        credit_wallet(&router, user_id, 100, None).await.0,
+        StatusCode::OK
+    );
+    PricedAddon {
+        user_id,
+        plan_id,
+        addon_id,
+        credential,
+    }
+}
+
+fn addon_record(id: i64, plan_id: i64) -> QuotaAddon {
+    let now = OffsetDateTime::now_utc();
+    QuotaAddon {
+        id,
+        plan_id,
+        code: "extra".to_owned(),
+        name: "Extra".to_owned(),
+        description: None,
+        price_points: 20,
+        daily_auth_limit: 100,
+        monthly_auth_limit: 1000,
+        status: "active".to_owned(),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+async fn backend_pid(transaction: &mut Transaction<'_, Postgres>) -> i32 {
+    chenxing_auth::sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut **transaction)
+        .await
+        .expect("backend pid")
+}
+
+async fn wait_until(transaction: &mut Transaction<'_, Postgres>, sql: &str, id: i64) {
+    timeout(StdDuration::from_secs(15), async {
+        loop {
+            let reached: bool = chenxing_auth::sqlx::query_scalar(sql)
+                .bind(id)
+                .fetch_one(&mut **transaction)
+                .await
+                .expect("poll expiry");
+            if reached {
+                return;
+            }
+            sleep(StdDuration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("expiry did not pass while the lock was held");
+}
+
+async fn wallet_balance(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -> i64 {
+    chenxing_auth::sqlx::query_scalar(
+        "SELECT COALESCE((SELECT balance FROM user_wallets WHERE user_id = $1), 0)",
+    )
+    .bind(user_id)
+    .fetch_one(database)
+    .await
+    .expect("wallet balance")
+}
+
+async fn ledger_count(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -> i64 {
+    chenxing_auth::sqlx::query_scalar("SELECT COUNT(*) FROM wallet_ledger WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(database)
+        .await
+        .expect("ledger count")
+}
+
+async fn redemption_use_count(database: &chenxing_auth::sqlx::PgPool, code_id: i64) -> i32 {
+    chenxing_auth::sqlx::query_scalar("SELECT use_count FROM wallet_redemption_codes WHERE id = $1")
+        .bind(code_id)
+        .fetch_one(database)
+        .await
+        .expect("use count")
+}
+
+async fn redemption_use_count_tx(transaction: &mut Transaction<'_, Postgres>, code_id: i64) -> i32 {
+    chenxing_auth::sqlx::query_scalar("SELECT use_count FROM wallet_redemption_codes WHERE id = $1")
+        .bind(code_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .expect("use count")
+}
+
+async fn redemption_rows(database: &chenxing_auth::sqlx::PgPool, code_id: i64) -> i64 {
+    chenxing_auth::sqlx::query_scalar("SELECT COUNT(*) FROM wallet_redemptions WHERE code_id = $1")
+        .bind(code_id)
+        .fetch_one(database)
+        .await
+        .expect("redemption rows")
+}
+
+async fn redemption_rows_tx(transaction: &mut Transaction<'_, Postgres>, code_id: i64) -> i64 {
+    chenxing_auth::sqlx::query_scalar("SELECT COUNT(*) FROM wallet_redemptions WHERE code_id = $1")
+        .bind(code_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .expect("redemption rows")
+}
+
+async fn addon_purchase_count(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -> i64 {
+    chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_quota_addon_purchases WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(database)
+    .await
+    .expect("addon purchases")
+}
+
+async fn addon_purchase_count_tx(transaction: &mut Transaction<'_, Postgres>, user_id: i64) -> i64 {
+    chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_quota_addon_purchases WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .expect("addon purchases")
+}
+
+async fn addon_debit_count(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -> i64 {
+    chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wallet_ledger
+         WHERE user_id = $1 AND reference_type = 'quota_addon_purchase'",
+    )
+    .bind(user_id)
+    .fetch_one(database)
+    .await
+    .expect("addon debits")
 }

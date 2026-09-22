@@ -74,6 +74,10 @@ pub async fn detail(
     )))
 }
 
+/// Lock a code this user may still redeem.
+///
+/// `NOW()` is `transaction_timestamp()`, pinned at `BEGIN`. Callers validate the
+/// session — and can wait on that lock — before this read (Issue #730).
 pub async fn lock_redeemable(
     transaction: &mut Transaction<'_, Postgres>,
     digest: &[u8],
@@ -82,24 +86,47 @@ pub async fn lock_redeemable(
     crate::sqlx::query_as(
         "SELECT id, points FROM wallet_redemption_codes c
          WHERE code_digest = $1 AND disabled_at IS NULL
-           AND (expires_at IS NULL OR expires_at > NOW()) AND use_count < max_uses
-           AND NOT EXISTS (SELECT 1 FROM wallet_redemptions r WHERE r.code_id = c.id AND r.user_id = $2)
-         FOR UPDATE")
-        .bind(digest).bind(user_id).fetch_optional(&mut **transaction).await
+           AND (expires_at IS NULL OR expires_at > statement_timestamp())
+           AND use_count < max_uses
+           AND NOT EXISTS (
+               SELECT 1 FROM wallet_redemptions r
+               WHERE r.code_id = c.id AND r.user_id = $2
+           )
+         FOR UPDATE",
+    )
+    .bind(digest)
+    .bind(user_id)
+    .fetch_optional(&mut **transaction)
+    .await
 }
 
+/// Consume one use at this statement's timestamp.
+///
+/// Returns false when the code is no longer redeemable. The earlier
+/// `lock_redeemable` read is not authority: this is a later statement, and its
+/// `statement_timestamp()` can fall after `expires_at`. Callers must roll the
+/// transaction back and must not credit the wallet (Issue #730).
 pub async fn consume(
     transaction: &mut Transaction<'_, Postgres>,
     code_id: i64,
     user_id: UserId,
     points: i64,
-) -> Result<(), crate::sqlx::Error> {
-    crate::sqlx::query(
-        "UPDATE wallet_redemption_codes SET use_count = use_count + 1 WHERE id = $1",
+) -> Result<bool, crate::sqlx::Error> {
+    let updated = crate::sqlx::query(
+        "UPDATE wallet_redemption_codes
+         SET use_count = use_count + 1
+         WHERE id = $1
+           AND disabled_at IS NULL
+           AND (expires_at IS NULL OR expires_at > statement_timestamp())
+           AND use_count < max_uses",
     )
     .bind(code_id)
     .execute(&mut **transaction)
-    .await?;
+    .await?
+    .rows_affected();
+    if updated != 1 {
+        return Ok(false);
+    }
     crate::sqlx::query(
         "INSERT INTO wallet_redemptions (code_id, user_id, points) VALUES ($1, $2, $3)",
     )
@@ -108,5 +135,5 @@ pub async fn consume(
     .bind(points)
     .execute(&mut **transaction)
     .await?;
-    Ok(())
+    Ok(true)
 }
