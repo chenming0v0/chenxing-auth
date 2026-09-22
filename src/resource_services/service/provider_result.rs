@@ -83,8 +83,8 @@ impl ResourceServiceService {
             }
             return Err(ServiceError::ReauthorizationRequired);
         }
-        // 先写 disabled 再失败 lease。顺序反了的话，同一幂等键已失败就不能再探，
-        // 快照会停在 active，兑换继续签发。
+        // 先写 disabled。写不上就返回错误，不 fail lease：否则幂等键已失败、
+        // 快照仍是 active，同一操作不能再探。
         if is_account_disabled(&error) {
             self.record_account_disabled(binding_id).await?;
         }

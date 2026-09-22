@@ -4,7 +4,10 @@
 //! 其它当未绑定）。这里不改兑换门，只证明同步 / 刷新 / 创建把终态写进去之后，
 //! 现有门不再签发。网络错误和 5xx 仍返回旧的 active 快照。
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use axum::{
     Router,
@@ -17,7 +20,7 @@ use chenxing_auth::{
     consents::ConsentService,
     oauth::token::issue_access_token,
     resource_services::{
-        ProviderHttpRequest, ProviderHttpResponse, ProviderTransport, TransportError,
+        ProviderHttpRequest, ProviderHttpResponse, ProviderTransport, ServiceError, TransportError,
         TransportFuture,
     },
     state::AppState,
@@ -730,4 +733,92 @@ async fn sync_account_disabled_persists_when_portal_session_is_revoked_mid_call(
     assert_disabled_without_tombstone(&before, &row);
     let (status, body) = exchange(&bound.env, &bound.token).await;
     assert_exchange_disabled(status, &body);
+}
+
+async fn binding_provider_id(database: &chenxing_auth::sqlx::PgPool, binding_id: Uuid) -> Uuid {
+    chenxing_auth::sqlx::query_scalar(
+        "SELECT provider_id FROM resource_service_bindings WHERE id = $1",
+    )
+    .bind(binding_id)
+    .fetch_one(database)
+    .await
+    .expect("provider id")
+}
+
+/// 只推进 `revision`。不是 `lock_provider`，也不锁绑定行。
+async fn bump_provider_revision(database: &chenxing_auth::sqlx::PgPool, provider_id: Uuid) {
+    chenxing_auth::sqlx::query(
+        "UPDATE resource_service_providers SET revision = revision + 1 WHERE id = $1",
+    )
+    .bind(provider_id)
+    .execute(database)
+    .await
+    .expect("bump provider revision");
+}
+
+#[tokio::test]
+async fn account_disabled_second_write_lands_when_provider_revision_advances() {
+    let bound = bind_live("revision-retry").await;
+    let before = stored_snapshot(&bound.env.database, bound.binding_id).await;
+    let provider_id = binding_provider_id(&bound.env.database, bound.binding_id).await;
+    let database = bound.env.database.clone();
+    let calls = AtomicUsize::new(0);
+
+    bound
+        .env
+        .state
+        .resource_services
+        .record_account_disabled_with_probe(bound.binding_id, &mut || {
+            let database = database.clone();
+            let call = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                // 第一次条件更新前推进 revision，让 WHERE 落空；第二次读到新值再写。
+                if call == 0 {
+                    bump_provider_revision(&database, provider_id).await;
+                }
+            }
+        })
+        .await
+        .expect("second write lands");
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "first update must miss");
+
+    let row = stored_snapshot(&bound.env.database, bound.binding_id).await;
+    assert_disabled_without_tombstone(&before, &row);
+    let (status, body) = exchange(&bound.env, &bound.token).await;
+    assert_exchange_disabled(status, &body);
+}
+
+#[tokio::test]
+async fn account_disabled_errors_when_snapshot_write_misses_twice() {
+    let bound = bind_live("revision-miss").await;
+    let before = stored_snapshot(&bound.env.database, bound.binding_id).await;
+    let provider_id = binding_provider_id(&bound.env.database, bound.binding_id).await;
+    let database = bound.env.database.clone();
+    let calls = AtomicUsize::new(0);
+
+    let error = bound
+        .env
+        .state
+        .resource_services
+        .record_account_disabled_with_probe(bound.binding_id, &mut || {
+            let database = database.clone();
+            calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                bump_provider_revision(&database, provider_id).await;
+            }
+        })
+        .await
+        .expect_err("two misses must not report success");
+    assert!(matches!(error, ServiceError::Conflict));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    let row = stored_snapshot(&bound.env.database, bound.binding_id).await;
+    assert_eq!(row.status, before.status);
+    assert_eq!(row.account, before.account);
+    assert_eq!(row.uid, before.uid);
+    assert_eq!(row.generation, before.generation);
+    assert_eq!(row.live, before.live);
+    assert_eq!(row.has_ciphertext, before.has_ciphertext);
+    let (status, body) = exchange(&bound.env, &bound.token).await;
+    assert_issues_300s_ticket(status, &body);
 }
