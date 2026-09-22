@@ -218,15 +218,9 @@ impl WalletService {
                 return Err(QuotaAddonError::Database(error));
             }
         }
-        let plan: Option<(i64, time::OffsetDateTime, i64)> = crate::sqlx::query_as(
-            "SELECT plan_id, plan_expires_at, plan_entitlement_version FROM users
-             WHERE id=$1 AND plan_id IS NOT NULL AND plan_expires_at > NOW()
-             FOR UPDATE",
-        )
-        .bind(user_id)
-        .fetch_optional(&mut *transaction)
-        .await?;
-        let Some((plan_id, expires_at, plan_entitlement_version)) = plan else {
+        let Some((plan_id, plan_entitlement_version)) =
+            crate::plans::addons::lock_unexpired_plan(&mut transaction, user_id).await?
+        else {
             transaction.rollback().await?;
             return Err(QuotaAddonError::NoActivePlan);
         };
@@ -268,14 +262,19 @@ impl WalletService {
                 return Err(QuotaAddonError::UserDisabled);
             }
         }
-        let purchase_id = crate::plans::addons::grant(
+        // Re-read plan_expires_at here. Do not debit, and do not store the
+        // timestamp, if the period ended while waiting on the later locks.
+        let Some((purchase_id, expires_at)) = crate::plans::addons::grant(
             &mut transaction,
             user_id,
             &addon,
             plan_entitlement_version,
-            Some(expires_at),
         )
-        .await?;
+        .await?
+        else {
+            transaction.rollback().await?;
+            return Err(QuotaAddonError::NoActivePlan);
+        };
         let balance = repository::apply_delta(
             &mut transaction,
             user_id,

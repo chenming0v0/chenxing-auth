@@ -33,7 +33,7 @@ pub use lookup::{
 pub use owner_bootstrap::PublicUserInsertError;
 pub use owner_bootstrap::{
     AuditedUserInsertError, BootstrapOwnerError, BootstrapOwnerOutcome, ManagedUserInsertError,
-    bootstrap_owner, insert_public_user, insert_user_after_owner,
+    bootstrap_owner, consume_invitation_use, insert_public_user, insert_user_after_owner,
     insert_user_after_owner_with_audit, owner_exists,
 };
 pub use role_guard::{

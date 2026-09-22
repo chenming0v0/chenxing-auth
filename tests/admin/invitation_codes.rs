@@ -6,13 +6,20 @@
 //! - POST `/api/v1/admin/registration-invitation-codes/{id}/disable`
 //! - 列表与明细永不返回明文 `code` 或摘要
 
+use std::time::Duration;
+
 use axum::{
     Router,
     body::Body,
     http::{Method, Request, StatusCode},
 };
-use chenxing_auth::sqlx;
+use chenxing_auth::sqlx::{self, Connection, PgConnection};
+use chenxing_auth::users::domain::ValidatedRegistration;
+use chenxing_auth::users::email::EmailAddress;
+use chenxing_auth::users::repository::{self, PublicUserInsertError};
 use serde_json::{Value, json};
+use time::OffsetDateTime;
+use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 use crate::{db_isolation, http};
@@ -284,4 +291,210 @@ async fn invitation_code_detail_rejects_unauthenticated() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     let _ = std::fs::remove_dir_all(key_directory);
+}
+
+/// Issue #730: `NOW()` is pinned at `BEGIN`. The owner-bootstrap lock is taken
+/// before the expiry read. Dial the code into the window after that begin and
+/// before the read; registration must not consume it.
+#[tokio::test]
+async fn invitation_expiring_during_owner_lock_does_not_register() {
+    let (router, database, key_directory) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &database, &suffix).await;
+    let code = format!("cxi-{suffix}");
+    let digest = chenxing_auth::invitation_codes::digest(&code);
+    let invitation_id: i64 = sqlx::query_scalar(
+        "INSERT INTO registration_invitation_codes (code_digest, max_uses, expires_at)
+         VALUES ($1, 1, statement_timestamp() + interval '1 day')
+         RETURNING id",
+    )
+    .bind(digest.as_slice())
+    .fetch_one(&database)
+    .await
+    .expect("insert invitation");
+
+    let mut blocker = database.begin().await.expect("begin owner lock");
+    let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *blocker)
+        .await
+        .expect("blocker pid");
+    // Matches `BusinessLock::OwnerBootstrap` (namespace 0).
+    sqlx::query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)")
+        .bind(0_i32)
+        .bind(7_341_928_i32)
+        .execute(&mut *blocker)
+        .await
+        .expect("lock owner bootstrap");
+
+    let pool = database.clone();
+    let username = format!("inv-exp-{suffix}");
+    let email = format!("{username}@example.com");
+    let registration = ValidatedRegistration {
+        username: username.clone(),
+        email: EmailAddress::parse(&email).expect("email"),
+        password: "unused-password".to_owned(),
+        display_name: None,
+    };
+    let task = tokio::spawn(async move {
+        repository::insert_public_user(
+            &pool,
+            registration,
+            "not-a-real-hash".to_owned(),
+            Some(&digest),
+        )
+        .await
+    });
+    wait_for_owner_lock(blocker_pid).await;
+    let dialled = sqlx::query(
+        "UPDATE registration_invitation_codes
+         SET expires_at = statement_timestamp()
+         WHERE id = $1",
+    )
+    .bind(invitation_id)
+    .execute(&mut *blocker)
+    .await
+    .expect("dial invitation expiry")
+    .rows_affected();
+    assert_eq!(dialled, 1);
+    let waiter_started: OffsetDateTime = sqlx::query_scalar(
+        "SELECT xact_start FROM pg_stat_activity
+         WHERE $1 = ANY(pg_blocking_pids(pid))
+         LIMIT 1",
+    )
+    .bind(blocker_pid)
+    .fetch_one(&mut *blocker)
+    .await
+    .expect("waiting transaction start");
+    let expires_at: OffsetDateTime =
+        sqlx::query_scalar("SELECT expires_at FROM registration_invitation_codes WHERE id = $1")
+            .bind(invitation_id)
+            .fetch_one(&mut *blocker)
+            .await
+            .expect("dialled expiry");
+    assert!(
+        expires_at > waiter_started,
+        "dialled expiry {expires_at} must stay after the registration transaction begin {waiter_started}"
+    );
+    blocker.commit().await.expect("release owner lock");
+
+    let result = task.await.expect("register task");
+    assert!(
+        matches!(result, Err(PublicUserInsertError::InvalidInvitation)),
+        "got {result:?}"
+    );
+    let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username = $1")
+        .bind(&username)
+        .fetch_one(&database)
+        .await
+        .expect("user count");
+    assert_eq!(users, 0);
+    let use_count: i32 =
+        sqlx::query_scalar("SELECT use_count FROM registration_invitation_codes WHERE id = $1")
+            .bind(invitation_id)
+            .fetch_one(&database)
+            .await
+            .expect("use count");
+    assert_eq!(use_count, 0);
+    let uses: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM registration_invitation_uses WHERE invitation_id = $1",
+    )
+    .bind(invitation_id)
+    .fetch_one(&database)
+    .await
+    .expect("invitation uses");
+    assert_eq!(uses, 0);
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+/// Issue #730: the use-count update repeats the expiry predicate. An already
+/// expired row changes zero rows, and a user inserted in that transaction
+/// rolls back with it.
+#[tokio::test]
+async fn expired_invitation_consume_updates_zero_rows_and_rolls_back() {
+    let (_router, database, key_directory) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let invitation_id: i64 = sqlx::query_scalar(
+        "INSERT INTO registration_invitation_codes
+            (code_digest, max_uses, created_at, expires_at)
+         VALUES ($1, 1,
+                 statement_timestamp() - interval '2 minutes',
+                 statement_timestamp() - interval '1 second')
+         RETURNING id",
+    )
+    .bind(chenxing_auth::invitation_codes::digest(&format!("cxi-expired-{suffix}")).as_slice())
+    .fetch_one(&database)
+    .await
+    .expect("insert expired invitation");
+
+    let username = format!("inv-rollback-{suffix}");
+    let email = format!("{username}@example.com");
+    let mut tx = database.begin().await.expect("begin");
+    let user_id: i64 = sqlx::query_scalar(
+        "INSERT INTO users (username, email, canonical_email, password_hash, role, status)
+         VALUES ($1, $2, lower($2), 'hash', 'user', 'active')
+         RETURNING id",
+    )
+    .bind(&username)
+    .bind(&email)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("provisional user");
+    let consumed = repository::consume_invitation_use(&mut tx, invitation_id)
+        .await
+        .expect("consume invitation");
+    assert!(!consumed);
+    let use_count: i32 =
+        sqlx::query_scalar("SELECT use_count FROM registration_invitation_codes WHERE id = $1")
+            .bind(invitation_id)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("use count");
+    assert_eq!(use_count, 0);
+    tx.rollback().await.expect("rollback");
+
+    let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&database)
+        .await
+        .expect("rolled back user");
+    assert_eq!(users, 0);
+    let uses: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM registration_invitation_uses WHERE invitation_id = $1",
+    )
+    .bind(invitation_id)
+    .fetch_one(&database)
+    .await
+    .expect("invitation uses");
+    assert_eq!(uses, 0);
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+async fn wait_for_owner_lock(blocker_pid: i32) {
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let mut observer = PgConnection::connect(&database_url)
+        .await
+        .expect("connect lock observer");
+    timeout(Duration::from_secs(15), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1 FROM pg_stat_activity
+                     WHERE $1 = ANY(pg_blocking_pids(pid))
+                 )",
+            )
+            .bind(blocker_pid)
+            .fetch_one(&mut observer)
+            .await
+            .expect("inspect lock wait");
+            if blocked {
+                return;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("registration never reached the owner bootstrap lock");
 }

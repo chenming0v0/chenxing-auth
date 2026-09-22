@@ -274,18 +274,63 @@ pub async fn lock_active(
     Ok(row.map(from_row))
 }
 
+/// Lock the user's plan only while `plan_expires_at` is still ahead of this
+/// statement.
+///
+/// `NOW()` is pinned at `BEGIN`. Session validation and the purchase
+/// idempotency claim can wait past the period before this read (Issue #730).
+pub async fn lock_unexpired_plan(
+    transaction: &mut Transaction<'_, Postgres>,
+    user_id: UserId,
+) -> Result<Option<(i64, i64)>, crate::sqlx::Error> {
+    crate::sqlx::query_as(
+        "SELECT plan_id, plan_entitlement_version FROM users
+         WHERE id = $1
+           AND plan_id IS NOT NULL
+           AND plan_expires_at > statement_timestamp()
+         FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **transaction)
+    .await
+}
+
+/// Record the grant only when the plan period is still live at this statement.
+///
+/// The stored `plan_expires_at` is re-read here. A timestamp captured by
+/// [`lock_unexpired_plan`] must not be written after the period has ended, and
+/// `None` means the caller rolls back without debiting (Issue #730).
 pub async fn grant(
     transaction: &mut Transaction<'_, Postgres>,
     user_id: UserId,
     addon: &QuotaAddon,
     plan_entitlement_version: i64,
-    expires_at: Option<OffsetDateTime>,
-) -> Result<i64, crate::sqlx::Error> {
-    crate::sqlx::query_scalar(
-        "INSERT INTO user_quota_addon_purchases (user_id,plan_id,addon_id,plan_entitlement_version,daily_auth_limit,monthly_auth_limit,plan_expires_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id"
-    ).bind(user_id).bind(addon.plan_id).bind(addon.id).bind(plan_entitlement_version)
-     .bind(addon.daily_auth_limit).bind(addon.monthly_auth_limit).bind(expires_at).fetch_one(&mut **transaction).await
+) -> Result<Option<(i64, OffsetDateTime)>, crate::sqlx::Error> {
+    let inserted: Option<(i64, Option<OffsetDateTime>)> = crate::sqlx::query_as(
+        "INSERT INTO user_quota_addon_purchases (
+             user_id, plan_id, addon_id, plan_entitlement_version,
+             daily_auth_limit, monthly_auth_limit, plan_expires_at
+         )
+         SELECT $1, $2, $3, $4, $5, $6, u.plan_expires_at
+         FROM users u
+         WHERE u.id = $1
+           AND u.plan_id = $2
+           AND u.plan_entitlement_version = $4
+           AND u.plan_expires_at > statement_timestamp()
+         RETURNING id, plan_expires_at",
+    )
+    .bind(user_id)
+    .bind(addon.plan_id)
+    .bind(addon.id)
+    .bind(plan_entitlement_version)
+    .bind(addon.daily_auth_limit)
+    .bind(addon.monthly_auth_limit)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    Ok(match inserted {
+        Some((id, Some(expires_at))) => Some((id, expires_at)),
+        _ => None,
+    })
 }
 
 fn map_conflict(error: crate::sqlx::Error) -> QuotaAddonError {
