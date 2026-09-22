@@ -111,6 +111,10 @@ function AppContent() {
   // 未知路径不再静默跳回 `/`：那个弹回曾把丢失的 OAuth 回调藏成一次首页开场动画，
   // 用户既拿不到授权码也不知道发生了什么，改为明确的 404 页。
   const page = matchAppLinkCallback(path) !== null ? <AppLinkCallbackPage /> : pages[path] ?? <NotFoundPage />
+  // #723: App Link 回调保存的是已从地址栏擦掉的 code/state，不能随登录态 generation 重挂。
+  if (matchAppLinkCallback(path) !== null) {
+    return page
+  }
   return <Fragment key={generation}>{page}</Fragment>
 }
 
