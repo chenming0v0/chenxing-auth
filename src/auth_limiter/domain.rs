@@ -170,6 +170,10 @@ impl FailureRecord {
 
 pub type LimiterDimension = (FailureDimension, String);
 
+/// 认证尝试占用的限流租约。
+///
+/// `leases` 的每一项是一次 `reserve()`，不是一个维度。空 `leases` 且 `denied == false`
+/// 是空放行（Skip 且没有源 IP）；`denied` 是明确拒绝。两者都没有租约，但不能混用。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthReservation {
     pub(crate) leases: Vec<ReservationLease>,
@@ -179,24 +183,30 @@ pub struct AuthReservation {
     denied: bool,
 }
 
+/// 一次 `reserve()` 铸出的租约：一个 token，覆盖这次调用的全部分维度。
+///
+/// TOTP/Passkey 一次 reserve 账户、ticket、源 IP，这些维度共用这个 token，
+/// record/release 因此只调一次 Lua。口令登录在查到用户之前不知道账户维度，
+/// source IP 与 account 各是一份租约。`merge` 只拼接，不把两个 token 收成一个。
+/// Lua 一次只接受一个 token；消费时必须按租约各调一次，并且只带该租约自己的 key。
+/// 把 `leases[0].token` 套到后面的 pending key 上，账户成员既 ZREM 不掉，失败也 ZADD 不进去。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReservationLease {
-    pub(crate) dimension: FailureDimension,
-    pub(crate) value: String,
     pub(crate) token: String,
+    pub(crate) dimensions: Vec<LimiterDimension>,
 }
 
 impl AuthReservation {
     pub(crate) fn single(dimensions: Vec<LimiterDimension>, token: String) -> Self {
+        // 没有维度就没有租约。空组若被留下来，record 会把它当成一次 count=0 的脚本调用，
+        // 空放行就从 `NotRecorded` 变成 `Recorded`。
+        let leases = if dimensions.is_empty() {
+            Vec::new()
+        } else {
+            vec![ReservationLease { token, dimensions }]
+        };
         Self {
-            leases: dimensions
-                .into_iter()
-                .map(|(dimension, value)| ReservationLease {
-                    dimension,
-                    value,
-                    token: token.clone(),
-                })
-                .collect(),
+            leases,
             denied: false,
         }
     }
@@ -208,6 +218,7 @@ impl AuthReservation {
         }
     }
 
+    /// 拼接两次独立 reserve。不合并 token：口令登录的 source 与 account 必须各自被消费。
     pub(crate) fn merge(mut self, other: Self) -> Self {
         self.denied |= other.denied;
         self.leases.extend(other.leases);
@@ -217,8 +228,15 @@ impl AuthReservation {
     pub(crate) fn dimensions(&self) -> Vec<LimiterDimension> {
         self.leases
             .iter()
-            .map(|lease| (lease.dimension, lease.value.clone()))
+            .flat_map(|lease| lease.dimensions.iter().cloned())
             .collect()
+    }
+
+    pub(crate) fn dimension_count(&self) -> usize {
+        self.leases
+            .iter()
+            .map(|lease| lease.dimensions.len())
+            .sum::<usize>()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -265,7 +283,7 @@ pub(crate) async fn release_reserved(
     reservation: AuthReservation,
     operation: &str,
 ) {
-    let dimension_count = reservation.leases.len();
+    let dimension_count = reservation.dimension_count();
     if let Err(release_error) = limiter.release(reservation).await {
         tracing::error!(
             event = "auth_limiter.reservation_release_failed",
@@ -314,6 +332,11 @@ pub trait AuthFailureLimiter: Send + Sync {
     }
 
     /// Commits a previously reserved attempt.
+    ///
+    /// A reservation may hold several tokens. Password login reserves the source
+    /// IP and the account separately, then merges the leases. Implementations
+    /// must commit each token against only its own keys — the Redis scripts
+    /// accept one token per call.
     fn record_reserved_failures<'a>(
         &'a self,
         reservation: AuthReservation,
@@ -321,7 +344,8 @@ pub trait AuthFailureLimiter: Send + Sync {
         self.record_failures(reservation.dimensions())
     }
 
-    /// Releases only the owned reservation lease; implementations must be idempotent.
+    /// Releases owned pending leases. Implementations must be idempotent and
+    /// must release every token, not only the first.
     fn release<'a>(&'a self, reservation: AuthReservation) -> LimiterFuture<'a, ()> {
         Box::pin(async move {
             let _ = reservation;
@@ -360,3 +384,7 @@ pub trait AuthFailureLimiter: Send + Sync {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "domain_tests.rs"]
+mod tests;
