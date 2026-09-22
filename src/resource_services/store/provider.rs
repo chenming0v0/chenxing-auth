@@ -96,6 +96,17 @@ impl super::Store {
         .await
     }
 
+    /// 不加锁读 revision。终态快照写入要对齐 `update_live_snapshot`，但不能在已锁绑定行时再锁提供方。
+    pub async fn provider_revision(
+        tx: &mut Transaction<'_, Postgres>,
+        id: Uuid,
+    ) -> Result<Option<i64>, crate::sqlx::Error> {
+        crate::sqlx::query_scalar("SELECT revision FROM resource_service_providers WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await
+    }
+
     pub async fn lock_provider(
         tx: &mut Transaction<'_, Postgres>,
         id: Uuid,
