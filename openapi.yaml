@@ -1669,6 +1669,8 @@ paths:
         声明的 scope；服务端据此定位资源服务，读取当前用户在该服务的活绑定，并签发面向该服务的短期 Session Token。
         令牌只在内存中验证，不记录日志。session_token 是 RS256 签名的短期 JWT，有效期不超过 300 秒，claims 含
         uid / binding_id / binding_version；响应体永远不包含 access_token、refresh_token 或 id_token。
+        该 session_token 不能再次作为 Bearer 兑换：payload 中 uid、binding_id、binding_version 任一出现即
+        按 401 invalid_chenxing_token 拒绝，只有这三个字段都缺的普通 Access Token 可以继续兑换。
         device_id 与 device_info 仅用于审计，不持久化；device_info 永不以明文写入日志。
         当 Access Token 同时覆盖多个资源服务的 scope 时，请求体必须用 `provider`（资源服务 slug）指明目标，
         否则返回 400 invalid_request。scope_access 为 restricted 的资源服务只接受 aud 属于其 allowed_client_ids 的令牌，
@@ -1694,7 +1696,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '401':
-          description: 辰星 Access Token 无效、已撤销或不属于该资源服务允许的应用，错误码 invalid_chenxing_token
+          description: 辰星 Access Token 无效、已撤销、为已签发的资源服务会话令牌，或不属于该资源服务允许的应用，错误码 invalid_chenxing_token
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }

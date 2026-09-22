@@ -10,6 +10,10 @@
 //! 滑动窗口限流。`device_id` / `device_info` 只进审计，不作为设备判定依据，也
 //! 永远不落库。
 //!
+//! 本端点签发的会话令牌带 `uid` / `binding_id` / `binding_version`。这三个字段
+//! 任一出现都不是可再次兑换的辰星 Access Token，必须在撤销检查之前拒绝，避免
+//! 300 秒票自续期。
+//!
 //! 资源服务的选择：令牌 scope 与已启用服务的 scope 取交集；多个候选时请求体
 //! 必须用 `provider`（slug）指明；`restricted` 服务还要求令牌的 `aud` 在其
 //! `allowed_client_ids` 内。
@@ -84,6 +88,12 @@ pub async fn exchange(
         Ok(claims) => claims,
         Err(_) => return denied(&state, None, None).await,
     };
+    // 会话令牌携带 uid / binding_id / binding_version。吊销表只按出示字符串
+    // 的摘要记账，原 Access Token 吊销挡不住用这张新票再签下一张，所以必须在
+    // 撤销检查之前按 claim 形状拒绝。三个字段都缺的普通 AT 才能继续兑换。
+    if claims.uid.is_some() || claims.binding_id.is_some() || claims.binding_version.is_some() {
+        return denied(&state, Some(claims.sub.as_str()), None).await;
+    }
     let sub = claims.sub.as_str();
     // 撤销检查 fail-closed：Redis 故障时无法证明令牌未被撤销，不能签出新的会话令牌。
     match state.revocations.is_revoked(token).await {
