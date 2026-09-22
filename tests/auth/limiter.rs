@@ -29,8 +29,7 @@ fn unique_value(prefix: &str) -> String {
 }
 
 /// 与 `auth_limiter::policy::value_hash` 同一份编码。夹具 Redis keyspace 是 legacy，
-/// key 无部署前缀。哈希或前缀错了会指到一个不存在的 key，ZCARD 得到 0，成功路径的
-/// 「成员已被 ZREM」就会假通过。调用方必须同时断言 key 还在。
+/// key 无部署前缀。哈希或前缀错了会指到一个不存在的 key。
 fn dimension_key(kind: &str, dimension: FailureDimension, value: &str) -> String {
     let value_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()));
     format!("chenxing:auth:{kind}:{}:{value_hash}", dimension.as_str())
@@ -50,6 +49,17 @@ fn token_and_index(member: &str) -> (&str, &str) {
         .unwrap_or_else(|| panic!("failure member {member:?} must be token:index"))
 }
 
+/// 成功释放：pending 成员已被 `ZREM`，`ZCARD == 0`。
+///
+/// Redis 删掉 ZSET 的最后一个成员后会把 key 本身删掉，不会留下空 ZSET，所以
+/// `TYPE == "none"` 是成功，不再要求空 key 的 TTL。key 还在时类型必须仍是 `zset`
+/// （基数已经要求为 0）。
+///
+/// 错哈希也会得到 `none`，不能单靠 key 消失证明租约被释放。
+/// `one_reserve_records_several_dimensions_in_one_script_call` 在调用本断言之前
+/// 已经用同一份哈希确认 failure ZSET 里有成员；
+/// `password_login_consumes_the_merged_account_lease` 的错密码路径随后断言
+/// account/source failure 成员。真正的回归是 pending 成员还在（`ZCARD != 0`）。
 async fn assert_pending_released(
     connection: &mut redis::aio::MultiplexedConnection,
     dimension: FailureDimension,
@@ -57,20 +67,17 @@ async fn assert_pending_released(
 ) {
     let key = dimension_key("pending", dimension, value);
     let card: i64 = connection.zcard(&key).await.expect("pending zcard");
-    let ttl: i64 = connection.ttl(&key).await.expect("pending ttl");
     let key_type: String = connection.key_type(&key).await.expect("pending type");
     assert_eq!(
         card, 0,
         "{key} still holds a pending member; the lease token was not ZREM'd"
     );
-    assert_eq!(
-        key_type, "zset",
-        "{key} must be the lease zset reserve() created"
-    );
-    assert!(
-        ttl > 0,
-        "{key} must still exist after ZREM (ttl {ttl}); a missing key means this assertion hashed the wrong value"
-    );
+    if key_type != "none" {
+        assert_eq!(
+            key_type, "zset",
+            "{key} must be the lease zset reserve() created"
+        );
+    }
 }
 
 async fn failure_members(
@@ -234,8 +241,8 @@ fn login_input(identifier: &str, password: &str) -> LoginInput {
 
 /// #727：口令登录先 reserve 源 IP，查到用户后再 reserve 账户，两份 token 经 merge 拼接。
 ///
-/// 成功登录后账户 pending 成员必须被 ZREM（key 还在、基数为 0）。错密码后账户
-/// failure key 必须被 ZADD，且成员下标是 `:1`——账户租约自己的那一次脚本调用。
+/// 成功登录后账户 pending 成员必须被 ZREM（基数为 0；最后一条被删后 key 可以消失）。
+/// 错密码后账户 failure key 必须被 ZADD，且成员下标是 `:1`——账户租约自己的那一次脚本调用。
 /// 与源 IP 成员的 token 不同，说明没有把 `leases[0]` 套到两条 pending key 上。
 #[tokio::test]
 async fn password_login_consumes_the_merged_account_lease() {
