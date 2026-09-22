@@ -31,6 +31,8 @@ pub(crate) enum IdempotentClientOperationError {
     Database(#[from] crate::sqlx::Error),
     #[error("audit operation failed: {0}")]
     Audit(#[from] crate::audit::AuditError),
+    #[error(transparent)]
+    ManagementActor(#[from] crate::users::ManagementActorValidationError),
 }
 
 #[derive(Debug)]
@@ -54,6 +56,8 @@ pub(crate) struct IdempotentClientInsert<'a, F> {
     pub registration: ValidatedClientRegistration,
     pub client_id: String,
     pub credential: ClientCredential,
+    /// `None` 跳过管理复核（用户自助）。`Some` 在插入 `oauth_clients` 前复核。
+    pub management_actor: Option<crate::users::ManagementActorCredential>,
     pub context: &'a ClientIdempotencyContext,
     pub active_secret_kid: &'a str,
     pub audit_event: F,
@@ -72,11 +76,18 @@ where
         registration,
         client_id,
         credential,
+        management_actor,
         context,
         active_secret_kid,
         audit_event,
     } = request;
     let mut transaction = pool.begin().await?;
+    super::revalidate_optional_management_actor(
+        &mut transaction,
+        management_actor,
+        crate::users::domain::UserPermission::ManageClients,
+    )
+    .await?;
     match claim_operation(&mut transaction, context, active_secret_kid).await? {
         Claim::Replay { secret_kid, result } => {
             let value = serde_json::from_value(result)
@@ -164,6 +175,8 @@ pub(crate) struct IdempotentClientRotation<'a> {
     pub client_id: &'a str,
     pub expected_version: i64,
     pub client_secret_hash: &'a str,
+    /// `None` 跳过管理复核（用户自助）。`Some` 在改 secret 行之前复核。
+    pub management_actor: Option<crate::users::ManagementActorCredential>,
     pub context: &'a ClientIdempotencyContext,
     pub active_secret_kid: &'a str,
     pub audit_event: crate::audit::AuditEvent,
@@ -178,11 +191,18 @@ pub(crate) async fn rotate_client_secret_idempotent_with_audit(
         client_id,
         expected_version,
         client_secret_hash,
+        management_actor,
         context,
         active_secret_kid,
         audit_event,
     } = request;
     let mut transaction = pool.begin().await?;
+    super::revalidate_optional_management_actor(
+        &mut transaction,
+        management_actor,
+        crate::users::domain::UserPermission::ManageClients,
+    )
+    .await?;
     match claim_operation(&mut transaction, context, active_secret_kid).await? {
         Claim::Replay { secret_kid, result } => {
             let value = serde_json::from_value(result)
