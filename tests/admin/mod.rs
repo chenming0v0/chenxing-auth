@@ -25,6 +25,7 @@ mod authorization_audit;
 mod bootstrap_audit;
 mod bootstrap_identity;
 mod bootstrap_invariant;
+mod client_actor_revalidation;
 mod core;
 mod domain;
 mod invitation_codes;

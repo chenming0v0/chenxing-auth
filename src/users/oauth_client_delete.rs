@@ -48,6 +48,7 @@ pub async fn delete_owned_client(
             | ClientServiceError::QuotaExceeded
             | ClientServiceError::SecretRotationConflict
             | ClientServiceError::AndroidLink(_)
+            | ClientServiceError::ManagementActor(_)
             | ClientServiceError::IdempotencyKeyInvalid
             | ClientServiceError::IdempotencyConflict
             | ClientServiceError::IdempotencyKeyUnavailable

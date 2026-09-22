@@ -188,6 +188,26 @@ pub enum ClientServiceError {
     IdempotencyKeyUnavailable,
     #[error("stored idempotency result is corrupt")]
     IdempotencyCorruptResult,
+    #[error(transparent)]
+    ManagementActor(#[from] crate::users::ManagementActorValidationError),
+}
+
+pub(super) fn map_audited_mutation(
+    error: crate::clients::repository::AuditedClientMutationError,
+    event: &'static str,
+) -> ClientServiceError {
+    match error {
+        crate::clients::repository::AuditedClientMutationError::Database(error) => {
+            ClientServiceError::Database(error)
+        }
+        crate::clients::repository::AuditedClientMutationError::ManagementActor(error) => {
+            ClientServiceError::ManagementActor(error)
+        }
+        crate::clients::repository::AuditedClientMutationError::Audit(error) => {
+            tracing::error!(event, error = %error);
+            ClientServiceError::AuditUnavailable
+        }
+    }
 }
 
 impl ClientService {

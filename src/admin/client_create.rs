@@ -82,13 +82,18 @@ pub async fn create_client(
     headers: HeaderMap,
     ApiJson(input): ApiJson<ClientRegistrationRequest>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageClients)
-        .await
+    let authorization = match super::authorization::authorize_admin_write(
+        &state,
+        &admin,
+        AdminPermission::ManageClients,
+    )
+    .await
     {
-        Ok(actor) => actor,
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
+    let actor = authorization.actor();
+    let management_actor = authorization.credential();
 
     let owner_user_id = match owner_for_admin_client(&state, actor).await {
         Ok(owner) => owner,
@@ -114,6 +119,7 @@ pub async fn create_client(
                 .register_with_audit_idempotent(
                     owner_user_id,
                     input,
+                    management_actor,
                     actor_scope,
                     key,
                     move |client| {
@@ -131,7 +137,7 @@ pub async fn create_client(
         }
         None => {
             clients
-                .register_with_audit(owner_user_id, input, move |client| {
+                .register_with_audit(owner_user_id, input, management_actor, move |client| {
                     AuditEvent::new(
                         actor_type.to_owned(),
                         actor_id,
@@ -164,6 +170,14 @@ pub async fn create_client(
             }),
         )
             .into_response(),
+        Err(ClientServiceError::ManagementActor(error_value)) => {
+            super::authorization::management_actor_validation_failed(
+                &state,
+                authorization,
+                error_value,
+            )
+            .await
+        }
         Err(ClientServiceError::AuditUnavailable) => {
             // #72 运维契约：凭据签发被审计失败阻断时留下可检索的结构化事件。
             tracing::error!(

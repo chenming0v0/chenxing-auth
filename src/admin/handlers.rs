@@ -119,6 +119,7 @@ pub async fn update_client(
         .update_with_audit(
             &client_id,
             input,
+            authorization.credential(),
             AuditEvent::new(
                 actor.actor_type().to_owned(),
                 actor.user_id().map(|id| id.to_string()),
@@ -132,6 +133,14 @@ pub async fn update_client(
     {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error::not_found("client_not_found", "client was not found"),
+        Err(ClientServiceError::ManagementActor(error_value)) => {
+            super::authorization::management_actor_validation_failed(
+                &state,
+                authorization,
+                error_value,
+            )
+            .await
+        }
         Err(ClientServiceError::AuditUnavailable) => error::service_unavailable(
             "audit_unavailable",
             "the operation was rolled back because its audit record could not be written; retry later",
@@ -167,6 +176,7 @@ async fn set_client_status(
         .set_status_with_audit(
             &client_id,
             status,
+            authorization.credential(),
             AuditEvent::new(
                 actor.actor_type().to_owned(),
                 actor.user_id().map(|id| id.to_string()),
@@ -180,6 +190,14 @@ async fn set_client_status(
     {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error::not_found("client_not_found", "client was not found"),
+        Err(ClientServiceError::ManagementActor(error_value)) => {
+            super::authorization::management_actor_validation_failed(
+                &state,
+                authorization,
+                error_value,
+            )
+            .await
+        }
         Err(ClientServiceError::AuditUnavailable) => error::service_unavailable(
             "audit_unavailable",
             "the operation was rolled back because its audit record could not be written; retry later",
@@ -224,6 +242,7 @@ pub async fn delete_client(
         .clients
         .delete_with_audit(
             &client_id,
+            authorization.credential(),
             AuditEvent::new(
                 actor.actor_type().to_owned(),
                 actor.user_id().map(|id| id.to_string()),
@@ -237,6 +256,14 @@ pub async fn delete_client(
     {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error::not_found("client_not_found", "client was not found"),
+        Err(ClientServiceError::ManagementActor(error_value)) => {
+            super::authorization::management_actor_validation_failed(
+                &state,
+                authorization,
+                error_value,
+            )
+            .await
+        }
         Err(ClientServiceError::AuditUnavailable) => error::service_unavailable(
             "audit_unavailable",
             "the operation was rolled back because its audit record could not be written; retry later",
@@ -251,13 +278,18 @@ pub async fn rotate_secret(
     Path(client_id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageClients)
-        .await
+    let authorization = match super::authorization::authorize_admin_write(
+        &state,
+        &admin,
+        AdminPermission::ManageClients,
+    )
+    .await
     {
-        Ok(actor) => actor,
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
+    let actor = authorization.actor();
+    let management_actor = authorization.credential();
     let (actor_type, actor_id) = actor.audit_fields();
     let idempotency_key = match parse_idempotency_key(&headers) {
         Ok(key) => key,
@@ -276,6 +308,7 @@ pub async fn rotate_secret(
                 .clients
                 .rotate_secret_with_audit_idempotent(
                     &client_id,
+                    management_actor,
                     actor_scope,
                     key,
                     AuditEvent::new(
@@ -294,6 +327,7 @@ pub async fn rotate_secret(
                 .clients
                 .rotate_secret_with_audit(
                     &client_id,
+                    management_actor,
                     AuditEvent::new(
                         actor_type.to_owned(),
                         actor_id,
@@ -308,6 +342,14 @@ pub async fn rotate_secret(
     };
     match result {
         Ok(secret) => (StatusCode::OK, Json(secret)).into_response(),
+        Err(ClientServiceError::ManagementActor(error_value)) => {
+            super::authorization::management_actor_validation_failed(
+                &state,
+                authorization,
+                error_value,
+            )
+            .await
+        }
         // 轮换冲突要留痕：这是并发轮换的可观测信号，响应体本身由映射函数给出，
         // 与直接走映射的路径保持同一个状态码和错误码。
         Err(error_value @ ClientServiceError::SecretRotationConflict) => {

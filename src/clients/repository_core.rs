@@ -124,6 +124,8 @@ pub enum AuditedClientInsertError {
     Database(#[from] crate::sqlx::Error),
     #[error("audit operation failed: {0}")]
     Audit(#[from] crate::audit::AuditError),
+    #[error(transparent)]
+    ManagementActor(#[from] crate::users::ManagementActorValidationError),
 }
 
 /// 列表查询的行元组。SELECT 列顺序与 `to_listed_client` 必须保持一致。
@@ -263,12 +265,19 @@ pub async fn insert_client_with_audit<F>(
     client_id: String,
     credential: ClientCredential,
     owner_user_id: Option<UserId>,
+    management_actor: crate::users::ManagementActorCredential,
     audit_event: F,
 ) -> Result<NewClient, AuditedClientInsertError>
 where
     F: FnOnce(&NewClient) -> crate::audit::AuditEvent,
 {
     let mut transaction = pool.begin().await?;
+    super::revalidate_optional_management_actor(
+        &mut transaction,
+        Some(management_actor),
+        crate::users::domain::UserPermission::ManageClients,
+    )
+    .await?;
     let created_at = OffsetDateTime::now_utc();
     let (id, numeric_app_id) = insert_client_row(
         &mut *transaction,

@@ -49,6 +49,27 @@ pub enum AuditedClientMutationError {
     Database(#[from] crate::sqlx::Error),
     #[error("audit operation failed: {0}")]
     Audit(#[from] crate::audit::AuditError),
+    #[error(transparent)]
+    ManagementActor(#[from] crate::users::ManagementActorValidationError),
+}
+
+/// `None` 是用户自助路径，不套管理会话复核。
+/// `Some` 是管理写：在当前事务里锁住并复核 actor 会话，且必须发生在任何
+/// `oauth_clients` 改写之前（Issue #728）。`SystemToken` 在校验函数内直接通过。
+pub(super) async fn revalidate_optional_management_actor(
+    transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+    credential: Option<crate::users::ManagementActorCredential>,
+    permission: crate::users::domain::UserPermission,
+) -> Result<(), crate::users::ManagementActorValidationError> {
+    let Some(credential) = credential else {
+        return Ok(());
+    };
+    crate::users::repository::management_actor::validate_management_actor_in_transaction(
+        transaction,
+        credential,
+        permission,
+    )
+    .await
 }
 
 /// 轮换 Client Secret 的兼容入口。
