@@ -1621,7 +1621,8 @@ paths:
           csrfCookie: []
           csrfHeader: []
       description: >-
-        用当前 access_token 向资源服务拉取最新账号快照。网络失败时返回本地缓存，不使令牌失效。
+        用当前 access_token 向资源服务拉取最新账号快照。网络失败、5xx 或解密失败时返回本地缓存，不使令牌失效。
+        提供方返回终态 account_disabled 时，把仍 live 的快照 status 写成 disabled（不 tombstone）并返回 403 binding_revoked。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -1633,6 +1634,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ResourceServiceBinding' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/oauth-scopes:

@@ -21,8 +21,10 @@ mod email_change_outbox;
 mod email_change_outbox_alerts;
 mod email_change_outbox_support;
 mod external_identity_binding;
-// Issue #709：辰星 Access Token 兑换资源服务会话令牌。
+// Issue #729：提供方 account_disabled 必须落到本地快照，兑换才不再签发。
+mod resource_service_account_disabled;
 mod resource_service_binding;
+// Issue #709：辰星 Access Token 兑换资源服务会话令牌。
 mod resource_service_exchange;
 mod security_events_api;
 mod session_api;
