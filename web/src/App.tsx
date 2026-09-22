@@ -111,8 +111,9 @@ function AppContent() {
   // 未知路径不再静默跳回 `/`：那个弹回曾把丢失的 OAuth 回调藏成一次首页开场动画，
   // 用户既拿不到授权码也不知道发生了什么，改为明确的 404 页。
   const page = matchAppLinkCallback(path) !== null ? <AppLinkCallbackPage /> : pages[path] ?? <NotFoundPage />
-  // #731: /oauth/redirect 在 scrub 之后只剩组件状态，不能随 generation 重挂。
-  if (path === '/oauth/redirect') {
+  // #723 / #731: 回调页在 scrub 之后只剩组件状态（App Link 的 href，或 /oauth/redirect
+  // 的成功布尔）。未登录 401 仍会递增 generation，但这两页不能因此重挂。
+  if (matchAppLinkCallback(path) !== null || path === '/oauth/redirect') {
     return page
   }
   return <Fragment key={generation}>{page}</Fragment>
