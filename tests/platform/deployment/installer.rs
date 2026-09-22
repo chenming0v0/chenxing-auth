@@ -81,9 +81,20 @@ fn deployment_project_names_are_stable_and_legacy_resolution_fails_closed() {
 
 #[test]
 fn installer_validates_compose_and_reports_application_logs() {
+    for script in [INSTALL_SCRIPT, REMOTE_INSTALL_SCRIPT, REMOTE_UPDATE_SCRIPT] {
+        let body = shell_function_body(script, "compose");
+        assert!(
+            body.contains("env -i"),
+            "compose() must drop the parent environment before interpolation"
+        );
+        assert!(
+            body.contains("docker compose"),
+            "compose() must be the docker compose entry point"
+        );
+    }
     for marker in [
-        "docker compose --env-file .env -f docker-compose.prod.yml config",
-        "docker compose --env-file .env -f docker-compose.prod.yml logs app",
+        "compose config",
+        "compose logs app",
         "POSTGRES_RUNTIME_USER",
         "POSTGRES_RUNTIME_PASSWORD",
         "MIGRATION_DATABASE_URL",
@@ -342,9 +353,8 @@ fn deployment_files_are_present_at_repository_root() {
 
 #[test]
 fn installer_runs_migrations_before_starting_the_application() {
-    let migrate =
-        "docker compose --env-file .env -f docker-compose.prod.yml run --rm --build migrate";
-    let start = "docker compose --env-file .env -f docker-compose.prod.yml up -d --build app";
+    let migrate = "compose run --rm --build migrate";
+    let start = "compose up -d --build app";
     let migrate_at = INSTALL_SCRIPT
         .find(migrate)
         .expect("installer must run the explicit migration command");

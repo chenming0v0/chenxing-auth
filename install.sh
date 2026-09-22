@@ -175,7 +175,20 @@ write_database_urls() {
 }
 
 compose() {
-    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+    # Compose 插值优先吃已经 export 的进程环境，--env-file 盖不过。
+    # 父环境清空后，密钥只来自部署目录的 .env；这里只留 Docker 客户端找得到 daemon 的变量。
+    local -a isolated=(env -i)
+    local name value
+    for name in PATH HOME DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH \
+        DOCKER_CONTEXT DOCKER_CONFIG XDG_RUNTIME_DIR; do
+        value="${!name-}"
+        if [[ -n "$value" ]]; then
+            isolated+=("${name}=${value}")
+        fi
+    done
+    isolated+=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
+    isolated+=("$@")
+    "${isolated[@]}"
 }
 
 wait_for_postgres() {
@@ -255,7 +268,7 @@ if [[ "$PREPARE_ONLY" == true ]]; then
 fi
 
 command_exists docker || fail "缺少 Docker Engine。请先安装 Docker：https://docs.docker.com/engine/install/"
-docker compose version >/dev/null 2>&1 || fail "缺少 Docker Compose v2 插件。请安装 docker-compose-plugin。"
+compose version >/dev/null 2>&1 || fail "缺少 Docker Compose v2 插件。请安装 docker-compose-plugin。"
 docker info >/dev/null 2>&1 || fail "无法连接 Docker daemon；请启动 Docker 或使用有权限的账号运行。"
 
 stage "校验 Compose 配置"
