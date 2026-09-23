@@ -97,49 +97,68 @@ pub async fn upsert_app_link(
     Path(client_id): Path<String>,
     Json(input): Json<UpdateAppLinkInput>,
 ) -> Response {
-    let actor = match admin.authorize(&state, AdminPermission::ManageIssuer).await {
-        Ok(actor) => actor,
+    let authorization = match super::authorization::authorize_admin_write(
+        &state,
+        &admin,
+        AdminPermission::ManageIssuer,
+    )
+    .await
+    {
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
     let client = match require_client(&state, &client_id).await {
         Ok(client) => client,
         Err(response) => return response,
     };
+    let (actor_type, actor_id) = authorization.actor().audit_fields();
+    let event = AuditEvent::new(
+        actor_type.to_owned(),
+        actor_id,
+        AuditAction::ClientUpdate,
+        "oauth_client".to_owned(),
+        Some(client_id.clone()),
+        serde_json::json!({"result": "success", "field": "android_asset_link"}),
+    );
     match state
         .clients
         .upsert_app_link(
             &client_id,
             input.package_name,
             input.sha256_cert_fingerprints,
+            authorization.credential(),
+            event,
         )
         .await
     {
-        Ok(Some(link)) => {
-            let (actor_type, actor_id) = actor.audit_fields();
-            let event = AuditEvent::new(
-                actor_type.to_owned(),
-                actor_id,
-                AuditAction::ClientUpdate,
-                "oauth_client".to_owned(),
-                Some(client_id.clone()),
-                serde_json::json!({"result": "success", "field": "android_asset_link"}),
-            );
-            let _ = state.audit.record(event).await;
-            (
-                StatusCode::OK,
-                Json(AppLinkResponse {
-                    client_id,
-                    numeric_app_id: client.numeric_app_id,
-                    client_name: client.client_name,
-                    package_name: link.package_name,
-                    sha256_cert_fingerprints: link.sha256_cert_fingerprints,
-                }),
-            )
-                .into_response()
-        }
+        Ok(Some(link)) => (
+            StatusCode::OK,
+            Json(AppLinkResponse {
+                client_id,
+                numeric_app_id: client.numeric_app_id,
+                client_name: client.client_name,
+                package_name: link.package_name,
+                sha256_cert_fingerprints: link.sha256_cert_fingerprints,
+            }),
+        )
+            .into_response(),
         Ok(None) => error::not_found("oauth_client_not_found", "OAuth project was not found"),
+        Err(crate::clients::service::ClientServiceError::ManagementActor(error_value)) => {
+            super::authorization::management_actor_validation_failed(
+                &state,
+                authorization,
+                error_value,
+            )
+            .await
+        }
         Err(crate::clients::service::ClientServiceError::AndroidLink(error)) => {
             validation_response(&error)
+        }
+        Err(crate::clients::service::ClientServiceError::AuditUnavailable) => {
+            error::service_unavailable(
+                "audit_unavailable",
+                "the operation was rolled back because its audit record could not be written; retry later",
+            )
         }
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to upsert app link");
@@ -155,28 +174,49 @@ pub async fn delete_app_link(
     admin: AdminWrite,
     Path(client_id): Path<String>,
 ) -> Response {
-    let actor = match admin.authorize(&state, AdminPermission::ManageIssuer).await {
-        Ok(actor) => actor,
+    let authorization = match super::authorization::authorize_admin_write(
+        &state,
+        &admin,
+        AdminPermission::ManageIssuer,
+    )
+    .await
+    {
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
     if let Err(response) = require_client(&state, &client_id).await {
         return response;
     }
-    match state.clients.delete_app_link(&client_id).await {
-        Ok(true) => {
-            let (actor_type, actor_id) = actor.audit_fields();
-            let event = AuditEvent::new(
-                actor_type.to_owned(),
-                actor_id,
-                AuditAction::ClientUpdate,
-                "oauth_client".to_owned(),
-                Some(client_id.clone()),
-                serde_json::json!({"result": "success", "field": "android_asset_link", "cleared": true}),
-            );
-            let _ = state.audit.record(event).await;
-            StatusCode::NO_CONTENT.into_response()
-        }
+    let (actor_type, actor_id) = authorization.actor().audit_fields();
+    let event = AuditEvent::new(
+        actor_type.to_owned(),
+        actor_id,
+        AuditAction::ClientUpdate,
+        "oauth_client".to_owned(),
+        Some(client_id.clone()),
+        serde_json::json!({"result": "success", "field": "android_asset_link", "cleared": true}),
+    );
+    match state
+        .clients
+        .delete_app_link(&client_id, authorization.credential(), event)
+        .await
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error::not_found("oauth_client_not_found", "OAuth project was not found"),
+        Err(crate::clients::service::ClientServiceError::ManagementActor(error_value)) => {
+            super::authorization::management_actor_validation_failed(
+                &state,
+                authorization,
+                error_value,
+            )
+            .await
+        }
+        Err(crate::clients::service::ClientServiceError::AuditUnavailable) => {
+            error::service_unavailable(
+                "audit_unavailable",
+                "the operation was rolled back because its audit record could not be written; retry later",
+            )
+        }
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to delete app link");
             error::internal()

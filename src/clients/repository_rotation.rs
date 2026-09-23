@@ -67,6 +67,8 @@ pub enum AuditedRotationError {
     Database(#[from] crate::sqlx::Error),
     #[error("audit operation failed: {0}")]
     Audit(#[from] crate::audit::AuditError),
+    #[error(transparent)]
+    ManagementActor(#[from] crate::users::ManagementActorValidationError),
 }
 
 pub async fn update_client_secret_if_version_with_audit(
@@ -75,9 +77,16 @@ pub async fn update_client_secret_if_version_with_audit(
     client_id: &str,
     expected_version: i64,
     client_secret_hash: &str,
+    management_actor: Option<crate::users::ManagementActorCredential>,
     audit_event: crate::audit::AuditEvent,
 ) -> Result<bool, AuditedRotationError> {
     let mut transaction = pool.begin().await?;
+    super::revalidate_optional_management_actor(
+        &mut transaction,
+        management_actor,
+        crate::users::domain::UserPermission::ManageClients,
+    )
+    .await?;
     let result = crate::sqlx::query(
         "UPDATE oauth_clients
          SET client_secret_hash = $3,

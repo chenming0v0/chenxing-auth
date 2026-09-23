@@ -120,6 +120,29 @@ pub enum ManagedUserInsertError {
     ManagementActor(#[from] ManagementActorValidationError),
 }
 
+/// 占用一次邀请码。返回 false 表示本语句开始时码已不可用。
+///
+/// 调用方必须回滚：false 时不得创建用户，也不得留下使用记录。前面的 SELECT
+/// 是更早的语句，`statement_timestamp()` 已经往前走了（Issue #730）。
+pub async fn consume_invitation_use(
+    transaction: &mut crate::sqlx::Transaction<'_, Postgres>,
+    invitation_id: i64,
+) -> Result<bool, crate::sqlx::Error> {
+    let updated = crate::sqlx::query(
+        "UPDATE registration_invitation_codes
+         SET use_count = use_count + 1
+         WHERE id = $1
+           AND disabled_at IS NULL
+           AND (expires_at IS NULL OR expires_at > statement_timestamp())
+           AND use_count < max_uses",
+    )
+    .bind(invitation_id)
+    .execute(&mut **transaction)
+    .await?
+    .rows_affected();
+    Ok(updated == 1)
+}
+
 /// 在 Owner 已存在的前提下创建公开注册用户。
 ///
 /// 与 [`insert_user_after_owner`] 的差异只有两点，且都是有意为之：
@@ -145,18 +168,24 @@ pub async fn insert_public_user(
     }
 
     let invitation_id = if let Some(digest) = invitation_digest {
-        Some(
-            crate::sqlx::query_scalar::<_, i64>(
-                "SELECT id FROM registration_invitation_codes
-                 WHERE code_digest = $1 AND disabled_at IS NULL
-                   AND (expires_at IS NULL OR expires_at > NOW()) AND use_count < max_uses
-                 FOR UPDATE",
-            )
-            .bind(digest.as_slice())
-            .fetch_optional(&mut *transaction)
-            .await?
-            .ok_or(PublicUserInsertError::InvalidInvitation)?,
+        // OwnerBootstrap 锁在这条 SELECT 之前。`NOW()` 钉在 BEGIN，锁一旦跨过
+        // 到期点，事务时间仍会把过期邀请码当成有效（Issue #730）。
+        let invitation_id = crate::sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM registration_invitation_codes
+             WHERE code_digest = $1 AND disabled_at IS NULL
+               AND (expires_at IS NULL OR expires_at > statement_timestamp())
+               AND use_count < max_uses
+             FOR UPDATE",
         )
+        .bind(digest.as_slice())
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(PublicUserInsertError::InvalidInvitation)?;
+        if !consume_invitation_use(&mut transaction, invitation_id).await? {
+            transaction.rollback().await?;
+            return Err(PublicUserInsertError::InvalidInvitation);
+        }
+        Some(invitation_id)
     } else {
         None
     };
@@ -185,12 +214,6 @@ pub async fn insert_public_user(
         )
         .bind(invitation_id)
         .bind(id)
-        .execute(&mut *transaction)
-        .await?;
-        crate::sqlx::query(
-            "UPDATE registration_invitation_codes SET use_count = use_count + 1 WHERE id = $1",
-        )
-        .bind(invitation_id)
         .execute(&mut *transaction)
         .await?;
     }

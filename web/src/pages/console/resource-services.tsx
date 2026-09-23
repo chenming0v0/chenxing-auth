@@ -28,6 +28,7 @@ export function ResourceServicesPage() {
   const [dialog, setDialog] = useState<DialogState | null>(null)
   const [dialogError, setDialogError] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
+  // 与 load 共用一条单调序号（#732）。绑定变更会改本地列表，必须在发请求前让在途 GET 失效。
   const requestIdRef = useRef(0)
   const mutationLock = useMutationLock()
 
@@ -42,8 +43,8 @@ export function ResourceServicesPage() {
       setBindings(bindingsResult.value)
       setState({ kind: 'ready' })
     } else {
+      // 刷新失败只进入错误态。已显示的绑定留在原地，一次网络抖动不能把它们清掉。
       const message = bindingsResult.reason instanceof Error ? bindingsResult.reason.message : '资源服务加载失败。'
-      setBindings([])
       setState({ kind: 'error', message })
     }
     if (providersResult.status === 'fulfilled') setProviders(providersResult.value)
@@ -63,6 +64,7 @@ export function ResourceServicesPage() {
   }
 
   async function bind(provider: ResourceServicePublicProvider, identifier: string, secret: string): Promise<boolean> {
+    requestIdRef.current += 1
     setDialogError(null)
     return await mutationLock.run(async () => {
       try {
@@ -81,6 +83,7 @@ export function ResourceServicesPage() {
   }
 
   async function runBindingAction(binding: ResourceServiceBinding, action: 'refresh' | 'sync' | 'unlink'): Promise<boolean> {
+    requestIdRef.current += 1
     setPendingId(binding.id)
     return await mutationLock.run(async () => {
       try {

@@ -4,11 +4,29 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# Compose interpolation prefers an already exported shell over --env-file.
+# Start empty so deployment secrets come only from .env, and keep just the
+# Docker client variables required to reach the daemon.
+compose() {
+    local -a isolated=(env -i)
+    local name value
+    for name in PATH HOME DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH \
+        DOCKER_CONTEXT DOCKER_CONFIG XDG_RUNTIME_DIR; do
+        value="${!name-}"
+        if [[ -n "$value" ]]; then
+            isolated+=("${name}=${value}")
+        fi
+    done
+    isolated+=(docker compose --env-file .env -f docker-compose.prod.yml)
+    isolated+=("$@")
+    "${isolated[@]}"
+}
+
 if ! command -v docker >/dev/null 2>&1; then
     printf '%s\n' 'Docker is required. Install Docker Engine and the Compose plugin first.' >&2
     exit 1
 fi
-if ! docker compose version >/dev/null 2>&1; then
+if ! compose version >/dev/null 2>&1; then
     printf '%s\n' 'Docker Compose v2 is required.' >&2
     exit 1
 fi
@@ -265,27 +283,26 @@ if [[ -n "$APP_ISSUER" && "$COOKIE_SECURE" != "$EXPECTED_COOKIE_SECURE" ]]; then
     exit 1
 fi
 
-if ! docker compose --env-file .env -f docker-compose.prod.yml config >/dev/null; then
+if ! compose config >/dev/null; then
     printf '%s\n' 'The production Compose configuration is invalid. Check .env and try again.' >&2
     exit 1
 fi
 
-docker compose --env-file .env -f docker-compose.prod.yml up -d postgres redis
+compose up -d postgres redis
 for attempt in $(seq 1 30); do
-    if docker compose --env-file .env -f docker-compose.prod.yml \
-        exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+    if compose exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
         break
     fi
     sleep 2
 done
-if ! docker compose --env-file .env -f docker-compose.prod.yml run --rm --build migrate; then
+if ! compose run --rm --build migrate; then
     printf '%s\n' 'Database migration failed. This release uses a fresh SQLx baseline and does not roll old schemas forward automatically.' >&2
     printf '%s\n' 'Back up the database and recreate the development database, or follow an approved production data migration procedure, before retrying.' >&2
     exit 1
 fi
-docker compose --env-file .env -f docker-compose.prod.yml up -d --build app
+compose up -d --build app
 
-HOST_PORT="$(docker compose --env-file .env -f docker-compose.prod.yml port app 3000 | awk -F: '{print $NF}')"
+HOST_PORT="$(compose port app 3000 | awk -F: '{print $NF}')"
 if [[ -z "$HOST_PORT" ]]; then
     printf '%s\n' 'Could not determine the published application port.' >&2
     exit 1
@@ -302,8 +319,8 @@ for attempt in $(seq 1 30); do
 done
 
 if [[ "$ready" != true ]]; then
-    docker compose --env-file .env -f docker-compose.prod.yml ps
-    docker compose --env-file .env -f docker-compose.prod.yml logs app
+    compose ps
+    compose logs app
     printf '%s\n' 'Deployment started but the readiness check did not become ready in time.' >&2
     exit 1
 fi

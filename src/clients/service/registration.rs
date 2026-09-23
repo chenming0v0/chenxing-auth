@@ -7,6 +7,7 @@ use crate::clients::{
     idempotency::{ClientIdempotencyContext, ClientIdempotencyError, IdempotencyKey},
     repository::{self, ClientInsertError, IdempotentClientOperationError},
 };
+use crate::users::ManagementActorCredential;
 use crate::users::domain::UserId;
 use uuid::Uuid;
 
@@ -38,6 +39,7 @@ impl ClientService {
         &self,
         owner_user_id: Option<UserId>,
         input: impl Into<ClientRegistrationRequest>,
+        management_actor: ManagementActorCredential,
         audit_event: F,
     ) -> Result<RegisteredClientSecret, ClientServiceError>
     where
@@ -55,21 +57,11 @@ impl ClientService {
             client_id,
             credential,
             owner_user_id,
+            management_actor,
             audit_event,
         )
         .await
-        .map_err(|error| match error {
-            repository::AuditedClientInsertError::QuotaExceeded => {
-                ClientServiceError::QuotaExceeded
-            }
-            repository::AuditedClientInsertError::Database(error) => {
-                ClientServiceError::Database(error)
-            }
-            repository::AuditedClientInsertError::Audit(error) => {
-                tracing::error!(event = "client_create.audit_unavailable", error = %error);
-                ClientServiceError::AuditUnavailable
-            }
-        })?;
+        .map_err(map_audited_insert_error)?;
         Ok(registered_client_secret(client, client_secret))
     }
 
@@ -130,18 +122,7 @@ impl ClientService {
             audit_event,
         )
         .await
-        .map_err(|error| match error {
-            repository::AuditedClientInsertError::QuotaExceeded => {
-                ClientServiceError::QuotaExceeded
-            }
-            repository::AuditedClientInsertError::Database(error) => {
-                ClientServiceError::Database(error)
-            }
-            repository::AuditedClientInsertError::Audit(error) => {
-                tracing::error!(event = "client_create.audit_unavailable", error = %error);
-                ClientServiceError::AuditUnavailable
-            }
-        })?
+        .map_err(map_audited_insert_error)?
         else {
             return Ok(None);
         };
@@ -155,6 +136,7 @@ impl ClientService {
         &self,
         owner_user_id: Option<UserId>,
         input: impl Into<ClientRegistrationRequest>,
+        management_actor: ManagementActorCredential,
         actor_scope: String,
         key: IdempotencyKey,
         audit_event: F,
@@ -165,6 +147,7 @@ impl ClientService {
         self.register_idempotent(
             owner_user_id,
             false,
+            Some(management_actor),
             input.into(),
             actor_scope,
             key,
@@ -187,6 +170,7 @@ impl ClientService {
         self.register_idempotent(
             Some(owner_user_id),
             true,
+            None,
             input.into(),
             actor_scope,
             key,
@@ -195,10 +179,13 @@ impl ClientService {
         .await
     }
 
+    // 管理与用户共用这一条幂等注册路径，actor 证明只能再占一个参数。
+    #[allow(clippy::too_many_arguments)]
     async fn register_idempotent<F>(
         &self,
         owner_user_id: Option<UserId>,
         enforce_owner_quota: bool,
+        management_actor: Option<ManagementActorCredential>,
         request: ClientRegistrationRequest,
         actor_scope: String,
         key: IdempotencyKey,
@@ -247,6 +234,7 @@ impl ClientService {
                 registration,
                 client_id,
                 credential,
+                management_actor,
                 context: &context,
                 active_secret_kid: &active_kid,
                 audit_event,
@@ -293,6 +281,22 @@ fn map_idempotency_crypto_error(error: ClientIdempotencyError) -> ClientServiceE
     }
 }
 
+fn map_audited_insert_error(error: repository::AuditedClientInsertError) -> ClientServiceError {
+    match error {
+        repository::AuditedClientInsertError::QuotaExceeded => ClientServiceError::QuotaExceeded,
+        repository::AuditedClientInsertError::Database(error) => {
+            ClientServiceError::Database(error)
+        }
+        repository::AuditedClientInsertError::ManagementActor(error) => {
+            ClientServiceError::ManagementActor(error)
+        }
+        repository::AuditedClientInsertError::Audit(error) => {
+            tracing::error!(event = "client_create.audit_unavailable", error = %error);
+            ClientServiceError::AuditUnavailable
+        }
+    }
+}
+
 fn map_idempotency_repository_error(error: IdempotentClientOperationError) -> ClientServiceError {
     match error {
         IdempotentClientOperationError::QuotaExceeded => ClientServiceError::QuotaExceeded,
@@ -303,6 +307,9 @@ fn map_idempotency_repository_error(error: IdempotentClientOperationError) -> Cl
             ClientServiceError::IdempotencyCorruptResult
         }
         IdempotentClientOperationError::Database(error) => ClientServiceError::Database(error),
+        IdempotentClientOperationError::ManagementActor(error) => {
+            ClientServiceError::ManagementActor(error)
+        }
         IdempotentClientOperationError::Audit(error) => {
             tracing::error!(event = "client_create.audit_unavailable", error = %error);
             ClientServiceError::AuditUnavailable

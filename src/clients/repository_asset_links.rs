@@ -18,35 +18,68 @@ pub struct DeclaredAppLinkRow {
 ///
 /// 这是 Owner 显式操作；不存在跨 Client 的包名所有权仲裁（同一域名下
 /// 多个官方 Client 可以共享包名——同一 App 可以有多个 Client 实例）。
+/// 会话复核、行更新和审计在同一个事务里，复核失败或审计失败都不会留下声明。
 pub async fn upsert_client_app_link(
     pool: &PgPool,
     client_id: &str,
     link: &AndroidAssetLink,
-) -> Result<bool, crate::sqlx::Error> {
+    management_actor: crate::users::ManagementActorCredential,
+    audit_event: crate::audit::AuditEvent,
+) -> Result<bool, super::AuditedClientMutationError> {
+    let mut transaction = pool.begin().await?;
+    super::revalidate_optional_management_actor(
+        &mut transaction,
+        Some(management_actor),
+        crate::users::domain::UserPermission::ManageIssuer,
+    )
+    .await?;
     let result = crate::sqlx::query(
         "UPDATE oauth_clients SET android_asset_link = $2
          WHERE client_id = $1",
     )
     .bind(client_id)
     .bind(serde_json::to_value(link).expect("asset link is serializable"))
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
-    Ok(result.rows_affected() == 1)
+    if result.rows_affected() != 1 {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
+    transaction.commit().await?;
+    Ok(true)
 }
 
 /// 清空一个 Client 档案上的 App Link 声明。
+///
+/// 与写入一样，复核、清空和审计共享一个事务。
 pub async fn delete_client_app_link(
     pool: &PgPool,
     client_id: &str,
-) -> Result<bool, crate::sqlx::Error> {
+    management_actor: crate::users::ManagementActorCredential,
+    audit_event: crate::audit::AuditEvent,
+) -> Result<bool, super::AuditedClientMutationError> {
+    let mut transaction = pool.begin().await?;
+    super::revalidate_optional_management_actor(
+        &mut transaction,
+        Some(management_actor),
+        crate::users::domain::UserPermission::ManageIssuer,
+    )
+    .await?;
     let result = crate::sqlx::query(
         "UPDATE oauth_clients SET android_asset_link = NULL
          WHERE client_id = $1",
     )
     .bind(client_id)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
-    Ok(result.rows_affected() == 1)
+    if result.rows_affected() != 1 {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
+    transaction.commit().await?;
+    Ok(true)
 }
 
 /// 管理面：每个已发布 Client 一行，按数字 App ID 排序。

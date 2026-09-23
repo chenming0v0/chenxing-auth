@@ -5,6 +5,7 @@ use crate::clients::{
     domain::{ClientRegistrationInput, validate_client_registration_with_limits},
     repository,
 };
+use crate::users::ManagementActorCredential;
 use crate::users::domain::UserId;
 
 /// 管理端 Client 列表的默认与最大返回条数，与 User 列表保持一致。
@@ -130,6 +131,7 @@ impl ClientService {
         &self,
         client_id: &str,
         input: ClientRegistrationInput,
+        management_actor: ManagementActorCredential,
         audit_event: crate::audit::AuditEvent,
     ) -> Result<bool, ClientServiceError> {
         let registration = validate_client_registration_with_limits(input, &self.limits)?;
@@ -138,24 +140,18 @@ impl ClientService {
             None,
             client_id,
             &registration,
+            management_actor,
             audit_event,
         )
         .await
-        .map_err(|error| match error {
-            repository::AuditedClientMutationError::Database(error) => {
-                ClientServiceError::Database(error)
-            }
-            repository::AuditedClientMutationError::Audit(error) => {
-                tracing::error!(event = "client_update.audit_unavailable", error = %error);
-                ClientServiceError::AuditUnavailable
-            }
-        })
+        .map_err(|error| super::map_audited_mutation(error, "client_update.audit_unavailable"))
     }
 
     pub async fn set_status_with_audit(
         &self,
         client_id: &str,
         status: &str,
+        management_actor: ManagementActorCredential,
         audit_event: crate::audit::AuditEvent,
     ) -> Result<bool, ClientServiceError> {
         validate_status(status)?;
@@ -164,17 +160,12 @@ impl ClientService {
             None,
             client_id,
             status,
+            management_actor,
             audit_event,
         )
         .await
-        .map_err(|error| match error {
-            repository::AuditedClientMutationError::Database(error) => {
-                ClientServiceError::Database(error)
-            }
-            repository::AuditedClientMutationError::Audit(error) => {
-                tracing::error!(event = "client_status_update.audit_unavailable", error = %error);
-                ClientServiceError::AuditUnavailable
-            }
+        .map_err(|error| {
+            super::map_audited_mutation(error, "client_status_update.audit_unavailable")
         })?;
         if updated && status == "disabled" {
             self.revoke_refresh_tokens_best_effort(

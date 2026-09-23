@@ -3,8 +3,9 @@ use uuid::Uuid;
 
 use super::domain::AUTH_VERIFICATION_LEASE_SECONDS;
 use super::domain::{
-    AuthFailureLimiter, AuthFailureLimits, AuthLimiterFailurePolicy, AuthReservation,
-    FailureDimension, FailureRecord, LimiterDimension, LimiterFuture,
+    AuthFailureLimiter, AuthFailureLimits, AuthLimiterError, AuthLimiterFailurePolicy,
+    AuthReservation, FailureDimension, FailureRecord, LimiterDimension, LimiterFuture,
+    ReservationLease,
 };
 use super::policy::{
     LimiterPolicy, count_failure_records, log_blocked_dimension, log_limit, value_hash,
@@ -264,86 +265,119 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
         &'a self,
         reservation: AuthReservation,
     ) -> LimiterFuture<'a, FailureRecord> {
-        Box::pin(async move {
-            let dimensions = reservation.dimensions();
-            if dimensions.is_empty() {
-                return Ok(FailureRecord::not_recorded());
-            }
-            let limits = self
-                .policy
-                .current_limits("record_reserved", &dimensions)
-                .await?;
-            let mut connection = match self.client.get_multiplexed_async_connection().await {
-                Ok(connection) => connection,
-                Err(_) => {
-                    return self
-                        .policy
-                        .unavailable_record("record_reserved", &dimensions);
-                }
-            };
-            let script = Script::new(RECORD_RESERVED_FAILURE_SCRIPT);
-            let mut invocation = script.prepare_invoke();
-            for (dimension, value) in &dimensions {
-                invocation.key(self.failure_key(*dimension, value));
-            }
-            for (dimension, value) in &dimensions {
-                invocation.key(self.pending_key(*dimension, value));
-            }
-            // Same ARGV layout as reserve(): count, lease, token, window, limits.
-            invocation.arg(dimensions.len());
-            invocation.arg(AUTH_VERIFICATION_LEASE_SECONDS);
-            invocation.arg(&reservation.leases[0].token);
-            invocation.arg(limits.window());
-            for (dimension, _) in &dimensions {
-                invocation.arg(limits.limit_for(*dimension));
-            }
-            let flags: Vec<i64> = match invocation.invoke_async(&mut connection).await {
-                Ok(flags) => flags,
-                Err(_) => {
-                    return self
-                        .policy
-                        .unavailable_record("record_reserved", &dimensions);
-                }
-            };
-            if flags.len() != dimensions.len() {
+        Box::pin(async move { self.record_leases(reservation).await })
+    }
+
+    /// 归还预留。pending key 不带窗口后缀，ZREM 不需要窗口时长，因此不读取阈值——
+    /// 认证已经成功，此时再因为读不到配置而失败只会把在途配额挂到 TTL 过期。
+    /// 每份租约各调一次脚本，只删除自己的 token（#727）。
+    fn release<'a>(&'a self, reservation: AuthReservation) -> LimiterFuture<'a, ()> {
+        Box::pin(async move { self.release_leases(reservation).await })
+    }
+}
+
+impl RedisAuthFailureLimiter {
+    /// 按租约提交失败。每份租约单独走一次 `RECORD_RESERVED_FAILURE_SCRIPT`：
+    /// 脚本只认一个 token，把它套到别的租约的 pending key 上既删不掉成员，
+    /// 也不会 ZADD 失败记录（#727）。
+    async fn record_leases(
+        &self,
+        reservation: AuthReservation,
+    ) -> Result<FailureRecord, AuthLimiterError> {
+        if reservation.is_empty() {
+            return Ok(FailureRecord::not_recorded());
+        }
+        let dimensions = reservation.dimensions();
+        let limits = self
+            .policy
+            .current_limits("record_reserved", &dimensions)
+            .await?;
+        let mut connection = match self.client.get_multiplexed_async_connection().await {
+            Ok(connection) => connection,
+            Err(_) => {
                 return self
                     .policy
                     .unavailable_record("record_reserved", &dimensions);
             }
-            Ok(FailureRecord::recorded(reached_dimensions(
-                &dimensions,
+        };
+        let mut reached = Vec::new();
+        for lease in &reservation.leases {
+            let Some(flags) = self
+                .eval_reserved_failure(&mut connection, lease, limits)
+                .await
+            else {
+                return self
+                    .policy
+                    .unavailable_record("record_reserved", &dimensions);
+            };
+            reached.extend(reached_dimensions(
+                &lease.dimensions,
                 flags,
                 limits.window(),
-            )))
-        })
+            ));
+        }
+        Ok(FailureRecord::recorded(reached))
     }
 
-    /// 归还预留。与 `clear` 同理：pending key 不带窗口后缀，DECR 不需要窗口时长，
-    /// 因此不读取阈值——认证已经成功，此时再因为读不到配置而失败只会把在途配额白白
-    /// 挂到 TTL 过期。
-    fn release<'a>(&'a self, reservation: AuthReservation) -> LimiterFuture<'a, ()> {
-        Box::pin(async move {
-            let dimensions = reservation.dimensions();
-            if reservation.is_empty() {
-                return Ok(());
-            }
-            let mut connection = match self.client.get_multiplexed_async_connection().await {
-                Ok(connection) => connection,
-                Err(_) => return self.policy.unavailable_unit("release", &dimensions),
-            };
-            let script = Script::new(RELEASE_ATTEMPT_SCRIPT);
-            let mut invocation = script.prepare_invoke();
-            for (dimension, value) in &dimensions {
-                invocation.key(self.pending_key(*dimension, value));
-            }
-            invocation.arg(dimensions.len());
-            invocation.arg(&reservation.leases[0].token);
-            let result: Result<i64, _> = invocation.invoke_async(&mut connection).await;
-            if result.is_err() {
+    async fn release_leases(&self, reservation: AuthReservation) -> Result<(), AuthLimiterError> {
+        if reservation.is_empty() {
+            return Ok(());
+        }
+        let dimensions = reservation.dimensions();
+        let mut connection = match self.client.get_multiplexed_async_connection().await {
+            Ok(connection) => connection,
+            Err(_) => return self.policy.unavailable_unit("release", &dimensions),
+        };
+        for lease in &reservation.leases {
+            if !self.eval_release(&mut connection, lease).await {
                 return self.policy.unavailable_unit("release", &dimensions);
             }
-            Ok(())
-        })
+        }
+        Ok(())
+    }
+
+    /// `None` 表示脚本失败，或返回的标记数与该租约的维度数不一致。调用方统一走故障策略。
+    async fn eval_reserved_failure(
+        &self,
+        connection: &mut ::redis::aio::ConnectionManager,
+        lease: &ReservationLease,
+        limits: AuthFailureLimits,
+    ) -> Option<Vec<i64>> {
+        let script = Script::new(RECORD_RESERVED_FAILURE_SCRIPT);
+        let mut invocation = script.prepare_invoke();
+        for (dimension, value) in &lease.dimensions {
+            invocation.key(self.failure_key(*dimension, value));
+        }
+        for (dimension, value) in &lease.dimensions {
+            invocation.key(self.pending_key(*dimension, value));
+        }
+        // Same ARGV layout as reserve(): count, lease, token, window, limits.
+        // Only this lease's keys are passed, so the single script token matches
+        // the pending members `reserve()` wrote for these dimensions.
+        invocation.arg(lease.dimensions.len());
+        invocation.arg(AUTH_VERIFICATION_LEASE_SECONDS);
+        invocation.arg(&lease.token);
+        invocation.arg(limits.window());
+        for (dimension, _) in &lease.dimensions {
+            invocation.arg(limits.limit_for(*dimension));
+        }
+        let flags: Vec<i64> = invocation.invoke_async(connection).await.ok()?;
+        (flags.len() == lease.dimensions.len()).then_some(flags)
+    }
+
+    async fn eval_release(
+        &self,
+        connection: &mut ::redis::aio::ConnectionManager,
+        lease: &ReservationLease,
+    ) -> bool {
+        let script = Script::new(RELEASE_ATTEMPT_SCRIPT);
+        let mut invocation = script.prepare_invoke();
+        for (dimension, value) in &lease.dimensions {
+            invocation.key(self.pending_key(*dimension, value));
+        }
+        invocation.arg(lease.dimensions.len());
+        invocation.arg(&lease.token);
+        invocation.invoke_async::<i64>(connection).await.is_ok()
     }
 }
 

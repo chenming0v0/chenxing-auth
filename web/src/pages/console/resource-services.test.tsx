@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { ResourceServicesPage } from './resource-services'
 import { formatDate } from '../../data'
@@ -19,6 +19,27 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function emptyResponse(status = 204): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => undefined } as unknown as Response
+}
+
+type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void }
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise })
+  return { promise, resolve }
+}
+
+/** 替换 beforeEach 的即时 fetch，让指定的绑定列表 GET 挂起或失败。 */
+function stubPageFetch(onBindingsGet: () => Response | Promise<Response>, onMutate?: (path: string, method: string) => Response) {
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: FetchInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    const method = (init?.method ?? 'GET').toUpperCase()
+    const path = url.split('?')[0]
+    calls.push({ path: url, method, init })
+    if (method === 'GET' && path === '/api/v1/auth/resource-services') return Promise.resolve(jsonResponse([PROVIDER]))
+    if (method === 'GET' && path === '/api/v1/auth/resource-services/bindings') return Promise.resolve(onBindingsGet())
+    return Promise.resolve(onMutate ? onMutate(path, method) : jsonResponse({ code: 'not_found' }, 404))
+  }))
 }
 
 const PROVIDER = {
@@ -173,5 +194,57 @@ describe('ResourceServicesPage', () => {
     await waitFor(() => {
       expect(screen.queryByText('acct-1001')).toBeNull()
     })
+  })
+
+  it('在途列表 GET 返回时不复活已解绑项', async () => {
+    let bindingsGets = 0
+    const staleList = deferred<Response>()
+    stubPageFetch(() => {
+      bindingsGets += 1
+      return bindingsGets === 1 ? jsonResponse([BINDING]) : staleList.promise
+    }, (path, method) => (
+      method === 'DELETE' && path === `/api/v1/auth/resource-services/bindings/${BINDING.id}`
+        ? emptyResponse()
+        : jsonResponse({ code: 'not_found' }, 404)
+    ))
+    render(<ResourceServicesPage />)
+    expect(await screen.findByText('acct-1001')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+    await waitFor(() => expect(bindingsGets).toBe(2))
+    fireEvent.click(screen.getByRole('button', { name: '解绑' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认解绑' }))
+    await waitFor(() => expect(screen.queryByText('acct-1001')).toBeNull())
+
+    await act(async () => {
+      staleList.resolve(jsonResponse([BINDING]))
+      await staleList.promise
+      // apiFetch 还要过 response.json() 和 allSettled。排空后再断言，避免复活发生在断言之后。
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(screen.queryByText('acct-1001')).toBeNull()
+    expect(screen.queryByText('demo-account-1001')).toBeNull()
+    expect(screen.getByRole('button', { name: '绑定' })).toBeTruthy()
+  })
+
+  it('列表刷新失败时保留已显示的绑定', async () => {
+    let bindingsGets = 0
+    stubPageFetch(() => {
+      bindingsGets += 1
+      return bindingsGets === 1 ? jsonResponse([BINDING]) : jsonResponse({ code: 'temporarily_unavailable' }, 503)
+    })
+    render(<ResourceServicesPage />)
+    expect(await screen.findByText('demo-account-1001')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+
+    expect(await screen.findByRole('button', { name: '重试' })).toBeTruthy()
+    expect(screen.getByText('demo-account-1001')).toBeTruthy()
+    expect(screen.getByText('acct-1001')).toBeTruthy()
+    expect(screen.queryByText('暂无资源服务绑定')).toBeNull()
   })
 })

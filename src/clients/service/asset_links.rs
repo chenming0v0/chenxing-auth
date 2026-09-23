@@ -5,6 +5,7 @@ use crate::clients::android_link::{
     AndroidAssetLink, AndroidAssetLinkInput, validate_android_asset_link,
 };
 use crate::clients::repository;
+use crate::users::ManagementActorCredential;
 
 #[derive(Debug, Clone)]
 pub struct AppLinkStatement {
@@ -23,11 +24,15 @@ pub struct DeclaredAppLink {
 
 impl ClientService {
     /// 管理面：覆盖一个 Client 的 App Link 声明。
+    ///
+    /// 声明校验是纯函数，发生在事务外。会话复核、行更新和审计在仓库的同一个事务里。
     pub async fn upsert_app_link(
         &self,
         client_id: &str,
         package_name: String,
         sha256_cert_fingerprints: Vec<String>,
+        management_actor: ManagementActorCredential,
+        audit_event: crate::audit::AuditEvent,
     ) -> Result<Option<AndroidAssetLink>, ClientServiceError> {
         let Some(link) = validate_android_asset_link(Some(AndroidAssetLinkInput {
             package_name,
@@ -38,15 +43,30 @@ impl ClientService {
                 crate::clients::android_link::AndroidAssetLinkError::InvalidFingerprint.into(),
             );
         };
-        let updated = repository::upsert_client_app_link(&self.pool, client_id, &link).await?;
+        let updated = repository::upsert_client_app_link(
+            &self.pool,
+            client_id,
+            &link,
+            management_actor,
+            audit_event,
+        )
+        .await
+        .map_err(|error| super::map_audited_mutation(error, "app_link_upsert.audit_unavailable"))?;
         Ok(updated.then_some(link))
     }
 
     /// 管理面：清空一个平台管理 Client 的 App Link 声明。
-    pub async fn delete_app_link(&self, client_id: &str) -> Result<bool, ClientServiceError> {
-        repository::delete_client_app_link(&self.pool, client_id)
+    pub async fn delete_app_link(
+        &self,
+        client_id: &str,
+        management_actor: ManagementActorCredential,
+        audit_event: crate::audit::AuditEvent,
+    ) -> Result<bool, ClientServiceError> {
+        repository::delete_client_app_link(&self.pool, client_id, management_actor, audit_event)
             .await
-            .map_err(Into::into)
+            .map_err(|error| {
+                super::map_audited_mutation(error, "app_link_delete.audit_unavailable")
+            })
     }
 
     /// 管理面：每个已发布的平台 Client 一行，不受 Client 列表分页截断。

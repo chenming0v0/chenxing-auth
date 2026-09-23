@@ -6,6 +6,7 @@ use crate::clients::{
     idempotency::{ClientIdempotencyContext, ClientIdempotencyError, IdempotencyKey},
     repository,
 };
+use crate::users::ManagementActorCredential;
 use crate::users::domain::UserId;
 
 impl ClientService {
@@ -19,9 +20,10 @@ impl ClientService {
     pub async fn rotate_secret_with_audit(
         &self,
         client_id: &str,
+        management_actor: ManagementActorCredential,
         audit_event: crate::audit::AuditEvent,
     ) -> Result<RotatedClientSecret, ClientServiceError> {
-        self.rotate_secret_in_scope_with_audit(None, client_id, audit_event)
+        self.rotate_secret_in_scope_with_audit(None, client_id, Some(management_actor), audit_event)
             .await
     }
 
@@ -77,19 +79,27 @@ impl ClientService {
         client_id: &str,
         audit_event: crate::audit::AuditEvent,
     ) -> Result<RotatedClientSecret, ClientServiceError> {
-        self.rotate_secret_in_scope_with_audit(Some(owner_user_id), client_id, audit_event)
+        self.rotate_secret_in_scope_with_audit(Some(owner_user_id), client_id, None, audit_event)
             .await
     }
 
     pub async fn rotate_secret_with_audit_idempotent(
         &self,
         client_id: &str,
+        management_actor: ManagementActorCredential,
         actor_scope: String,
         key: IdempotencyKey,
         audit_event: crate::audit::AuditEvent,
     ) -> Result<RotatedClientSecret, ClientServiceError> {
-        self.rotate_secret_idempotent(None, client_id, actor_scope, key, audit_event)
-            .await
+        self.rotate_secret_idempotent(
+            None,
+            client_id,
+            Some(management_actor),
+            actor_scope,
+            key,
+            audit_event,
+        )
+        .await
     }
 
     pub async fn rotate_secret_for_user_with_audit_idempotent(
@@ -103,6 +113,7 @@ impl ClientService {
         self.rotate_secret_idempotent(
             Some(owner_user_id),
             client_id,
+            None,
             actor_scope,
             key,
             audit_event,
@@ -114,6 +125,7 @@ impl ClientService {
         &self,
         owner_user_id: Option<UserId>,
         client_id: &str,
+        management_actor: Option<ManagementActorCredential>,
         actor_scope: String,
         key: IdempotencyKey,
         audit_event: crate::audit::AuditEvent,
@@ -140,6 +152,7 @@ impl ClientService {
                 client_id,
                 expected_version,
                 client_secret_hash: &hash,
+                management_actor,
                 context: &context,
                 active_secret_kid: &active_kid,
                 audit_event,
@@ -163,6 +176,9 @@ impl ClientService {
             Err(repository::IdempotentClientOperationError::Audit(error)) => {
                 tracing::error!(event = "client_secret_rotate.audit_unavailable", error = %error);
                 return Err(ClientServiceError::AuditUnavailable);
+            }
+            Err(repository::IdempotentClientOperationError::ManagementActor(error)) => {
+                return Err(ClientServiceError::ManagementActor(error));
             }
             Err(repository::IdempotentClientOperationError::QuotaExceeded) => {
                 return Err(ClientServiceError::QuotaExceeded);
@@ -188,6 +204,7 @@ impl ClientService {
         &self,
         owner_user_id: Option<UserId>,
         client_id: &str,
+        management_actor: Option<ManagementActorCredential>,
         audit_event: crate::audit::AuditEvent,
     ) -> Result<RotatedClientSecret, ClientServiceError> {
         let Some(expected_version) =
@@ -195,6 +212,7 @@ impl ClientService {
         else {
             return Err(ClientServiceError::InvalidData);
         };
+        // 哈希在事务外完成，避免 actor 行锁跨过 Argon2。复核失败时丢弃明文，不返回。
         let (client_secret, hash) = generate_client_secret()?;
         match repository::update_client_secret_if_version_with_audit(
             &self.pool,
@@ -202,6 +220,7 @@ impl ClientService {
             client_id,
             expected_version,
             &hash,
+            management_actor,
             audit_event,
         )
         .await
@@ -220,6 +239,9 @@ impl ClientService {
             Ok(false) => Err(ClientServiceError::SecretRotationConflict),
             Err(repository::AuditedRotationError::Database(error)) => {
                 Err(ClientServiceError::Database(error))
+            }
+            Err(repository::AuditedRotationError::ManagementActor(error)) => {
+                Err(ClientServiceError::ManagementActor(error))
             }
             Err(repository::AuditedRotationError::Audit(error)) => {
                 tracing::error!(event = "client_secret_rotate.audit_unavailable", error = %error);

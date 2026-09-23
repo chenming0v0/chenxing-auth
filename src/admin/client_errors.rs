@@ -75,7 +75,8 @@ pub(super) fn create_client_error_response(error_value: &ClientServiceError) -> 
         | ClientServiceError::SecretRotationConflict
         | ClientServiceError::AuditUnavailable
         | ClientServiceError::IdempotencyCorruptResult
-        | ClientServiceError::AndroidLink(_) => internal(error_value, "create_client"),
+        | ClientServiceError::AndroidLink(_)
+        | ClientServiceError::ManagementActor(_) => internal(error_value, "create_client"),
         ClientServiceError::IdempotencyKeyInvalid => {
             error::bad_request("invalid_idempotency_key", "idempotency key is invalid")
         }
@@ -105,7 +106,8 @@ pub(super) fn update_client_error_response(error_value: &ClientServiceError) -> 
         | ClientServiceError::IdempotencyKeyUnavailable
         | ClientServiceError::IdempotencyConflict
         | ClientServiceError::IdempotencyKeyInvalid
-        | ClientServiceError::AndroidLink(_) => internal(error_value, "update_client"),
+        | ClientServiceError::AndroidLink(_)
+        | ClientServiceError::ManagementActor(_) => internal(error_value, "update_client"),
     }
 }
 
@@ -122,7 +124,8 @@ pub(super) fn delete_client_error_response(error_value: &ClientServiceError) -> 
         | ClientServiceError::IdempotencyKeyUnavailable
         | ClientServiceError::IdempotencyConflict
         | ClientServiceError::IdempotencyKeyInvalid
-        | ClientServiceError::AndroidLink(_) => internal(error_value, "delete_client"),
+        | ClientServiceError::AndroidLink(_)
+        | ClientServiceError::ManagementActor(_) => internal(error_value, "delete_client"),
     }
 }
 
@@ -141,7 +144,8 @@ pub(super) fn set_client_status_error_response(error_value: &ClientServiceError)
         | ClientServiceError::IdempotencyKeyUnavailable
         | ClientServiceError::IdempotencyConflict
         | ClientServiceError::IdempotencyKeyInvalid
-        | ClientServiceError::AndroidLink(_) => internal(error_value, "set_client_status"),
+        | ClientServiceError::AndroidLink(_)
+        | ClientServiceError::ManagementActor(_) => internal(error_value, "set_client_status"),
     }
 }
 
@@ -165,7 +169,8 @@ pub(super) fn rotate_secret_error_response(error_value: &ClientServiceError) -> 
         | ClientServiceError::Validation(_)
         | ClientServiceError::AuditUnavailable
         | ClientServiceError::IdempotencyCorruptResult
-        | ClientServiceError::AndroidLink(_) => internal(error_value, "rotate_client_secret"),
+        | ClientServiceError::AndroidLink(_)
+        | ClientServiceError::ManagementActor(_) => internal(error_value, "rotate_client_secret"),
         ClientServiceError::IdempotencyKeyInvalid => {
             error::bad_request("invalid_idempotency_key", "idempotency key is invalid")
         }

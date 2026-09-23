@@ -6,7 +6,8 @@
 //! - JSON body `{"device_id":"...","device_info":"...","provider":"<slug，可选>"}`；
 //! - 200 body 恰好 `session_token` / `uid` / `expires_at`，`Cache-Control: no-store`；
 //! - 401 `invalid_chenxing_token`：缺失 / 畸形 / 过期 / 已吊销 / restricted 服务的
-//!   aud 不在 `allowed_client_ids`；
+//!   aud 不在 `allowed_client_ids` / 出示的是本端点签发的 session_token
+//!   （payload 含 uid、binding_id 或 binding_version 任一字段）；
 //! - 403 `insufficient_scope` / `account_not_linked` / `account_disabled`；
 //! - 400 `invalid_request`：`device_id` 超过 255 字节，或多个候选服务而未指定 `provider`。
 //!
@@ -711,4 +712,38 @@ async fn exchange_rejects_disabled_provider_with_insufficient_scope() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let body = http::json_body(response).await;
     assert_eq!(error_code(&body), "insufficient_scope");
+}
+
+#[tokio::test]
+async fn exchange_rejects_session_token_reexchange_with_401() {
+    let env = setup("resource_service_exchange").await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let provider_id = seed_provider(
+        &env.database,
+        ALLOWED_CLIENT_ID,
+        "restricted",
+        &[ALLOWED_CLIENT_ID],
+    )
+    .await;
+    let (user_id, client_id) =
+        seed_user_and_client(&env.database, &suffix, &["openid", SCOPE], &[SCOPE]).await;
+    let token = issue_token(&env.state, user_id, &client_id, &[SCOPE]);
+    bind_row(&env.database, provider_id, user_id, "termhub:725", "active").await;
+
+    let response = exchange_request(&env.router, Some(&token), valid_device_body()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "ordinary access token must exchange"
+    );
+    let body = http::json_body(response).await;
+    let session_token = body["session_token"]
+        .as_str()
+        .expect("session token")
+        .to_owned();
+
+    let response = exchange_request(&env.router, Some(&session_token), valid_device_body()).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = http::json_body(response).await;
+    assert_eq!(error_code(&body), "invalid_chenxing_token");
 }

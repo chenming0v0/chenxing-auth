@@ -154,6 +154,12 @@ impl RedemptionService {
                 return Err(RedemptionError::UserDisabled);
             }
         }
+        // `lock_redeemable` already ran. Consume again at this statement so a
+        // wallet-row wait cannot credit a code that expired in between.
+        if !redemption_repository::consume(&mut tx, code_id, user_id, points).await? {
+            tx.rollback().await?;
+            return Err(RedemptionError::InvalidCode);
+        }
         let balance = repository::apply_delta(
             &mut tx,
             user_id,
@@ -164,7 +170,6 @@ impl RedemptionService {
             Some(&code_id.to_string()),
         )
         .await?;
-        redemption_repository::consume(&mut tx, code_id, user_id, points).await?;
         crate::audit::repository::insert_with(&mut *tx, &audit).await?;
         tx.commit().await?;
         Ok(RedeemResult { points, balance })

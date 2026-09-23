@@ -12,6 +12,13 @@ use crate::resource_services::service_error::ServiceError;
 use crate::resource_services::types::BindingRow;
 use crate::resource_services::views::BindingView;
 
+pub(super) fn is_account_disabled(error: &ClientError) -> bool {
+    matches!(
+        error.provider_failure().map(|failure| failure.code),
+        Some(KnownErrorCode::AccountDisabled)
+    )
+}
+
 pub(super) fn provider_already_committed(error: &ClientError) -> bool {
     matches!(
         error.provider_failure().map(|failure| failure.code),
@@ -75,6 +82,11 @@ impl ResourceServiceService {
                 return Ok(view);
             }
             return Err(ServiceError::ReauthorizationRequired);
+        }
+        // 先写 disabled。写不上就返回错误，不 fail lease：否则幂等键已失败、
+        // 快照仍是 active，同一操作不能再探。
+        if is_account_disabled(&error) {
+            self.record_account_disabled(binding_id).await?;
         }
         if should_fail_operation(&error) {
             self.fail_operation(provider_id, operation_type, idempotency_key)

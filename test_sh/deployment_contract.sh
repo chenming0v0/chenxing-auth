@@ -21,6 +21,54 @@ list_files() {
     find "$1" -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' '
 }
 
+# 与 install.sh / update.sh / deploy/install.sh 的 compose() 同一条隔离：
+# 已 export 的进程环境优先于 --env-file，测试自己不隔离就会把生产路径放过去。
+isolated_compose() {
+    local -a isolated=(env -i)
+    local name value
+    for name in PATH HOME DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH \
+        DOCKER_CONTEXT DOCKER_CONFIG XDG_RUNTIME_DIR; do
+        value="${!name-}"
+        if [[ -n "$value" ]]; then
+            isolated+=("${name}=${value}")
+        fi
+    done
+    isolated+=(docker compose "$@")
+    "${isolated[@]}"
+}
+
+assert_compose_isolated() {
+    local script="$1" body name
+    body="$(awk '/^compose\(\) \{/,/^}$/' "$script")"
+    [[ -n "$body" ]] || {
+        printf 'compose() missing: %s\n' "$script" >&2
+        exit 1
+    }
+    grep -q 'env -i' <<<"$body" || {
+        printf 'compose() does not use env -i: %s\n' "$script" >&2
+        exit 1
+    }
+    grep -q 'docker compose' <<<"$body" || {
+        printf 'compose() does not invoke docker compose: %s\n' "$script" >&2
+        exit 1
+    }
+    for name in PATH HOME DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH \
+        DOCKER_CONTEXT DOCKER_CONFIG XDG_RUNTIME_DIR; do
+        grep -q "$name" <<<"$body" || {
+            printf 'compose() dropped %s: %s\n' "$name" "$script" >&2
+            exit 1
+        }
+    done
+    if grep -E -q 'OAUTH_PROVIDER_LOOPBACK_ENABLED|COOKIE_SECURE|ADMIN_TOKEN|AUTH_ENCRYPTION_KEY|AUTH_ENCRYPTION_KEYS|DATABASE_URL|MIGRATION_DATABASE_URL' <<<"$body"; then
+        printf 'compose() forwards a deployment variable: %s\n' "$script" >&2
+        exit 1
+    fi
+    if grep -nE '^[[:space:]]*(if[[:space:]]*)?!?[[:space:]]*docker[[:space:]]+compose([[:space:]]|$)' "$script"; then
+        printf 'docker compose escapes compose(): %s\n' "$script" >&2
+        exit 1
+    fi
+}
+
 # manage.sh 只做引导：每次运行重新下载 install.sh / update.sh / compose.yml。
 # 用假 curl 把“下载”映射到本仓库文件，验证分发契约本身。
 fake_bin="$WORK_DIR/fake-bin"
@@ -74,11 +122,23 @@ for key in POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD MIGRATION_DATABASE_URL; d
     grep -q "^${key}=." "$env_file"
 done
 
+for script in "$ROOT_DIR/install.sh" "$ROOT_DIR/update.sh" "$ROOT_DIR/deploy/install.sh"; do
+    assert_compose_isolated "$script"
+done
+
+# 父进程里的残留必须一直留着。以前在 config 前 unset，等于把生产路径藏掉。
+export COOKIE_SECURE=false
+export OAUTH_PROVIDER_LOOPBACK_ENABLED=true
+[[ "$AUTH_ENCRYPTION_KEY" == "$external_key" ]]
+[[ "$COOKIE_SECURE" == false ]]
+[[ "$OAUTH_PROVIDER_LOOPBACK_ENABLED" == true ]]
+
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-    unset AUTH_ENCRYPTION_KEY
-    config="$(docker compose --env-file "$env_file" -f "$compose_file" config --format json)"
+    env_cookie="$(awk -F= '$1 == "COOKIE_SECURE" { print substr($0, index($0, "=") + 1); exit }' "$env_file")"
+    config="$(isolated_compose --env-file "$env_file" -f "$compose_file" config --format json)"
     python3 -c '
 import json, sys
+expected_key, expected_cookie = sys.argv[1], sys.argv[2]
 data = json.load(sys.stdin)
 app = data["services"]["app"]
 env = app["environment"]
@@ -91,7 +151,18 @@ assert env.get("POSTGRES_USER") is None and env.get("POSTGRES_PASSWORD") is None
 assert app["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
 assert "migrate" in data["services"]
 assert "chenxing" in str(data["services"]["migrate"]["environment"]["MIGRATION_DATABASE_URL"])
-' <<< "$config"
+got_key = env["AUTH_ENCRYPTION_KEY"]
+assert got_key == expected_key, got_key
+assert got_key != "external-value-must-not-be-used"
+got_cookie = str(env["COOKIE_SECURE"])
+assert got_cookie.lower() == expected_cookie.lower(), got_cookie
+assert got_cookie.lower() != "false", got_cookie
+got_loopback = str(env["OAUTH_PROVIDER_LOOPBACK_ENABLED"])
+assert got_loopback.lower() == "false", got_loopback
+' "$actual_key" "$env_cookie" <<< "$config"
+    [[ "$AUTH_ENCRYPTION_KEY" == "$external_key" ]]
+    [[ "$COOKIE_SECURE" == false ]]
+    [[ "$OAUTH_PROVIDER_LOOPBACK_ENABLED" == true ]]
 fi
 
 # ---- 升级：已有 .env 时 manage.sh 必须移交 update.sh，保留全部密钥，迁移先行 ----
@@ -104,20 +175,23 @@ upgrade_marker="$WORK_DIR/upgrade.marker"
 cat > "$fake_bin/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+marker="@UPGRADE_MARKER@"
 if [[ "${1:-}" == compose ]]; then
     shift
     command_line="$*"
     case "$command_line" in
-        *" run --rm migrate"*) printf '%s\n' migrate >> "${FAKE_DOCKER_MARKER:?}" ;;
-        *" up -d app"*) printf '%s\n' up-app >> "${FAKE_DOCKER_MARKER:?}" ;;
+        *" run --rm migrate"*) printf '%s\n' migrate >> "$marker" ;;
+        *" up -d app"*) printf '%s\n' up-app >> "$marker" ;;
     esac
     exit 0
 fi
 if [[ "${1:-}" == info || "${1:-}" == version || "${1:-}" == pull ]]; then exit 0; fi
 exit 0
 FAKE_DOCKER
+sed -i "s|@UPGRADE_MARKER@|${upgrade_marker}|" "$fake_bin/docker"
 chmod 755 "$fake_bin/docker"
-FAKE_DOCKER_MARKER="$upgrade_marker" CHENXING_RELEASE_VERSION=v0.0.1 \
+# compose() 用 env -i，不会把 FAKE_DOCKER_MARKER 传进 docker。标记路径写死在假二进制里。
+CHENXING_RELEASE_VERSION=v0.0.1 \
     PATH="$fake_bin:$PATH" bash "$upgrade_root/manage.sh" >/dev/null
 [[ "$(list_files "$upgrade_root")" == "$expected_files" ]]
 assert_private_mode "$upgrade_root/.env"
@@ -140,6 +214,7 @@ cp "$ROOT_DIR/deploy/install.sh" "$source_root/deploy/install.sh"
 cp "$ROOT_DIR/docker-compose.prod.yml" "$source_root/docker-compose.prod.yml"
 src_fake_bin="$WORK_DIR/src-fake-bin"
 mkdir -p "$src_fake_bin"
+src_marker_pointer="$src_fake_bin/compose.marker"
 cat > "$src_fake_bin/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -151,10 +226,11 @@ if [[ "${1:-}" == compose ]]; then
         *" port app 3000"*) printf '%s\n' '0.0.0.0:8080' ;;
         *" exec -T postgres pg_isready"*) exit 0 ;;
         *)
+            marker="$(cat "@MARKER_POINTER@")"
             if [[ "$command_line" == *" run --rm --build migrate"* || "$command_line" == *" run --rm migrate"* ]]; then
-                printf '%s\n' migrate >> "${FAKE_DOCKER_MARKER:?}"
+                printf '%s\n' migrate >> "$marker"
             elif [[ "$command_line" == *" up "* ]]; then
-                printf '%s\n' up >> "${FAKE_DOCKER_MARKER:?}"
+                printf '%s\n' up >> "$marker"
             fi
             exit 0
             ;;
@@ -178,6 +254,7 @@ cat > "$src_fake_bin/curl" <<'FAKE_CURL'
 #!/usr/bin/env bash
 exit 0
 FAKE_CURL
+sed -i "s|@MARKER_POINTER@|${src_marker_pointer}|" "$src_fake_bin/docker"
 chmod 755 "$src_fake_bin/docker" "$src_fake_bin/curl"
 
 legacy_project="$(basename "$source_root" | tr '[:upper:]' '[:lower:]')"
@@ -196,7 +273,8 @@ EOF
 chmod 644 "$source_root/.env"
 marker="$WORK_DIR/fake-docker.marker"
 : > "$marker"
-FAKE_DOCKER_MARKER="$marker" FAKE_DOCKER_PROJECT="$legacy_project" \
+printf '%s\n' "$marker" > "$src_marker_pointer"
+FAKE_DOCKER_PROJECT="$legacy_project" \
     PATH="$src_fake_bin:$PATH" bash -c 'hash -r; exec bash "$1"' _ "$source_root/deploy/install.sh" >/dev/null
 assert_private_mode "$source_root/.env"
 grep -q "^COMPOSE_PROJECT_NAME=${legacy_project}$" "$source_root/.env"
@@ -211,7 +289,8 @@ sed -i 's/^COMPOSE_PROJECT_NAME=.*/COMPOSE_PROJECT_NAME=/' "$moved_root/.env"
 chmod 600 "$moved_root/.env"
 moved_marker="$WORK_DIR/moved.marker"
 : > "$moved_marker"
-if FAKE_DOCKER_MARKER="$moved_marker" FAKE_DOCKER_PROJECT=moved-source \
+printf '%s\n' "$moved_marker" > "$src_marker_pointer"
+if FAKE_DOCKER_PROJECT=moved-source \
     FAKE_DOCKER_NO_VOLUMES=1 PATH="$src_fake_bin:$PATH" bash -c 'hash -r; exec bash "$1"' _ "$moved_root/deploy/install.sh" >/dev/null 2>&1; then
     printf '%s\n' 'moved source without identifiable volumes unexpectedly succeeded' >&2
     exit 1
