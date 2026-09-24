@@ -43,17 +43,17 @@ describe('SecurityLogsPage', () => {
     expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events?page=1&page_size=20')
   })
 
-  it('桌面表格与移动卡片渲染同一份事件，已知 action 用友好文案', async () => {
+  it('表格只渲染一份事件，已知 action 用友好文案', async () => {
     apiFetchMock.mockResolvedValue(sampleEvents)
     render(<SecurityLogsPage />)
-    // 桌面表格与移动卡片各渲染一份（CSS 按断点隐藏其一）
-    expect(await screen.findAllByText('登录')).toHaveLength(2)
-    expect(screen.getAllByText('授权应用')).toHaveLength(2)
-    expect(screen.getAllByText('示例应用')).toHaveLength(2)
+    // 窄屏卡片由同一张 DataTable 的 CSS 切换，不再额外渲染一份移动端列表
+    expect(await screen.findAllByText('登录')).toHaveLength(1)
+    expect(screen.getAllByText('授权应用')).toHaveLength(1)
+    expect(screen.getAllByText('示例应用')).toHaveLength(1)
     // 未知 action 原样展示，不猜文案
-    expect(screen.getAllByText('mystery_action')).toHaveLength(2)
+    expect(screen.getAllByText('mystery_action')).toHaveLength(1)
     // 原型链同名 action 也必须原样展示，不得渲染空徽章
-    expect(screen.getAllByText('toString')).toHaveLength(2)
+    expect(screen.getAllByText('toString')).toHaveLength(1)
   })
 
   it('列表接口 404 时展示错误且不注入示例事件', async () => {
@@ -71,11 +71,15 @@ describe('SecurityLogsPage', () => {
     expect(await screen.findByText('服务器繁忙')).toBeTruthy()
   })
 
-  it('列表行链接指向 ?id= 详情路由', async () => {
+  it('点击或回车打开行详情抽屉，并写入 ?id= 深链', async () => {
     apiFetchMock.mockResolvedValue(sampleEvents)
     render(<SecurityLogsPage />)
-    const links = await screen.findAllByRole('link', { name: '查看日志 #2 详情' })
-    for (const link of links) expect(link.getAttribute('href')).toBe('/console/logs?id=2')
+    const row = await screen.findByRole('row', { name: '查看日志 #2 详情' })
+    apiFetchMock.mockReturnValue(new Promise(() => {}))
+    fireEvent.keyDown(row, { key: 'Enter' })
+    await waitFor(() => expect(window.location.search).toBe('?id=2'))
+    expect(await screen.findByRole('dialog', { name: '日志详情' })).toBeTruthy()
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events/2')
   })
 
   it('当前页越界时收敛页码，不把空列表卡成空态（#372）', async () => {
@@ -91,7 +95,7 @@ describe('SecurityLogsPage', () => {
     await screen.findByText('共 4 条')
     expect(screen.queryByText('暂无活动记录。')).toBeNull()
     expect(screen.queryByText('第 2 / 1 页')).toBeNull()
-    expect(await screen.findAllByText('登录')).toHaveLength(2)
+    expect(await screen.findAllByText('登录')).toHaveLength(1)
     await waitFor(() => {
       expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events?page=2&page_size=20')
       expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events?page=1&page_size=20')
@@ -99,7 +103,7 @@ describe('SecurityLogsPage', () => {
   })
 })
 
-describe('SecurityLogDetail（经 ?id= 进入）', () => {
+describe('SecurityLogDetailDrawer（经 ?id= 进入）', () => {
   it('以事件 id 请求详情接口', async () => {
     window.history.replaceState({}, '', '/console/logs?id=42')
     apiFetchMock.mockReturnValue(new Promise(() => {}))
@@ -110,7 +114,7 @@ describe('SecurityLogDetail（经 ?id= 进入）', () => {
 
   it('真实详情中的敏感字段默认打码，点眼睛才显示明文', async () => {
     window.history.replaceState({}, '', '/console/logs?id=11045978')
-    apiFetchMock.mockResolvedValue({
+    const detail = {
       ...sampleEvents.items[1],
       id: 11045978,
       category: 'authorization',
@@ -125,11 +129,13 @@ describe('SecurityLogDetail（经 ?id= 进入）', () => {
         created_at: '2025-12-20T11:55:31Z',
         status: 'active',
       },
-    })
+    }
+    apiFetchMock.mockImplementation((path: string) => Promise.resolve(path.includes('/security-events/') ? detail : sampleEvents))
     render(<SecurityLogsPage />)
     expect(await screen.findByText('事件信息')).toBeTruthy()
     expect(screen.getByText('应用信息')).toBeTruthy()
-    expect(screen.getByText('示例应用')).toBeTruthy()
+    // 列表行与抽屉里各有一处「示例应用」
+    expect(screen.getAllByText('示例应用')).toHaveLength(2)
     // IP 默认打码
     expect(screen.queryByText(/203\.0\.113\./)).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '显示IP 地址' }))
@@ -160,11 +166,18 @@ describe('SecurityLogDetail（经 ?id= 进入）', () => {
   })
 
 
-  it('详情页提供返回列表的链接', async () => {
+  it('详情以抽屉叠在列表之上，关闭后回到列表路由', async () => {
     window.history.replaceState({}, '', '/console/logs?id=11045978')
-    apiFetchMock.mockRejectedValue(new ApiError('请求的资源不存在或已失效。', 404))
+    apiFetchMock.mockImplementation((path: string) => path.includes('/security-events/')
+      ? Promise.reject(new ApiError('请求的资源不存在或已失效。', 404))
+      : Promise.resolve(sampleEvents))
     render(<SecurityLogsPage />)
-    const back = await screen.findByRole('link', { name: /返回/ })
-    expect(back.getAttribute('href')).toBe('/console/logs')
+    await screen.findByText('共 4 条')
+    const dialog = await screen.findByRole('dialog', { name: '日志详情' })
+    expect(dialog).toBeTruthy()
+    const closeButtons = screen.getAllByRole('button', { name: '关闭' })
+    fireEvent.click(closeButtons[closeButtons.length - 1])
+    await waitFor(() => expect(window.location.search).toBe(''))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 })

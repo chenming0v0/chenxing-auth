@@ -163,6 +163,7 @@ export function GlobalTopbar({
   menuExtra,
   links,
   hideBrandWhenExpanded = false,
+  subnav,
 }: {
   status: ReactNode
   action?: string
@@ -172,6 +173,8 @@ export function GlobalTopbar({
       收拢成胶囊后隐去，导航职责交还汉堡菜单。 */
   links?: readonly { label: string; href: string }[]
   hideBrandWhenExpanded?: boolean
+  /** 二级分栏（TopbarSubnav），从主胶囊下方弹出 */
+  subnav?: ReactNode
 }) {
   const { status: authStatus, user } = useAuth()
   const loggedIn = authStatus === 'authenticated'
@@ -189,6 +192,7 @@ export function GlobalTopbar({
       status={status}
       links={links}
       hideBrandWhenExpanded={hideBrandWhenExpanded}
+      subnav={subnav}
       menu={<NavMenuContent extra={menuExtra} />}
       account={loggedIn ? {
         trigger: <AvatarContent src={avatarUrl(user)} name={name} />,

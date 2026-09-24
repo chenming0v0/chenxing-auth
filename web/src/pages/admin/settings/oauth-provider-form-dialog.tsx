@@ -1,7 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import type { OAuthProviderInput, OAuthProviderSummary } from '../../../api'
-import { useModalFocus } from '@chenxing/ui'
-import { Button, Field, HudPanel, Icon, ModalOverlay, Notice, PasswordField, ToggleRow } from '@chenxing/ui'
+import { Button, Drawer, Field, Notice, PasswordField, ToggleRow } from '@chenxing/ui'
 import { SelectField } from '@chenxing/ui'
 import { useDirtyReport } from './panel'
 
@@ -158,11 +157,6 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
     onClose()
   }
 
-  const containerRef = useModalFocus<HTMLElement>(requestClose, {
-    initialFocusSelector: '#oauth-provider-name',
-    escapeDisabled: busy,
-  })
-
   function applyTemplate(next: string) {
     setTemplate(next)
     const preset = templates[next] || {}
@@ -190,110 +184,99 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
   }
 
   return (
-    <ModalOverlay>
-      {/* 面板不设 max-height/overflow：超高时由 ModalOverlay 整体滚动，
-          否则 HudPanel 的角标会跟着内容滚走，滚动条也会切进圆角边框。 */}
-      <HudPanel ref={containerRef} as="form" role="dialog" aria-modal="true" aria-labelledby="oauth-provider-dialog-title" tabIndex={-1} className="w-full max-w-lg" onSubmit={submit}>
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 id="oauth-provider-dialog-title" className="chenxing-h2 flex items-center gap-2">
-              <Icon name="link" className="text-[var(--chenxing-cyan)]" size={18} />
-              {title}
-            </h2>
-            <p className="chenxing-caption mt-1.5">配置 OAuth 2.0 授权码流程 + UserInfo 的外部身份提供商</p>
-          </div>
-          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={requestClose} disabled={busy}>
-            <Icon name="x" size={16} />
-          </button>
-        </div>
-        {/* busy 期间整体禁用表单字段（Issue #369）：fieldset 按规范禁用内部全部原生控件，
-            SelectField 的 trigger 与 Switch 同为 button 也在其列，与其它设置面板一致。 */}
-        <fieldset disabled={busy} className="mt-5 grid gap-4 border-0 p-0 m-0 min-w-0">
-          {/* Issue #296：信任模型必须写在填表的地方。管理员在这里决定信任哪个外部身份源，
-              而本平台对该身份源做了什么校验、没做什么校验，是这个决定的前提。 */}
-          <Notice>
-            信任模型：OAuth 2.0 + UserInfo。用户的 sub、email 和邮箱验证状态只来自该提供商的 UserInfo 响应；
-            本平台不解析也不验证令牌响应中的 ID Token，因此请只接入 UserInfo 内容可信的提供商。
-          </Notice>
-          {!editing ? (
-            <SelectField
-              label="预设模板"
-              value={template}
-              onChange={applyTemplate}
-              options={[
-                { value: 'custom', label: '自定义' },
-                { value: 'github_enterprise', label: 'GitHub Enterprise' },
-                { value: 'gitlab', label: 'GitLab' },
-                { value: 'gitea', label: 'Gitea' },
-                { value: 'keycloak', label: 'Keycloak' },
-              ]}
-            />
-          ) : null}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field id="oauth-provider-name" label="显示名称 *" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如: 企业 GitLab" required />
-            <Field label="Slug *" value={form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value })} placeholder="例如: gitlab" required disabled={Boolean(editing)} />
-          </div>
-          <Field label="Client ID *" value={form.client_id} onChange={(event) => setForm({ ...form, client_id: event.target.value })} placeholder="从提供商控制台复制" required />
-          <PasswordField
-            label={editing ? (editing.client_secret_configured ? 'Client Secret' : 'Client Secret *') : 'Client Secret *'}
-            value={form.client_secret}
-            onChange={(event) => setForm({ ...form, client_secret: event.target.value })}
-            placeholder={editing ? (editing.client_secret_configured ? '留空保持不变，输入新值替换' : '尚未配置，请输入 Client Secret') : '仅保存时使用，保存后不再回显'}
-            hint={editing ? (editing.client_secret_configured ? '已配置 Client Secret：留空保持不变，输入新值替换。保存后不会回显明文。' : '当前未配置 Client Secret，登录该提供商将失败。请输入密钥，保存后不会回显明文。') : '密钥将加密存储，保存后不会回显明文。'}
-          />
-          {editing && !editing.client_secret_configured ? (
-            <Notice tone="warning">尚未配置 Client Secret，用户通过该提供商登录将失败。请输入密钥后保存。</Notice>
-          ) : null}
-          <Field label="Authorization Endpoint *" value={form.authorization_endpoint} onChange={(event) => setForm({ ...form, authorization_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/authorize" required />
-          <Field label="Token Endpoint *" value={form.token_endpoint} onChange={(event) => setForm({ ...form, token_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/token" required />
-          <Field label="UserInfo Endpoint *" value={form.userinfo_endpoint} onChange={(event) => setForm({ ...form, userinfo_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/userinfo" required />
-          <Field
-            label="Scopes *"
-            value={form.scopes}
-            onChange={(event) => setForm({ ...form, scopes: event.target.value })}
-            placeholder="openid profile email"
-            hint="发往该提供商的 scope。可以包含 openid（多数提供商需要它才开放 UserInfo 端点），但本平台只用它换取可调用 UserInfo 的 access token，不会验证随之返回的 ID Token。"
-            required
-          />
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Subject Claim" value={form.subject_claim} onChange={(event) => setForm({ ...form, subject_claim: event.target.value })} />
-            <Field label="Email Claim" value={form.email_claim} onChange={(event) => setForm({ ...form, email_claim: event.target.value })} />
-            <Field label="Name Claim" value={form.name_claim} onChange={(event) => setForm({ ...form, name_claim: event.target.value })} />
-            <Field
-              label="Email Verified Claim *"
-              value={form.email_verified_claim}
-              onChange={(event) => setForm({ ...form, email_verified_claim: event.target.value })}
-              placeholder="email_verified"
-              hint="必填，且必须指向布尔值。该身份源不返回邮箱验证状态时，本平台无法确认邮箱归属，会拒绝登录与自动建号。"
-              required
-            />
-          </div>
+    <Drawer
+      title={title}
+      description="配置 OAuth 2.0 授权码流程 + UserInfo 的外部身份提供商"
+      onClose={requestClose}
+      onSubmit={submit}
+      busy={busy}
+      footer={(
+        <>
+          <Button type="button" variant="ghost" onClick={requestClose} disabled={busy}>取消</Button>
+          <Button type="submit" icon="save" disabled={busy}>保存</Button>
+        </>
+      )}
+    >
+      {/* busy 期间整体禁用表单字段（Issue #369）：fieldset 按规范禁用内部全部原生控件，
+          SelectField 的 trigger 与 Switch 同为 button 也在其列，与其它设置面板一致。 */}
+      <fieldset disabled={busy} className="grid gap-4 border-0 p-0 m-0 min-w-0">
+        {/* Issue #296：信任模型必须写在填表的地方。管理员在这里决定信任哪个外部身份源，
+            而本平台对该身份源做了什么校验、没做什么校验，是这个决定的前提。 */}
+        <Notice>
+          信任模型：OAuth 2.0 + UserInfo。用户的 sub、email 和邮箱验证状态只来自该提供商的 UserInfo 响应；
+          本平台不解析也不验证令牌响应中的 ID Token，因此请只接入 UserInfo 内容可信的提供商。
+        </Notice>
+        {!editing ? (
           <SelectField
-            label="Client Auth Method"
-            value={form.client_auth_method}
-            onChange={(value) => setForm({ ...form, client_auth_method: value as 'basic' | 'request_body' })}
+            label="预设模板"
+            value={template}
+            onChange={applyTemplate}
             options={[
-              { value: 'basic', label: 'basic' },
-              { value: 'request_body', label: 'request_body' },
+              { value: 'custom', label: '自定义' },
+              { value: 'github_enterprise', label: 'GitHub Enterprise' },
+              { value: 'gitlab', label: 'GitLab' },
+              { value: 'gitea', label: 'Gitea' },
+              { value: 'keycloak', label: 'Keycloak' },
             ]}
           />
-          <ToggleRow
-            title="启用 PKCE"
-            checked={form.pkce_enabled}
-            disabled={busy}
-            onChange={(pkce_enabled) => setForm({ ...form, pkce_enabled })}
-          />
-          {editing?.callback_uri ? <Field label="Callback URI" value={editing.callback_uri} readOnly /> : null}
-        </fieldset>
-        <div className="chenxing-divider my-5" />
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <ToggleRow title="启用供应商" checked={form.enabled} disabled={busy} onChange={(enabled) => setForm({ ...form, enabled })} />
-          <div className="flex items-center gap-3">
-            <Button type="button" variant="ghost" onClick={requestClose} disabled={busy}>取消</Button>
-            <Button type="submit" icon="save" disabled={busy}>保存</Button>
-          </div>
+        ) : null}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field id="oauth-provider-name" label="显示名称 *" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如: 企业 GitLab" required />
+          <Field label="Slug *" value={form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value })} placeholder="例如: gitlab" required disabled={Boolean(editing)} />
         </div>
-      </HudPanel>
-    </ModalOverlay>
+        <Field label="Client ID *" value={form.client_id} onChange={(event) => setForm({ ...form, client_id: event.target.value })} placeholder="从提供商控制台复制" required />
+        <PasswordField
+          label={editing ? (editing.client_secret_configured ? 'Client Secret' : 'Client Secret *') : 'Client Secret *'}
+          value={form.client_secret}
+          onChange={(event) => setForm({ ...form, client_secret: event.target.value })}
+          placeholder={editing ? (editing.client_secret_configured ? '留空保持不变，输入新值替换' : '尚未配置，请输入 Client Secret') : '仅保存时使用，保存后不再回显'}
+          hint={editing ? (editing.client_secret_configured ? '已配置 Client Secret：留空保持不变，输入新值替换。保存后不会回显明文。' : '当前未配置 Client Secret，登录该提供商将失败。请输入密钥，保存后不会回显明文。') : '密钥将加密存储，保存后不会回显明文。'}
+        />
+        {editing && !editing.client_secret_configured ? (
+          <Notice tone="warning">尚未配置 Client Secret，用户通过该提供商登录将失败。请输入密钥后保存。</Notice>
+        ) : null}
+        <Field label="Authorization Endpoint *" value={form.authorization_endpoint} onChange={(event) => setForm({ ...form, authorization_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/authorize" required />
+        <Field label="Token Endpoint *" value={form.token_endpoint} onChange={(event) => setForm({ ...form, token_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/token" required />
+        <Field label="UserInfo Endpoint *" value={form.userinfo_endpoint} onChange={(event) => setForm({ ...form, userinfo_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/userinfo" required />
+        <Field
+          label="Scopes *"
+          value={form.scopes}
+          onChange={(event) => setForm({ ...form, scopes: event.target.value })}
+          placeholder="openid profile email"
+          hint="发往该提供商的 scope。可以包含 openid（多数提供商需要它才开放 UserInfo 端点），但本平台只用它换取可调用 UserInfo 的 access token，不会验证随之返回的 ID Token。"
+          required
+        />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Subject Claim" value={form.subject_claim} onChange={(event) => setForm({ ...form, subject_claim: event.target.value })} />
+          <Field label="Email Claim" value={form.email_claim} onChange={(event) => setForm({ ...form, email_claim: event.target.value })} />
+          <Field label="Name Claim" value={form.name_claim} onChange={(event) => setForm({ ...form, name_claim: event.target.value })} />
+          <Field
+            label="Email Verified Claim *"
+            value={form.email_verified_claim}
+            onChange={(event) => setForm({ ...form, email_verified_claim: event.target.value })}
+            placeholder="email_verified"
+            hint="必填，且必须指向布尔值。该身份源不返回邮箱验证状态时，本平台无法确认邮箱归属，会拒绝登录与自动建号。"
+            required
+          />
+        </div>
+        <SelectField
+          label="Client Auth Method"
+          value={form.client_auth_method}
+          onChange={(value) => setForm({ ...form, client_auth_method: value as 'basic' | 'request_body' })}
+          options={[
+            { value: 'basic', label: 'basic' },
+            { value: 'request_body', label: 'request_body' },
+          ]}
+        />
+        <ToggleRow
+          title="启用 PKCE"
+          checked={form.pkce_enabled}
+          disabled={busy}
+          onChange={(pkce_enabled) => setForm({ ...form, pkce_enabled })}
+        />
+        {editing?.callback_uri ? <Field label="Callback URI" value={editing.callback_uri} readOnly /> : null}
+      </fieldset>
+      <ToggleRow title="启用供应商" checked={form.enabled} disabled={busy} onChange={(enabled) => setForm({ ...form, enabled })} />
+    </Drawer>
   )
 }

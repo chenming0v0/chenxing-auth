@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Link } from '../../router'
 import { ApiError, apiFetch, type SecurityEventDetail } from '../../api'
-import { Badge, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
+import { Badge, Button, Drawer, Icon, Notice } from '@chenxing/ui'
 import { formatDate } from '../../data'
 import { ActionBadge } from './security-logs-shared'
 
@@ -39,7 +38,19 @@ type DetailState =
   | { kind: 'ready'; data: SecurityEventDetail }
   | { kind: 'error'; message: string }
 
-export function SecurityLogDetail({ id }: { id: number }) {
+function DetailSection({ icon, title, children }: { icon: string; title: string; children: React.ReactNode }) {
+  return (
+    <section>
+      <h3 className="chenxing-h3 mb-4 flex items-center gap-2">
+        <Icon name={icon} className="text-[var(--chenxing-cyan)]" size={16} />{title}
+      </h3>
+      <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">{children}</div>
+    </section>
+  )
+}
+
+/** 安全日志行详情：与审计等其它表格一致，统一以右侧抽屉呈现。 */
+export function SecurityLogDetailDrawer({ id, onClose }: { id: number; onClose: () => void }) {
   const [state, setState] = useState<DetailState>({ kind: 'loading' })
 
   useEffect(() => {
@@ -58,31 +69,20 @@ export function SecurityLogDetail({ id }: { id: number }) {
     return () => { active = false }
   }, [id])
 
-  const back = (
-    <Link className="chenxing-btn-ghost" to="/console/logs"><Icon name="arrow-left" size={16} />返回</Link>
-  )
-
-  if (state.kind !== 'ready') {
-    return (
-      <>
-        <PageIntro eyebrow="// Security · Log Detail" title="日志详情" description={`授权记录 #${id}`} action={back} />
-        {state.kind === 'loading'
-          ? <Notice tone="info">正在加载日志详情…</Notice>
-          : <Notice tone="warning">{state.message}</Notice>}
-      </>
-    )
-  }
-
-  const event = state.data
+  const event = state.kind === 'ready' ? state.data : null
   return (
-    <>
-      <PageIntro eyebrow="// Security · Log Detail" title="日志详情" description={`授权记录 #${event.id}`} action={back} />
-      <div className="space-y-6">
-        <HudPanel>
-          <h2 className="chenxing-h2 mb-5 flex items-center gap-2">
-            <Icon name="shield-check" className="text-[var(--chenxing-cyan)]" size={18} />事件信息
-          </h2>
-          <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+    <Drawer
+      title="日志详情"
+      description={`授权记录 #${id}`}
+      onClose={onClose}
+      onSubmit={(submitEvent) => submitEvent.preventDefault()}
+      footer={<Button type="button" onClick={onClose}>关闭</Button>}
+    >
+      {state.kind === 'loading' ? <Notice tone="info">正在加载日志详情…</Notice> : null}
+      {state.kind === 'error' ? <Notice tone="warning">{state.message}</Notice> : null}
+      {event ? (
+        <div className="space-y-6">
+          <DetailSection icon="shield-check" title="事件信息">
             <DetailField label="操作"><ActionBadge action={event.action} /></DetailField>
             <DetailField label="时间"><span className="chenxing-mono text-sm">{formatDate(event.created_at)}</span></DetailField>
             <DetailField label="Ray ID"><MaskedValue value={event.ray_id} label="Ray ID" /></DetailField>
@@ -93,14 +93,9 @@ export function SecurityLogDetail({ id }: { id: number }) {
                 : <span className="chenxing-body text-sm text-[var(--chenxing-muted-foreground)]">—</span>}
             </DetailField>
             <DetailField label="User Agent"><MaskedValue value={event.user_agent} label="User Agent" /></DetailField>
-          </div>
-        </HudPanel>
-        {event.client ? (
-          <HudPanel>
-            <h2 className="chenxing-h2 mb-5 flex items-center gap-2">
-              <Icon name="box" className="text-[var(--chenxing-cyan)]" size={18} />应用信息
-            </h2>
-            <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+          </DetailSection>
+          {event.client ? (
+            <DetailSection icon="box" title="应用信息">
               <DetailField label="应用名称"><span className="chenxing-body text-sm font-semibold">{event.client.client_name}</span></DetailField>
               <DetailField label="Client ID"><span className="chenxing-mono break-all text-sm">{event.client.client_id}</span></DetailField>
               <DetailField label="应用状态">
@@ -109,10 +104,10 @@ export function SecurityLogDetail({ id }: { id: number }) {
                   : <Badge tone="warning">{event.client.status || '未知'}</Badge>}
               </DetailField>
               <DetailField label="创建时间"><span className="chenxing-mono text-sm">{formatDate(event.client.created_at)}</span></DetailField>
-            </div>
-          </HudPanel>
-        ) : null}
-      </div>
-    </>
+            </DetailSection>
+          ) : null}
+        </div>
+      ) : null}
+    </Drawer>
   )
 }

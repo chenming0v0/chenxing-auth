@@ -503,6 +503,8 @@ describe('OAuthProvidersPanel 重试提示隔离（Issue #367）', () => {
     await openEditRow('GitLab')
     save()
     await waitFor(() => expect(requests.some((r) => r.method === 'PUT')).toBe(true))
+    // 编辑抽屉是模态层：打开期间背景被 aria-hidden，须等它关闭后再查背景里的重试按钮
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
 
     expect(screen.getByText(/Okta 已创建成功，但启用失败/)).toBeTruthy()
     expect(screen.getByRole('button', { name: '重试启用' })).toBeTruthy()

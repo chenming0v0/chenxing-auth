@@ -250,16 +250,16 @@ export function LandingPage() {
 
         <section id="landing-stats" className="mx-auto max-w-4xl scroll-mt-24 px-6 py-24">
           <Reveal>
-            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-[var(--chenxing-radius-lg)] border border-[rgba(255,255,255,0.10)] bg-[rgba(255,255,255,0.06)] sm:grid-cols-4">
+            <HudPanel className="cx-stat-grid !p-2">
               {stats.map((item) => (
-                <div key={item.label} className="cx-stat-cell bg-[rgba(6,10,20,0.82)] px-4 py-6 backdrop-blur-xl">
+                <div key={item.label} className="cx-stat-cell px-4 py-6">
                   <div className="cx-stat-value chenxing-mono text-2xl font-bold text-[var(--chenxing-foreground)] sm:text-[28px]">
                     <CountUp target={item.target} decimals={item.decimals ?? 0} suffix={item.suffix} grouping={item.grouping ?? false} />
                   </div>
                   <div className="chenxing-caption mt-1 text-[11px] tracking-wider">{item.label}</div>
                 </div>
               ))}
-            </div>
+            </HudPanel>
           </Reveal>
         </section>
 
@@ -277,7 +277,7 @@ export function LandingPage() {
             <div className="relative grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
               {steps.map((step, index) => (
                 <Reveal key={step.n} delay={index * 110}>
-                  <HudPanel className="cx-lift group h-full overflow-hidden">
+                  <HudPanel className="cx-lift group h-full">
                     <div className="chenxing-mono absolute right-4 top-2 text-[52px] font-bold text-[rgba(255,255,255,0.05)] transition-colors group-hover:text-[rgba(255,255,255,0.09)]">{step.n}</div>
                     <div className="relative">
                       <div className="mb-5 h-8 w-8 rounded-[var(--chenxing-radius-sm)] bg-[linear-gradient(135deg,rgba(56,189,248,0.55),rgba(103,232,249,0.3))] p-px">

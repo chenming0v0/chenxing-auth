@@ -229,6 +229,10 @@
 .chenxing-console-content {
   width: 100%;
 }
+/* 顶栏带二级分栏时，内容区为第二枚胶囊预留高度（尺寸由组件库 token 给出） */
+.chenxing-console-content.has-subnav {
+  padding-top: calc(1.5rem + var(--chenxing-topbar-subnav-space));
+}
 
 .cx-auth-tabs {
   display: flex;

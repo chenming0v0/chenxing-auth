@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from '../../router'
 import { apiFetch, type AuditEvent, type Paged } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Button, Icon, Notice, PageIntro } from '@chenxing/ui'
-import { DataTable, EmptyState, RowAction, RowActions, TablePanel, TablePagination } from '@chenxing/ui'
+import { DataTable, DataTableRow, EmptyState, RowAction, RowActions, TablePanel, TablePagination } from '@chenxing/ui'
 import { Select } from '@chenxing/ui'
 import { formatDate } from '../../data'
 import { AdminGate, parsePageParam, useAdminAccess } from './shared'
@@ -110,10 +110,10 @@ export function AuditTable() {
           ) : error ? null : '正在加载审计事件。'}
         >
           {result?.items.map((event, index) => (
-            <tr
+            <DataTableRow
               key={event.id ?? `${event.created_at}-${index}`}
-              className="cursor-pointer"
-              onClick={() => setDetail(event)}
+              label={`查看审计事件 ${event.action || ''} 详情`}
+              onOpen={() => setDetail(event)}
             >
               <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(event.created_at)}</td>
               <td><ActionBadge action={event.action || ''} /></td>
@@ -129,7 +129,7 @@ export function AuditTable() {
                   详情
                 </RowAction>
               </RowActions>
-            </tr>
+            </DataTableRow>
           ))}
         </DataTable>
         {result && result.total > 0 ? (
