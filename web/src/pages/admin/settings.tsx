@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { apiFetch, type KeyRotationResponse } from '../../api'
+import { replaceUrl, useLocation } from '../../router'
 import { ConsoleLayout } from '../../components/shells'
-import { Button, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
+import { Icon, Notice, PageIntro, TopbarSubnav, type TopbarSubnavItem } from '@chenxing/ui'
 import { AdminGate, useAdminAccess, type AdminAccess } from './shared'
 import { EmailPolicyPanel } from './settings/email-policy-panel'
 import { PasskeyPanel } from './settings/passkey-panel'
@@ -10,33 +10,74 @@ import { SessionLifetimePanel } from './settings/session-lifetime-panel'
 import { SmtpPanel } from './settings/smtp-panel'
 import { IssuerPanel } from './settings/issuer-panel'
 import { RegistrationPanel } from './settings/registration-panel'
+import { SigningKeyPanel } from './settings/signing-key-panel'
 import { useDraftLeaveGuard, useFlashMessage } from './settings/panel'
+
+export type SettingsTab = 'registration' | 'passkey' | 'email' | 'security' | 'session' | 'issuer'
+
+const TABS: readonly (TopbarSubnavItem<SettingsTab> & { description: string })[] = [
+  { value: 'registration', label: '注册', icon: 'user-plus', description: '公开注册与邮箱域名白名单' },
+  { value: 'passkey', label: 'Passkey', icon: 'fingerprint', description: 'WebAuthn 无密码登录' },
+  { value: 'email', label: '邮件', icon: 'send', description: 'SMTP 发信' },
+  { value: 'security', label: '安全策略', icon: 'shield', description: '限流阈值与签名密钥' },
+  { value: 'session', label: '会话', icon: 'clock-3', description: '登录保持时间' },
+  { value: 'issuer', label: '发行者', icon: 'globe-2', description: 'OIDC Issuer' },
+]
+
+/** 发行者分栏只对有 manage_issuer 的管理员出现 */
+export function settingsTabsFor(access: AdminAccess) {
+  const canManageIssuer = Boolean(access.data?.permissions.includes('manage_issuer'))
+  return TABS.filter((tab) => tab.value !== 'issuer' || canManageIssuer)
+}
+
+/** 分栏写在 ?tab= 里：刷新、分享、后退都停在同一分栏；非法值回落到第一个可见分栏。 */
+function useSettingsTab(access: AdminAccess) {
+  const location = useLocation()
+  const tabs = settingsTabsFor(access)
+  const requested = new URLSearchParams(location.search).get('tab')
+  const tab = tabs.find((item) => item.value === requested)?.value ?? tabs[0].value
+  /* 切分栏只是同页视图切换：用 replaceUrl，不进历史，也不触发未保存草稿的离开守卫 */
+  const select = useCallback((next: SettingsTab) => replaceUrl(`/admin/settings?tab=${next}`), [])
+  return { tabs, tab, select }
+}
 
 export function AdminSettings() {
   const access = useAdminAccess()
+  const { tabs, tab, select } = useSettingsTab(access)
+  const allowed = Boolean(access.data?.permissions.includes('manage_system_settings'))
+  const current = tabs.find((item) => item.value === tab)
   return (
-    <ConsoleLayout>
-      <PageIntro
-        eyebrow="// Admin · System"
-        title="系统设置"
-        description="配置辰星认证中枢的登录、邮件与安全策略。"
-      />
-      <p className="chenxing-caption mb-6 flex items-center gap-1.5 text-[var(--chenxing-warning)]">
-        <Icon name="lock" size={14} />
-        敏感凭证为只写字段，保存后不会回显；日志与列表均不返回明文或哈希。
-      </p>
-      <AdminGate access={access} permission="manage_system_settings">
-        <SettingsWorkspace access={access} />
-      </AdminGate>
+    <ConsoleLayout
+      subnav={allowed ? (
+        <TopbarSubnav label="系统设置分栏" items={tabs} value={tab} onChange={select} panelId={settingsPanelId} />
+      ) : undefined}
+    >
+      {/* 设置是表单阅读场景：收窄到 4xl 居中，长表单不再横跨整块宽屏 */}
+      <div className="mx-auto w-full max-w-4xl">
+        <PageIntro
+          eyebrow="// Admin · System"
+          title={current && allowed ? `系统设置 · ${current.label}` : '系统设置'}
+          description={current && allowed ? current.description : '配置辰星认证中枢的登录、邮件与安全策略。'}
+        />
+        <p className="chenxing-caption mb-6 flex items-center gap-1.5 text-[var(--chenxing-warning)]">
+          <Icon name="lock" size={14} />
+          敏感凭证为只写字段，保存后不会回显；日志与列表均不返回明文或哈希。
+        </p>
+        <AdminGate access={access} permission="manage_system_settings">
+          <SettingsWorkspace access={access} tab={tab} />
+        </AdminGate>
+      </div>
     </ConsoleLayout>
   )
 }
 
-export function SettingsWorkspace({ access }: { access: AdminAccess }) {
-  const [keyResult, setKeyResult] = useState<KeyRotationResponse | null>(null)
-  const [busy, setBusy] = useState(false)
-  const canManageIssuer = Boolean(access.data?.permissions.includes('manage_issuer'))
+export function settingsPanelId(tab: SettingsTab) {
+  return `settings-panel-${tab}`
+}
+
+export function SettingsWorkspace({ access, tab }: { access: AdminAccess; tab: SettingsTab }) {
   const canRotateKeys = Boolean(access.data?.permissions.includes('rotate_keys'))
+  const tabs = settingsTabsFor(access)
   /* flash 的引用跨渲染稳定，面板的加载 effect 不会因为消息状态变化而重跑（#268）。 */
   const { flash, message } = useFlashMessage()
 
@@ -61,57 +102,37 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
   const reportSessionLifetimeDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportIssuerDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportRegistrationDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
-  /* Issuer status is independent from registration settings permission. */
   /* 任一面板有草稿时，路由跳转与刷新/关页前都提示确认。 */
   useDraftLeaveGuard(dirty)
 
-  async function rotateKey() {
-    if (!canRotateKeys || !window.confirm('确认轮换签名密钥吗？\n轮换后新密钥立即用于签发；旧公钥会在 KEY_ROTATION_GRACE_SECONDS 配置的保留窗口内继续用于验签（该窗口需覆盖 Access Token 和 ID Token 有效期），过期的旧密钥材料将在后续启动或轮换时清理。')) return
-    setBusy(true)
-    try {
-      setKeyResult(await apiFetch<KeyRotationResponse>('/api/v1/admin/keys/rotate', { method: 'POST' }))
-      flash('签名密钥已轮换。')
-    } catch (reason) {
-      flash(reason instanceof Error ? reason.message : '签名密钥轮换失败。', 'warning')
-    } finally {
-      setBusy(false)
-    }
+  /* 所有分栏的面板始终挂载，只切换 hidden：卸载会让 useDirtyReport 把草稿标记清零，
+     离开守卫就会误放行，切回来时草稿也已丢失。 */
+  const panel = (value: SettingsTab, children: React.ReactNode) => {
+    const item = tabs.find((entry) => entry.value === value)
+    if (!item) return null
+    return (
+      /* 布局类放内层：Tailwind 的 display 工具类会压过 preflight 里零特异性的 [hidden] */
+      <section id={settingsPanelId(value)} role="tabpanel" aria-label={item.label} hidden={tab !== value}>
+        <div className="flex flex-col gap-6">{children}</div>
+      </section>
+    )
   }
 
   return (
     <div className="flex flex-col gap-6">
       {message ? <Notice tone={message.tone}>{message.text}</Notice> : null}
-      <PasskeyPanel onMessage={flash} onDirtyChange={reportPasskeyDirty} />
-      <EmailPolicyPanel onMessage={flash} onDirtyChange={reportEmailPolicyDirty} />
-      <SmtpPanel onMessage={flash} onDirtyChange={reportSmtpDirty} />
-      <SecurityLimitsPanel onMessage={flash} onDirtyChange={reportSecurityLimitsDirty} />
-      <SessionLifetimePanel onMessage={flash} onDirtyChange={reportSessionLifetimeDirty} />
-      {canManageIssuer ? <IssuerPanel onMessage={flash} onDirtyChange={reportIssuerDirty} /> : null}
-      <RegistrationPanel onMessage={flash} onDirtyChange={reportRegistrationDirty} />
-      <HudPanel>
-        <h2 className="chenxing-h2 flex items-center gap-2">
-          <Icon name="key-round" className="text-[var(--chenxing-cyan)]" size={18} />
-          签名密钥
-        </h2>
-        <p className="chenxing-caption mt-1.5">响应只返回 kid 和已发布公钥数量，不包含私钥材料。</p>
-        {keyResult ? (
-          <div className="mt-5 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.4)] px-4 py-3">
-              <p className="chenxing-label mb-1">当前 key_id</p>
-              <p className="chenxing-mono text-sm text-[var(--chenxing-ice)]">{keyResult.key_id}</p>
-            </div>
-            <div className="rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.4)] px-4 py-3">
-              <p className="chenxing-label mb-1">已发布公钥数量</p>
-              <p className="chenxing-display text-2xl">{keyResult.published_key_count}</p>
-            </div>
-          </div>
-        ) : null}
-        <div className="mt-5">
-          <Button variant="danger" icon="refresh-cw" disabled={!canRotateKeys || busy} onClick={() => void rotateKey()}>
-            {canRotateKeys ? '轮换签名密钥' : '缺少 rotate_keys 权限'}
-          </Button>
-        </div>
-      </HudPanel>
+      {panel('registration', <>
+        <RegistrationPanel onMessage={flash} onDirtyChange={reportRegistrationDirty} />
+        <EmailPolicyPanel onMessage={flash} onDirtyChange={reportEmailPolicyDirty} />
+      </>)}
+      {panel('passkey', <PasskeyPanel onMessage={flash} onDirtyChange={reportPasskeyDirty} />)}
+      {panel('email', <SmtpPanel onMessage={flash} onDirtyChange={reportSmtpDirty} />)}
+      {panel('security', <>
+        <SecurityLimitsPanel onMessage={flash} onDirtyChange={reportSecurityLimitsDirty} />
+        <SigningKeyPanel canRotate={canRotateKeys} onMessage={flash} />
+      </>)}
+      {panel('session', <SessionLifetimePanel onMessage={flash} onDirtyChange={reportSessionLifetimeDirty} />)}
+      {panel('issuer', <IssuerPanel onMessage={flash} onDirtyChange={reportIssuerDirty} />)}
     </div>
   )
 }

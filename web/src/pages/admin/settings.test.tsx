@@ -8,7 +8,7 @@ import type {
   SecurityLimitsSetting,
   SmtpSetting,
 } from '../../api'
-import { SettingsWorkspace } from './settings'
+import { SettingsWorkspace, type SettingsTab } from './settings'
 import { installCsrfCookie } from '../../test/csrf-cookie'
 
 // 保存、密钥轮换都是走 apiFetch 的状态变更请求，需要 CSRF cookie 才能发出。
@@ -124,17 +124,18 @@ afterEach(() => {
 
 const PERMISSIONS = ['manage_system_settings', 'manage_authentication_policy', 'rotate_keys']
 
-async function renderWorkspace(permissions: string[] = PERMISSIONS) {
-  render(
-    <SettingsWorkspace
-      access={{
-        data: { user_id: 7, username: 'star_owner', role: 'owner', permissions, status: 'active' },
-        loading: false,
-        error: '',
-      }}
-    />,
-  )
-  // 五个面板各自加载完成后才有表单可编辑。
+let showTab: (tab: SettingsTab) => void = () => {}
+
+async function renderWorkspace(permissions: string[] = PERMISSIONS, tab: SettingsTab = 'registration') {
+  const access = {
+    data: { user_id: 7, username: 'star_owner', role: 'owner' as const, permissions, status: 'active' },
+    loading: false,
+    error: '',
+  }
+  const view = render(<SettingsWorkspace access={access} tab={tab} />)
+  // 同一组件实例换 tab 重渲染：等价于用户在顶栏分栏里切换，面板状态必须保留
+  showTab = (next) => view.rerender(<SettingsWorkspace access={access} tab={next} />)
+  // 所有分栏的面板都常驻挂载（隐藏的也在），各自加载完成后才有表单可编辑。
   await screen.findByLabelText('SMTP 服务器地址')
   await screen.findByLabelText('服务显示名称')
   await screen.findByLabelText('未认证来源 QPS 上限')
@@ -167,7 +168,8 @@ function expectSingleLoadPerEndpoint() {
   expect(getCount('/api/v1/admin/settings/registration')).toBe(1)
 }
 
-function submitByButton(name: string) {
+function submitByButton(name: string, tab: SettingsTab) {
+  showTab(tab)
   const button = screen.getByRole('button', { name })
   fireEvent.submit(button.closest('form') as HTMLFormElement)
 }
@@ -182,7 +184,7 @@ describe('SettingsWorkspace 加载 effect 与消息状态解耦', () => {
     await renderWorkspace()
     fillDrafts()
 
-    submitByButton('保存邮箱域名白名单设置')
+    submitByButton('保存邮箱域名白名单设置', 'registration')
     // 消息条渲染即证明工作区已因消息状态重渲染过。
     await screen.findByText('邮箱域名白名单设置已保存。')
 
@@ -194,6 +196,7 @@ describe('SettingsWorkspace 加载 effect 与消息状态解耦', () => {
     await renderWorkspace()
     fillDrafts()
 
+    showTab('security')
     fireEvent.click(screen.getByRole('button', { name: '轮换签名密钥' }))
     await screen.findByText('签名密钥已轮换。')
 
@@ -206,7 +209,7 @@ describe('SettingsWorkspace 加载 effect 与消息状态解耦', () => {
     fillDrafts()
     // 安全限流面板本地校验失败 → warning 消息，且不发 PUT。
     fireEvent.change(field('单账户失败次数上限'), { target: { value: '0' } })
-    submitByButton('保存安全限流配置')
+    submitByButton('保存安全限流配置', 'security')
 
     await screen.findByText('「单账户失败次数上限」必须填写大于 0 的整数。')
     expect(requests.some((request) => request.method === 'PUT')).toBe(false)
@@ -218,7 +221,7 @@ describe('SettingsWorkspace 加载 effect 与消息状态解耦', () => {
   it('保存成功的面板自身会用服务端返回值刷新，不依赖重新 GET', async () => {
     await renderWorkspace()
     fireEvent.change(field('SMTP 服务器地址'), { target: { value: 'new.smtp.example' } })
-    submitByButton('保存 SMTP 设置')
+    submitByButton('保存 SMTP 设置', 'email')
 
     await screen.findByText('SMTP 设置已保存。')
     expect(field('SMTP 服务器地址').value).toBe('new.smtp.example')
@@ -238,5 +241,31 @@ describe('SettingsWorkspace 已迁出的面板', () => {
     expect(screen.getByText('注册要求邀请码')).toBeTruthy()
     expect(getCount('/api/v1/admin/oauth/providers')).toBe(0)
     expect(getCount('/api/v1/admin/registration-invitation-codes')).toBe(0)
+  })
+})
+
+describe('SettingsWorkspace 分栏', () => {
+  it('只显示当前分栏的面板，其它分栏隐藏但保持挂载', async () => {
+    await renderWorkspace(PERMISSIONS, 'email')
+    expect(screen.getByRole('tabpanel', { name: '邮件' })).toBeTruthy()
+    expect(screen.queryByRole('tabpanel', { name: 'Passkey' })).toBeNull()
+    expect(screen.getByRole('button', { name: '保存 SMTP 设置' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '保存安全限流配置' })).toBeNull()
+    expectSingleLoadPerEndpoint()
+  })
+
+  it('切换分栏不丢失其它分栏的未保存草稿', async () => {
+    await renderWorkspace()
+    fillDrafts()
+    showTab('passkey')
+    showTab('email')
+    showTab('security')
+    expectDraftsIntact()
+    expectSingleLoadPerEndpoint()
+  })
+
+  it('没有 manage_issuer 时不渲染发行者分栏面板', async () => {
+    await renderWorkspace()
+    expect(document.getElementById('settings-panel-issuer')).toBeNull()
   })
 })

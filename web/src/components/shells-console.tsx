@@ -145,7 +145,11 @@ function BottomNav() {
   )
 }
 
-export function ConsoleLayout({ children }: { children: ReactNode }) {
+/**
+ * 控制台布局。subnav 是页面的二级分栏（TopbarSubnav）：挂在顶栏主胶囊下方，
+ * 内容区按分栏高度下移，避免置顶时第二枚胶囊压住页头。
+ */
+export function ConsoleLayout({ children, subnav }: { children: ReactNode; subnav?: ReactNode }) {
   const location = useLocation()
   const status = pageStatus[location.pathname] || (location.pathname.startsWith('/admin') ? '管理' : '控制台')
   /* 跳过链接盖在最前（侧栏/顶栏之上），内容锚点放在内容列起点，
@@ -159,8 +163,8 @@ export function ConsoleLayout({ children }: { children: ReactNode }) {
         {/* sidebar already carries the brand lockup, so the topbar brand only
             appears once the bar condenses into its capsule
             所有区域入口（控制台/开发者/管理）都在 NavMenu 本体里，无需 menuExtra */}
-        <GlobalTopbar status={status} hideBrandWhenExpanded />
-        <div className="chenxing-console-content flex-1 px-4 py-6 pb-10 sm:px-6 lg:px-8">
+        <GlobalTopbar status={status} hideBrandWhenExpanded subnav={subnav} />
+        <div className={`chenxing-console-content flex-1 px-4 py-6 pb-10 sm:px-6 lg:px-8${subnav ? ' has-subnav' : ''}`}>
           <SkipTarget targetId={targetId} />
           {children}
         </div>
