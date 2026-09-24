@@ -1,6 +1,6 @@
 import type { WalletRedemptionCardSummary } from '../../../api'
 import { Badge, EmptyState } from '@chenxing/ui'
-import { DataTable, RowAction, RowActions } from '@chenxing/ui'
+import { DataTable, DataTableRow, RowAction, RowActions } from '@chenxing/ui'
 import { formatDate } from '../../../data'
 import { issuanceStatus, issuanceStatusTone } from './helpers'
 
@@ -23,10 +23,10 @@ export function WalletCardsTable({ cards, busyId, onDisable, onOpen }: Props) {
       {cards?.map((item) => {
         const status = issuanceStatus(item)
         return (
-          <tr
+          <DataTableRow
             key={item.id}
-            className="cursor-pointer"
-            onClick={() => onOpen(item)}
+            label={`查看兑换卡 #${item.id} 使用明细`}
+            onOpen={() => onOpen(item)}
           >
             <td className="chenxing-mono text-xs">#{item.id}</td>
             <td className="chenxing-body text-sm">{item.label || '—'}</td>
@@ -43,7 +43,7 @@ export function WalletCardsTable({ cards, busyId, onDisable, onOpen }: Props) {
                 停用
               </RowAction>
             </RowActions>
-          </tr>
+          </DataTableRow>
         )
       })}
     </DataTable>

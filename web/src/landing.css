@@ -61,12 +61,45 @@
   transform: translateY(0);
 }
 
-/* ---------- 数据横幅 ---------- */
+/* ---------- 数据横幅 ----------
+   玻璃外框就是标准 HudPanel（角标、blur、阴影都来自组件库），这里只负责
+   面板内部的四格排版：格子自带圆角，hover 底色不会顶出面板圆角，
+   也就不需要 overflow-hidden 去裁掉 HudPanel 的青色角标。 */
+.cx-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (min-width: 640px) {
+  .cx-stat-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
 .cx-stat-cell {
+  position: relative;
+  border-radius: var(--chenxing-radius-md);
   transition: background 0.35s ease, box-shadow 0.35s ease;
 }
+/* 格间竖向分隔线：窄屏两列只画在右列，宽屏四列画在除首格外的每格 */
+.cx-stat-cell:nth-child(even)::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 22%;
+  bottom: 22%;
+  width: 1px;
+  background: var(--chenxing-border);
+}
+@media (min-width: 640px) {
+  .cx-stat-cell:not(:first-child)::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 22%;
+    bottom: 22%;
+    width: 1px;
+    background: var(--chenxing-border);
+  }
+}
 .cx-stat-cell:hover {
-  background: rgba(13, 24, 44, 0.9);
+  background: rgba(255, 255, 255, 0.045);
   box-shadow: inset 0 0 32px rgba(56, 189, 248, 0.08);
 }
 .cx-stat-value {

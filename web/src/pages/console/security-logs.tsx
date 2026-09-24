@@ -1,26 +1,33 @@
 import { useEffect, useState } from 'react'
-import { Link, useLocation, useNavigate } from '../../router'
+import { useLocation, useNavigate } from '../../router'
 import { apiFetch, type Paged, type SecurityEvent } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { EmptyState, Icon, Notice, PageIntro } from '@chenxing/ui'
-import { DataTable, TablePagination, TablePanel } from '@chenxing/ui'
+import { Notice, PageIntro } from '@chenxing/ui'
+import { DataTable, DataTableRow, TablePagination, TablePanel } from '@chenxing/ui'
 import { formatDate } from '../../data'
 import { ActionBadge, PAGE_SIZE } from './security-logs-shared'
-import { SecurityLogDetail } from './security-log-detail'
+import { SecurityLogDetailDrawer } from './security-log-detail'
 
 type LoadState =
   | { kind: 'loading' }
   | { kind: 'ready'; data: Paged<SecurityEvent> }
   | { kind: 'error'; message: string }
 
-/** 列表与详情共用一条路由：`/console/logs?id=<事件id>` 展示详情，无 id 展示列表。 */
+/**
+ * 列表与详情共用一条路由：`/console/logs?id=<事件id>` 在列表之上打开详情抽屉。
+ * 保留 ?id= 深链（旧链接、刷新、分享仍然可用），但详情不再是整页替换列表——
+ * 表格行详情统一走 Drawer，关闭抽屉回到原来的页码。
+ */
 export function SecurityLogsPage() {
   const location = useLocation()
+  const navigate = useNavigate()
   const rawDetailId = new URLSearchParams(location.search).get('id') ?? ''
   const detailId = /^\d+$/.test(rawDetailId) ? Number(rawDetailId) : NaN
+  const hasDetail = Number.isSafeInteger(detailId) && detailId > 0
   return (
     <ConsoleLayout>
-      {Number.isSafeInteger(detailId) && detailId > 0 ? <SecurityLogDetail id={detailId} /> : <SecurityLogList />}
+      <SecurityLogList />
+      {hasDetail ? <SecurityLogDetailDrawer id={detailId} onClose={() => navigate('/console/logs')} /> : null}
     </ConsoleLayout>
   )
 }
@@ -72,78 +79,26 @@ function SecurityLogList() {
           ) : null
         }
       >
-        {/* 桌面端：表格，整行可点进详情 */}
-        <div className="hidden sm:block">
-          <DataTable
-            minWidth={680}
-            columns={['时间', '事件', '应用', '资源', { label: '', align: 'right', key: 'detail' }]}
-            empty={result?.items.length
-              ? null
-              : state.kind === 'loading'
-                ? '正在加载活动记录。'
-                : state.kind === 'error'
-                  ? '无法加载活动记录。'
-                  : '暂无活动记录。'}
-          >
-            {result?.items.map((event) => (
-              <tr key={event.id} className="cursor-pointer" onClick={() => navigate(detailPath(event))}>
-                <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(event.created_at)}</td>
-                <td><ActionBadge action={event.action} /></td>
-                <td className="chenxing-body text-sm">{event.client_name || (event.client_id ? <span className="chenxing-mono text-xs">{event.client_id}</span> : '—')}</td>
-                <td><span className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{event.resource_type || '—'}</span></td>
-                <td className="text-right">
-                  <Link
-                    to={detailPath(event)}
-                    className="inline-flex items-center gap-1 text-[var(--chenxing-muted-foreground)] transition-colors hover:text-[var(--chenxing-cyan)]"
-                    aria-label={`查看日志 #${event.id} 详情`}
-                    onClick={(clickEvent) => clickEvent.stopPropagation()}
-                  >
-                    <Icon name="arrow-right" size={14} />
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </DataTable>
-        </div>
-        {/* 移动端：键值卡片列表（newapi 风格），与桌面表格同一数据源 */}
-        <div className="mt-5 space-y-3 sm:hidden">
+        <DataTable
+          minWidth={620}
+          columns={['时间', '事件', '应用', '资源']}
+          empty={result?.items.length
+            ? null
+            : state.kind === 'loading'
+              ? '正在加载活动记录。'
+              : state.kind === 'error'
+                ? '无法加载活动记录。'
+                : '暂无活动记录。'}
+        >
           {result?.items.map((event) => (
-            <Link
-              key={event.id}
-              to={detailPath(event)}
-              className="block rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(255,255,255,0.02)] p-4 transition-colors active:border-[var(--chenxing-cyan)]"
-              aria-label={`查看日志 #${event.id} 详情`}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <ActionBadge action={event.action} />
-                <span className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(event.created_at)}</span>
-              </div>
-              <dl className="mt-3 space-y-2">
-                <div className="flex items-center justify-between gap-3">
-                  <dt className="chenxing-caption">应用</dt>
-                  <dd className="chenxing-body min-w-0 truncate text-right text-sm">{event.client_name || event.client_id || '—'}</dd>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <dt className="chenxing-caption">资源</dt>
-                  <dd className="chenxing-mono text-right text-xs text-[var(--chenxing-muted-foreground)]">{event.resource_type || '—'}</dd>
-                </div>
-              </dl>
-              <p className="chenxing-caption mt-3 flex items-center justify-end gap-1 text-[var(--chenxing-cyan)]">
-                详情 <Icon name="arrow-right" size={12} />
-              </p>
-            </Link>
+            <DataTableRow key={event.id} label={`查看日志 #${event.id} 详情`} onOpen={() => navigate(detailPath(event))}>
+              <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(event.created_at)}</td>
+              <td><ActionBadge action={event.action} /></td>
+              <td className="chenxing-body text-sm">{event.client_name || (event.client_id ? <span className="chenxing-mono text-xs">{event.client_id}</span> : '—')}</td>
+              <td><span className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{event.resource_type || '—'}</span></td>
+            </DataTableRow>
           ))}
-          {!result?.items.length ? (
-            <EmptyState
-              icon="activity"
-              title={state.kind === 'loading'
-                ? '正在加载活动记录。'
-                : state.kind === 'error'
-                  ? '无法加载活动记录'
-                  : '暂无活动记录'}
-            />
-          ) : null}
-        </div>
+        </DataTable>
         {result && result.total > result.page_size ? (
           <TablePagination page={page} totalPages={totalPages} total={result.total} onPageChange={setPage} />
         ) : null}

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from '../../router'
 import { type OwnedOAuthClient } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
+import { Badge, Button, Chip, CopyValue, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '@chenxing/ui'
 import { SelectField } from '@chenxing/ui'
 import { entitlementState, listAllOwnedOAuthClients, useEntitlements } from './shared'
 
@@ -160,13 +160,9 @@ export function PlaygroundPage() {
 
           {result ? (
             <div className="mt-5">
-              <div className="flex items-center justify-between">
-                <label className="chenxing-label mb-0">Authorize URL</label>
-                <button type="button" className="chenxing-link inline-flex items-center gap-1.5" onClick={() => void navigator.clipboard?.writeText(result.url)}>
-                  <Icon name="copy" size={16} />复制
-                </button>
-              </div>
-              <pre className="chenxing-mono mt-2 overflow-x-auto rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.7)] p-4 text-xs leading-relaxed text-[var(--chenxing-ice)]">{result.url}</pre>
+              {/* 整行即复制按钮（组件库 CopyValue），不再是「横向滚动的 pre + 远处的复制链接」 */}
+              <p className="chenxing-label">Authorize URL</p>
+              <div className="mt-2"><CopyValue value={result.url} ariaLabel="复制 Authorize URL" /></div>
               <div className="mt-6 flex flex-wrap items-center gap-3">
                 <a className="chenxing-btn-primary" href={result.url} target="_blank" rel="noreferrer"><Icon name="send" size={16} />打开授权端点</a>
                 <Chip>state · {result.state.slice(0, 8)}</Chip>
