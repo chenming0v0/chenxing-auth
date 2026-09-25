@@ -4,7 +4,8 @@ use crate::users::domain::UserId;
 #[path = "repository_asset_links.rs"]
 mod asset_links;
 pub use asset_links::{
-    delete_client_app_link, list_client_app_links, list_declared_app_links, upsert_client_app_link,
+    delete_client_app_link, find_active_client_app_link, list_client_app_links,
+    list_declared_app_links, upsert_client_app_link,
 };
 
 #[path = "repository_core.rs"]

@@ -35,6 +35,7 @@ impl ClientService {
             client_uri: client.client_uri,
             description: client.description,
             numeric_app_id: client.numeric_app_id,
+            android_package: client.android_asset_link.map(|link| link.package_name),
             quota_exempt: client.quota_exempt,
         }))
     }

@@ -12,6 +12,7 @@ import {
 import { OAuthShell } from '../components/shells'
 import { BrandMark, HudPanel, Icon, Notice } from '@chenxing/ui'
 import { initialOf } from '../data'
+import { appLaunchTarget } from '../android-intent'
 import { permissionMeta } from '../oauth-permissions'
 import { safeRedirectTarget } from '../safe-redirect'
 import { OAuthHandoffView, type OAuthHandoffDecision } from './oauth-handoff'
@@ -249,9 +250,11 @@ function OAuthConsentContent({ requestId, onHandoff }: {
       // 跳出前先抹掉地址栏与历史中的 request_id（#196），再交给第三方；
       // 顺序不能反：assign 发出的 Referer 与留在历史栈里的条目都取自跳转瞬间的 URL。
       // 交接态与抹地址同批提交，回调页加载完成前展示的是「正在返回」而不是假错误。
+      // Android 同源 App Link 改走 intent://（android-intent.ts），仍是这一次 assign。
+      const launch = appLaunchTarget(target, pending?.android_package)
       onHandoff(decision)
       scrubLocationQuery()
-      window.location.assign(target)
+      window.location.assign(launch)
     } catch (error) {
       if (controller.signal.aborted) return
       setMessage(error instanceof Error ? error.message : '授权请求处理失败。')

@@ -41,6 +41,7 @@ fn authorization_code_from_request(
             client_uri: None,
             description: None,
             numeric_app_id: 1,
+            android_package: None,
             quota_exempt: false,
         },
         AuthorizationRequest {

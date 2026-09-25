@@ -584,12 +584,12 @@ fn openapi_paths_match_all_static_axum_routes() {
     let paths = openapi_paths();
     assert_eq!(
         routes.len(),
-        130,
+        131,
         "route inventory changed; review contract"
     );
     assert_eq!(
         paths.len(),
-        130,
+        131,
         "OpenAPI path inventory changed; review contract"
     );
     assert_eq!(routes, paths, "Axum and OpenAPI path inventories diverged");

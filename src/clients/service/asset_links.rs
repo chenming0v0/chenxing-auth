@@ -95,4 +95,18 @@ impl ClientService {
             })
             .collect())
     }
+
+    /// 公开读取：某个 active Client 已发布的 Android 包名。
+    ///
+    /// 没有对应的 active Client，或该 Client 没有声明时返回 `None`。
+    pub async fn active_app_link_package(
+        &self,
+        numeric_app_id: i64,
+    ) -> Result<Option<String>, ClientServiceError> {
+        Ok(
+            repository::find_active_client_app_link(&self.pool, numeric_app_id)
+                .await?
+                .map(|link| link.package_name),
+        )
+    }
 }

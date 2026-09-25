@@ -105,6 +105,50 @@ describe('OAuthConsentPage 决策成功后的交接态', () => {
     expect(screen.queryByText('授权请求缺少 request_id，请重新发起。')).toBeNull()
   })
 
+  function renderApprove(userAgent: string, redirectTo: string, androidPackage: string | null) {
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(userAgent)
+    window.history.replaceState({}, '', '/oauth/consent?request_id=req-123')
+    const assign = stubAssignKeepingLiveLocation()
+    vi.stubGlobal('fetch', (_path: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && String(init.body).includes('decision')) {
+        return Promise.resolve(jsonResponse({ decision: 'approve', redirect_to: redirectTo }))
+      }
+      if (init?.method === 'POST') return Promise.resolve(jsonResponse(null, 204))
+      return Promise.resolve(jsonResponse({ ...PENDING, android_package: androidPackage }))
+    })
+    render(<OAuthConsentPage />)
+    return assign
+  }
+
+  it('Android 且带包名时，交接态仍是正在返回，assign 的是 intent URL', async () => {
+    const redirectTo = 'https://issuer.example.test/app/7/oauth/callback?code=secret&state=xyz'
+    const assign = renderApprove(
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      redirectTo,
+      'com.example.app',
+    )
+    fireEvent.click(await screen.findByRole('button', { name: '允许' }))
+
+    const intent = `intent://issuer.example.test/app/7/oauth/callback?code=secret&state=xyz#Intent;scheme=https;package=com.example.app;S.browser_fallback_url=${encodeURIComponent(redirectTo)};end`
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(intent))
+    expect(window.location.search).toBe('')
+    expect(await screen.findByText('授权完成 · 正在返回接入应用')).toBeTruthy()
+    expect(screen.queryByText('授权请求缺少 request_id，请重新发起。')).toBeNull()
+  })
+
+  it('非 Android 即使带 android_package 也 assign https', async () => {
+    const redirectTo = 'https://issuer.example.test/app/7/oauth/callback?code=secret&state=xyz'
+    const assign = renderApprove(
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      redirectTo,
+      'com.example.app',
+    )
+    fireEvent.click(await screen.findByRole('button', { name: '允许' }))
+
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(redirectTo))
+    expect(await screen.findByText('授权完成 · 正在返回接入应用')).toBeTruthy()
+  })
+
   it('原本就没有 request_id 时仍提示缺少参数', async () => {
     window.history.replaceState({}, '', '/oauth/consent')
     vi.stubGlobal('fetch', () => Promise.resolve(jsonResponse(PENDING)))

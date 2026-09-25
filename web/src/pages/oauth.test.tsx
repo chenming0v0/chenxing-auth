@@ -149,6 +149,59 @@ describe('OAuthConsentPage 跳转第三方前清理 request_id（#196）', () =>
   })
 })
 
+describe('OAuthConsentPage 在 Android 上用 intent:// 拉起同源 App Link', () => {
+  const redirectTo = 'https://issuer.example.test/app/7/oauth/callback?code=secret-code&state=xyz'
+  const androidUa = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
+  const desktopUa = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+  function approve(pending: PendingAuthorization, userAgent: string) {
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(userAgent)
+    window.history.replaceState({}, '', '/oauth/consent?request_id=req-123')
+    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {})
+    const assign = stubLocationAssign()
+    vi.stubGlobal('fetch', (_path: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ decision: 'approve', redirect_to: redirectTo }))
+      }
+      return Promise.resolve(jsonResponse(pending))
+    })
+    render(<OAuthConsentPage />)
+    return { assign, replaceState }
+  }
+
+  it('Android 且带 android_package 时，先抹掉 request_id，再 assign intent URL', async () => {
+    const { assign, replaceState } = approve({ ...PENDING, android_package: 'com.example.app' }, androidUa)
+    const events: string[] = []
+    replaceState.mockImplementation(() => { events.push('scrub') })
+    assign.mockImplementation(() => { events.push('assign') })
+    fireEvent.click(await screen.findByRole('button', { name: '允许' }))
+
+    const intent = [
+      'intent://issuer.example.test/app/7/oauth/callback?code=secret-code&state=xyz',
+      '#Intent;scheme=https;package=com.example.app;S.browser_fallback_url=',
+      encodeURIComponent(redirectTo),
+      ';end',
+    ].join('')
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(intent))
+    expect(events).toEqual(['scrub', 'assign'])
+    expect(replaceState).toHaveBeenCalledWith(
+      expect.objectContaining({ [HISTORY_INDEX]: expect.any(Number) }), '', '/oauth/consent',
+    )
+  })
+
+  it('非 Android 即使带 android_package 也原样跳 https', async () => {
+    const { assign } = approve({ ...PENDING, android_package: 'com.example.app' }, desktopUa)
+    fireEvent.click(await screen.findByRole('button', { name: '允许' }))
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(redirectTo))
+  })
+
+  it('Android 上没有包名时仍跳 https', async () => {
+    const { assign } = approve({ ...PENDING, android_package: null }, androidUa)
+    fireEvent.click(await screen.findByRole('button', { name: '允许' }))
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(redirectTo))
+  })
+})
+
 describe('OAuthAccountPage 使用其他辰星通行证保留 request_id（#224）', () => {
   it('跳转登录页时保留当前 request_id，并只编码一次', async () => {
     const requestId = 'req/with?reserved=1&provider=github'
