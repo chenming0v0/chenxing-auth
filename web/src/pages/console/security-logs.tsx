@@ -35,6 +35,7 @@ export function SecurityLogsPage() {
 function SecurityLogList() {
   const navigate = useNavigate()
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZE)
   const [state, setState] = useState<LoadState>({ kind: 'loading' })
 
   useEffect(() => {
@@ -49,14 +50,14 @@ function SecurityLogList() {
       if (page > totalPages) { setPage(totalPages); return }
       setState({ kind: 'ready', data })
     }
-    void apiFetch<Paged<SecurityEvent>>(`/api/v1/auth/security-events?page=${page}&page_size=${PAGE_SIZE}`)
+    void apiFetch<Paged<SecurityEvent>>(`/api/v1/auth/security-events?page=${page}&page_size=${pageSize}`)
       .then(apply)
       .catch((reason: unknown) => {
         if (!active) return
         setState({ kind: 'error', message: reason instanceof Error ? reason.message : '安全日志加载失败。' })
       })
     return () => { active = false }
-  }, [page])
+  }, [page, pageSize])
 
   const result = state.kind === 'ready' ? state.data : null
   const totalPages = result ? Math.max(1, Math.ceil(result.total / result.page_size)) : 1
@@ -99,8 +100,15 @@ function SecurityLogList() {
             </DataTableRow>
           ))}
         </DataTable>
-        {result && result.total > result.page_size ? (
-          <TablePagination page={page} totalPages={totalPages} total={result.total} onPageChange={setPage} />
+        {result && result.total > 0 ? (
+          <TablePagination
+          page={page}
+          totalPages={totalPages}
+          total={result.total}
+          pageSize={pageSize}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => { setPageSize(size); setPage(1) }}
+        />
         ) : null}
       </TablePanel>
     </>

@@ -9,6 +9,15 @@ export function parsePageParam(value: string | null): number {
   return Number.isFinite(page) && Number.isInteger(page) && page >= 1 ? page : 1
 }
 
+/** 表格分页的每页条数：URL 里的 page_size 只接受这几档，其余一律回落默认值 */
+export const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const
+export const DEFAULT_PAGE_SIZE = 20
+
+export function parsePageSizeParam(value: string | null): number {
+  const size = Number(value)
+  return (PAGE_SIZE_OPTIONS as readonly number[]).includes(size) ? size : DEFAULT_PAGE_SIZE
+}
+
 export function useAdminAccess(): AdminAccess {
   const [data, setData] = useState<AdminMeResponse | null>(null)
   const [error, setError] = useState('')

@@ -89,12 +89,12 @@ describe('SecurityLogsPage', () => {
       .mockResolvedValueOnce(sampleEvents)
 
     render(<SecurityLogsPage />)
-    await screen.findByText('第 1 / 3 页 · 共 47 条')
+    await screen.findByText('显示第 1 条 - 第 20 条，共 47 条')
     fireEvent.click(screen.getByRole('button', { name: '下一页' }))
 
     await screen.findByText('共 4 条')
     expect(screen.queryByText('暂无活动记录。')).toBeNull()
-    expect(screen.queryByText('第 2 / 1 页')).toBeNull()
+    expect(screen.getByText('显示第 1 条 - 第 4 条，共 4 条')).toBeTruthy()
     expect(await screen.findAllByText('登录')).toHaveLength(1)
     await waitFor(() => {
       expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events?page=2&page_size=20')

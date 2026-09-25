@@ -8,7 +8,7 @@ import { Avatar, Badge, Button, EmptyState, Icon, Notice, PageIntro, SearchField
 import { DataTable, RowAction, RowActions, TablePanel, TablePagination } from '@chenxing/ui'
 import { Select } from '@chenxing/ui'
 import { formatDate } from '../../data'
-import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
+import { AdminGate, DEFAULT_PAGE_SIZE, parsePageParam, parsePageSizeParam, useAdminAccess, type AdminAccess } from './shared'
 import { AssignPlanDrawer } from './plan-assign'
 import { UserCreateDrawer } from './user-create-drawer'
 import { UserCreditDrawer } from './user-credit-drawer'
@@ -40,7 +40,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
   const [creditTarget, setCreditTarget] = useState<number | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [created, setCreated] = useState<PublicUser | null>(null)
-  const pageSize = 20
+  const pageSize = parsePageSizeParam(params.get('page_size'))
 
   useEffect(() => {
     const current = new URLSearchParams(location.search)
@@ -49,13 +49,14 @@ export function UsersTable({ access }: { access: AdminAccess }) {
     setPage(parsePageParam(current.get('page')))
   }, [location.search])
 
-  const updateQuery = (nextPage = page) => {
+  const updateQuery = (nextPage = page, nextSize = pageSize) => {
     // 换页或改查询条件后，建号成功提示指向的行可能已不在当前结果里，先收掉。
     setCreated(null)
     const next = new URLSearchParams()
     if (search) next.set('search', search)
     if (status) next.set('status', status)
     next.set('page', String(nextPage))
+    if (nextSize !== DEFAULT_PAGE_SIZE) next.set('page_size', String(nextSize))
     navigate(`/admin/users?${next.toString()}`)
   }
 
@@ -242,7 +243,15 @@ export function UsersTable({ access }: { access: AdminAccess }) {
           })}
         </DataTable>
         {result && result.total > 0 ? (
-          <TablePagination page={page} totalPages={totalPages} total={result.total} onPageChange={updateQuery} />
+          <TablePagination
+          page={page}
+          totalPages={totalPages}
+          total={result.total}
+          pageSize={pageSize}
+          onPageChange={(next) => updateQuery(next)}
+          /* 换每页条数后原页码失去意义，回到第一页 */
+          onPageSizeChange={(size) => updateQuery(1, size)}
+        />
         ) : null}
       {createOpen ? (
         <UserCreateDrawer

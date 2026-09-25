@@ -8,7 +8,7 @@ import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, EmptyState, Notice, PageIntro, SearchField } from '@chenxing/ui'
 import { DataTable, RowAction, RowActions, TablePanel, TablePagination } from '@chenxing/ui'
 import { formatDate, initialOf } from '../../data'
-import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
+import { AdminGate, DEFAULT_PAGE_SIZE, parsePageParam, parsePageSizeParam, useAdminAccess, type AdminAccess } from './shared'
 
 export function AdminClients() {
   const access = useAdminAccess()
@@ -31,7 +31,7 @@ export function ClientsTable({ access }: { access: AdminAccess }) {
   // 行级 busy：多行操作可同时在途，先完成的行只清除自己的标记，不会像单值 busy 那样提前解禁其他行
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set())
   const [refreshKey, setRefreshKey] = useState(0)
-  const pageSize = 20
+  const pageSize = parsePageSizeParam(params.get('page_size'))
 
   useEffect(() => {
     const current = new URLSearchParams(location.search)
@@ -39,10 +39,11 @@ export function ClientsTable({ access }: { access: AdminAccess }) {
     setPage(parsePageParam(current.get('page')))
   }, [location.search])
 
-  const updateQuery = (nextPage = page) => {
+  const updateQuery = (nextPage = page, nextSize = pageSize) => {
     const next = new URLSearchParams()
     if (search) next.set('search', search)
     next.set('page', String(nextPage))
+    if (nextSize !== DEFAULT_PAGE_SIZE) next.set('page_size', String(nextSize))
     navigate(`/admin/clients?${next.toString()}`)
   }
 
@@ -155,7 +156,15 @@ export function ClientsTable({ access }: { access: AdminAccess }) {
         ))}
       </DataTable>
       {result && result.total > 0 ? (
-        <TablePagination page={page} totalPages={totalPages} total={result.total} onPageChange={updateQuery} />
+        <TablePagination
+          page={page}
+          totalPages={totalPages}
+          total={result.total}
+          pageSize={pageSize}
+          onPageChange={(next) => updateQuery(next)}
+          /* 换每页条数后原页码失去意义，回到第一页 */
+          onPageSizeChange={(size) => updateQuery(1, size)}
+        />
       ) : null}
     </TablePanel>
   )

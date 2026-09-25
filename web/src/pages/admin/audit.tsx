@@ -6,7 +6,7 @@ import { Button, Icon, Notice, PageIntro } from '@chenxing/ui'
 import { DataTable, DataTableRow, EmptyState, RowAction, RowActions, TablePanel, TablePagination } from '@chenxing/ui'
 import { Select } from '@chenxing/ui'
 import { formatDate } from '../../data'
-import { AdminGate, parsePageParam, useAdminAccess } from './shared'
+import { AdminGate, DEFAULT_PAGE_SIZE, parsePageParam, parsePageSizeParam, useAdminAccess } from './shared'
 import { AuditDetailDrawer } from './audit-detail-drawer'
 import {
   ACTION_FILTER_OPTIONS, ActionBadge, RESOURCE_FILTER_OPTIONS, SeverityBadge,
@@ -37,13 +37,14 @@ export function AuditTable() {
   const [result, setResult] = useState<Paged<AuditEvent> | null>(null)
   const [error, setError] = useState('')
   const [detail, setDetail] = useState<AuditEvent | null>(null)
-  const pageSize = 20
+  const pageSize = parsePageSizeParam(params.get('page_size'))
 
-  const updateQuery = (nextPage = page) => {
+  const updateQuery = (nextPage = page, nextSize = pageSize) => {
     const next = new URLSearchParams()
     if (action) next.set('action', action)
     if (resourceType) next.set('resource_type', resourceType)
     next.set('page', String(nextPage))
+    if (nextSize !== DEFAULT_PAGE_SIZE) next.set('page_size', String(nextSize))
     navigate(`/admin/audit?${next.toString()}`)
   }
 
@@ -133,7 +134,15 @@ export function AuditTable() {
           ))}
         </DataTable>
         {result && result.total > 0 ? (
-          <TablePagination page={page} totalPages={totalPages} total={result.total} onPageChange={updateQuery} />
+          <TablePagination
+          page={page}
+          totalPages={totalPages}
+          total={result.total}
+          pageSize={pageSize}
+          onPageChange={(next) => updateQuery(next)}
+          /* 换每页条数后原页码失去意义，回到第一页 */
+          onPageSizeChange={(size) => updateQuery(1, size)}
+        />
         ) : null}
       </TablePanel>
       {detail ? <AuditDetailDrawer event={detail} onClose={() => setDetail(null)} /> : null}
