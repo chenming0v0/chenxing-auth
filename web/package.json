@@ -11,7 +11,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@chenxing/ui": "git+https://github.com/chenming0v0/chenxing-ui.git#33d0679d221d53310b1a4bf024658981e227dc80",
+    "@chenxing/ui": "git+https://github.com/chenming0v0/chenxing-ui.git#9d3a1d9c50e85c74c3659b6525fc82db1e491cd9",
     "@vitejs/plugin-react": "latest",
     "lucide-react": "latest",
     "qrcode": "^1.5.4",

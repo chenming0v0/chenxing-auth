@@ -14,6 +14,7 @@ import { BrandMark, HudPanel, Icon, Notice } from '@chenxing/ui'
 import { initialOf } from '../data'
 import { permissionMeta } from '../oauth-permissions'
 import { safeRedirectTarget } from '../safe-redirect'
+import { OAuthHandoffView, type OAuthHandoffDecision } from './oauth-handoff'
 
 function useRequestId(): string | null {
   return new URLSearchParams(useLocation().search).get('request_id')
@@ -197,14 +198,22 @@ function OAuthAccountContent({ requestId }: { requestId: string | null }) {
 
 export function OAuthConsentPage() {
   const requestId = useRequestId()
+  // 决策成功后跳转前会抹掉 request_id（#196），内层确认页随之以 'no-request'
+  // 重挂载并误报「缺少 request_id」。交接态放在 key 之外，只在地址已无 request_id
+  // 时接管渲染；地址换成新的 request_id 时照常展示新请求。
+  const [handoff, setHandoff] = useState<OAuthHandoffDecision | null>(null)
+  if (handoff && !requestId) return <OAuthHandoffView decision={handoff} />
   // #330：与 OAuthAccountPage 同理，requestId 变化时重挂载内层组件，让
   // pending/message/submitting 与进行中的 decide 一并随旧实例销毁；否则旧请求
   // 的同意信息会在新请求加载期间继续展示（consent spoofing），且 A 上的
   // submitting 会永久禁用 B 的按钮。
-  return <OAuthConsentContent key={requestId ?? 'no-request'} requestId={requestId} />
+  return <OAuthConsentContent key={requestId ?? 'no-request'} requestId={requestId} onHandoff={setHandoff} />
 }
 
-function OAuthConsentContent({ requestId }: { requestId: string | null }) {
+function OAuthConsentContent({ requestId, onHandoff }: {
+  requestId: string | null
+  onHandoff: (decision: OAuthHandoffDecision) => void
+}) {
   const { user } = useAuth()
   const { pending, message, setMessage } = usePendingAuthorization(requestId)
   const [submitting, setSubmitting] = useState(false)
@@ -239,6 +248,8 @@ function OAuthConsentContent({ requestId }: { requestId: string | null }) {
       }
       // 跳出前先抹掉地址栏与历史中的 request_id（#196），再交给第三方；
       // 顺序不能反：assign 发出的 Referer 与留在历史栈里的条目都取自跳转瞬间的 URL。
+      // 交接态与抹地址同批提交，回调页加载完成前展示的是「正在返回」而不是假错误。
+      onHandoff(decision)
       scrubLocationQuery()
       window.location.assign(target)
     } catch (error) {

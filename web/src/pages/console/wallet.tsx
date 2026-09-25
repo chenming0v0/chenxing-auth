@@ -227,6 +227,7 @@ function WalletSubscriptionPanel({ planState, onPurchase }: {
 
 function WalletLedger({ refreshKey, onTotal }: { refreshKey: number; onTotal: (total: number) => void }) {
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZE)
   const [result, setResult] = useState<Paged<WalletLedgerEntry> | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -234,7 +235,7 @@ function WalletLedger({ refreshKey, onTotal }: { refreshKey: number; onTotal: (t
   useEffect(() => {
     let active = true
     setLoading(true)
-    void apiFetch<Paged<WalletLedgerEntry>>(`/api/v1/auth/wallet/ledger?page=${page}&page_size=${PAGE_SIZE}`)
+    void apiFetch<Paged<WalletLedgerEntry>>(`/api/v1/auth/wallet/ledger?page=${page}&page_size=${pageSize}`)
       .then((data) => {
         if (!active) return
         const totalPages = Math.max(1, Math.ceil(data.total / data.page_size))
@@ -250,7 +251,7 @@ function WalletLedger({ refreshKey, onTotal }: { refreshKey: number; onTotal: (t
     return () => { active = false }
     // onTotal 是父组件的 setState，引用稳定，不列入依赖以避免无谓重跑。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, refreshKey])
+  }, [page, pageSize, refreshKey])
 
   const totalPages = result ? Math.max(1, Math.ceil(result.total / result.page_size)) : 1
 
@@ -284,7 +285,14 @@ function WalletLedger({ refreshKey, onTotal }: { refreshKey: number; onTotal: (t
         ))}
       </DataTable>
       {result && result.total > 0 ? (
-        <TablePagination page={page} totalPages={totalPages} total={result.total} onPageChange={setPage} />
+        <TablePagination
+          page={page}
+          totalPages={totalPages}
+          total={result.total}
+          pageSize={pageSize}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => { setPageSize(size); setPage(1) }}
+        />
       ) : null}
     </TablePanel>
   )

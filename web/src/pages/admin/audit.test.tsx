@@ -79,10 +79,10 @@ describe('AuditTable 页码收敛（#672）', () => {
     })
 
     render(<AuditTable />)
-    await screen.findByText('第 2 / 3 页 · 共 41 条')
+    await screen.findByText('显示第 21 条 - 第 40 条，共 41 条')
     fireEvent.click(screen.getByRole('button', { name: '下一页' }))
 
-    expect(await screen.findByText('第 2 / 2 页 · 共 21 条')).toBeTruthy()
+    expect(await screen.findByText('显示第 21 条 - 第 21 条，共 21 条')).toBeTruthy()
     expect(queries.map(queryPage)).toEqual(['2', '3', '2'])
     expect(window.location.search).toBe('?action=login&resource_type=session&page=2')
     expect(replaceState).toHaveBeenCalledWith(
