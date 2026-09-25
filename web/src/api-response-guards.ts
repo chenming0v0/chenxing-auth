@@ -175,6 +175,10 @@ function isPendingAuthorizationResponse(value: unknown): value is PendingAuthori
     && isStringArray(value.scopes)
     && typeof value.expires_in === 'number'
     && Number.isFinite(value.expires_in)
+    // 缺省和 null 都是「没有包名」。其他类型拒绝整份响应，避免非字符串流进 intent://。
+    && (value.android_package === undefined
+      || value.android_package === null
+      || typeof value.android_package === 'string')
 }
 
 function isAuthorizationDecisionResponse(value: unknown): value is AuthorizationDecisionResponse {

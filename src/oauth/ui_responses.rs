@@ -12,6 +12,8 @@ pub(super) struct PendingRequestResponse {
     pub(super) logo_uri: Option<String>,
     pub(super) client_uri: Option<String>,
     pub(super) description: Option<String>,
+    /// 本 Issuer 主机上的 App Link 回调，且 Client 已发布 Android 声明时才有值。
+    pub(super) android_package: Option<String>,
 }
 
 impl fmt::Debug for PendingRequestResponse {
@@ -27,6 +29,7 @@ impl fmt::Debug for PendingRequestResponse {
             .field("logo_uri", &self.logo_uri)
             .field("client_uri", &self.client_uri)
             .field("description", &self.description)
+            .field("android_package", &self.android_package)
             .finish()
     }
 }

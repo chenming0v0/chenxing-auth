@@ -504,6 +504,8 @@ export type PendingAuthorization = {
   logo_uri?: string | null
   client_uri?: string | null
   description?: string | null
+  // 旧响应可能没有该字段；null 与缺省都表示不用 intent://。
+  android_package?: string | null
 }
 export type AuthorizationDecisionResponse = {
   decision: 'approve' | 'deny'

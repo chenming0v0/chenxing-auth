@@ -608,3 +608,86 @@ async fn two_users_app_links_stay_off_the_public_file() {
     assert!(!published_packages(&body).contains(&"com.example.beta".to_owned()));
     harness.cleanup().await;
 }
+
+async fn fetch_app_link(router: &axum::Router, numeric_app_id: &str) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/oauth/app-links/{numeric_app_id}"))
+                .body(Body::empty())
+                .expect("app link lookup request"),
+        )
+        .await
+        .expect("app link lookup response")
+}
+
+#[tokio::test]
+async fn app_link_lookup_does_not_require_a_configured_issuer() {
+    let harness = HarnessBuilder::new("app_link_lookup_no_issuer")
+        .configure(|config| {
+            config.issuer = None;
+        })
+        .build()
+        .await;
+
+    for numeric_app_id in ["1", "not-a-number", "0"] {
+        let response = fetch_app_link(&harness.router, numeric_app_id).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{numeric_app_id}");
+        assert!(response.headers().get(CACHE_CONTROL).is_none());
+        assert_eq!(
+            json_body(response).await["code"],
+            "app_link_not_found",
+            "{numeric_app_id}"
+        );
+    }
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn app_link_lookup_returns_the_package_after_admin_publish() {
+    let harness = HarnessBuilder::new("app_link_lookup_publish")
+        .admin_token(ADMIN_TOKEN)
+        .build()
+        .await;
+
+    let missing = fetch_app_link(&harness.router, "1").await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(json_body(missing).await["code"], "app_link_not_found");
+
+    let client_id = create_client(&harness.router).await;
+    let unpublished = fetch_app_link(&harness.router, "1").await;
+    assert_eq!(unpublished.status(), StatusCode::NOT_FOUND);
+    assert_eq!(json_body(unpublished).await["code"], "app_link_not_found");
+
+    let declared = put_app_link(&harness.router, &client_id, FINGERPRINT).await;
+    let numeric_app_id = declared["numeric_app_id"].as_i64().expect("numeric app id");
+    let response = fetch_app_link(&harness.router, &numeric_app_id.to_string()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("public, max-age=300")
+    );
+    assert_eq!(
+        json_body(response).await,
+        json!({
+            "numeric_app_id": numeric_app_id,
+            "package_name": "com.chengming.termux",
+        })
+    );
+
+    let other = fetch_app_link(&harness.router, &(numeric_app_id + 1).to_string()).await;
+    assert_eq!(other.status(), StatusCode::NOT_FOUND);
+    assert_eq!(json_body(other).await["code"], "app_link_not_found");
+    harness.cleanup().await;
+}

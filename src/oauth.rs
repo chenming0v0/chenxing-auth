@@ -4,6 +4,7 @@
 //! of reimplementing token signing or protocol parsing here.
 
 mod access_token_revocation;
+mod app_link_launch;
 pub mod authorization;
 pub mod authorization_code_handlers;
 pub mod authorization_decision_use_case;

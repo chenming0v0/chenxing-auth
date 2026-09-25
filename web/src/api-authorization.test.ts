@@ -84,6 +84,41 @@ describe('loadAuthorizationRequest', () => {
     expect(replaceState).not.toHaveBeenCalled()
   })
 
+  it('读取结果保留 android_package；null 同样通过', async () => {
+    fetchMock.mockImplementation((_path: string, init?: RequestInit) =>
+      Promise.resolve(init?.method === 'POST'
+        ? stubResponse({ status: 204 })
+        : stubResponse({ status: 200, body: { ...PENDING, android_package: 'com.example.app' } })))
+
+    await expect(loadAuthorizationRequest('req-270')).resolves.toMatchObject({
+      android_package: 'com.example.app',
+    })
+
+    fetchMock.mockImplementation((_path: string, init?: RequestInit) =>
+      Promise.resolve(init?.method === 'POST'
+        ? stubResponse({ status: 204 })
+        : stubResponse({ status: 200, body: { ...PENDING, android_package: null } })))
+
+    await expect(loadAuthorizationRequest('req-270')).resolves.toMatchObject({
+      android_package: null,
+    })
+  })
+
+  it.each([7, true, { name: 'com.example.app' }, ['com.example.app']])(
+    'android_package 为 %j 时拒绝整份待授权响应',
+    async (androidPackage) => {
+      fetchMock.mockImplementation((_path: string, init?: RequestInit) =>
+        Promise.resolve(init?.method === 'POST'
+          ? stubResponse({ status: 204 })
+          : stubResponse({ status: 200, body: { ...PENDING, android_package: androidPackage } })))
+
+      await expect(loadAuthorizationRequest('req-270')).rejects.toMatchObject({
+        status: 200,
+        message: '请求未完成，请稍后重试。',
+      })
+    },
+  )
+
   it('对新增的绑定错误码给出可读文案', () => {
     expect(safeErrorMessage(409, 'authorization_request_conflict'))
       .toBe('授权请求正在被其他标签页更新，请稍后重试。')

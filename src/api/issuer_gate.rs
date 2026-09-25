@@ -181,6 +181,11 @@ mod tests {
             "/auth/external/",
             "/auth/external/example/callback/extra",
             "/auth/external/example/bind/callback/extra",
+            // 这两条挂在 system_api，根本不经过本门禁。仍断言它们不要求 Issuer，
+            // 避免以后被收进 application router 时在 AwaitingIssuer 下被关掉。
+            "/.well-known/assetlinks.json",
+            "/api/v1/oauth/app-links/1",
+            "/api/v1/oauth/app-links/not-a-number",
         ] {
             assert!(!requires_configured_issuer(path), "path={path}");
         }

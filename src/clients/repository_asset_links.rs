@@ -150,3 +150,21 @@ pub async fn list_client_app_links(
     }
     Ok(by_package)
 }
+
+/// 公开读取：按数字 App ID 取 active Client 的 Android 声明。
+///
+/// 没有行，或 `android_asset_link` 为 NULL，都是「未发布」。JSON 无法解码是
+/// 存储错误，调用方应返回 503，而不是把它伪装成未发布。
+pub async fn find_active_client_app_link(
+    pool: &PgPool,
+    numeric_app_id: i64,
+) -> Result<Option<AndroidAssetLink>, crate::sqlx::Error> {
+    let row = crate::sqlx::query_as::<_, (Option<crate::sqlx::types::Json<AndroidAssetLink>>,)>(
+        "SELECT android_asset_link FROM oauth_clients
+         WHERE numeric_app_id = $1 AND status = 'active'",
+    )
+    .bind(numeric_app_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(link,)| link.map(|link| link.0)))
+}

@@ -1871,6 +1871,40 @@ paths:
         '401': { $ref: '#/components/responses/OAuthUnauthorized' }
         '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
         '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
+  /api/v1/oauth/app-links/{numeric_app_id}:
+    get:
+      tags: [OAuth/OIDC]
+      summary: 按数字 App ID 查询已发布的 Android 包名
+      operationId: lookupAndroidAppLink
+      security: []
+      description: |
+        返回 Owner 已在本 Issuer 发布的 Android 包名。前端在 Android 上用它构造
+        `intent://` 显式唤起，绕过 Chrome 拒绝把同主机导航交给 App 的限制。
+        路径必须是正整数。不是正整数、没有 status 为 active 的 Client 持有该
+        numeric_app_id，或该 Client 没有 Android 声明时返回 404 `app_link_not_found`。
+        与 `/.well-known/assetlinks.json` 一样不经 Issuer 门禁，Issuer 未配置时仍可读取。
+        成功响应携带 `Cache-Control: public, max-age=300`。
+        存储故障返回 503 `app_link_unavailable`，正文只有通用错误码，不含 SQL 或内部细节。
+      parameters:
+        - name: numeric_app_id
+          in: path
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: 已发布的包名
+          headers:
+            Cache-Control:
+              description: '`public, max-age=300`'
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AndroidAppLinkPackage' }
+              example:
+                numeric_app_id: 1
+                package_name: com.chengming.termux
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/oauth/authorize/requests/{request_id}:
     get:
       tags: [OAuth/OIDC]
@@ -4671,6 +4705,12 @@ components:
         client_name: { type: string }
         package_name: { type: string }
         sha256_cert_fingerprints: { type: array, items: { type: string } }
+    AndroidAppLinkPackage:
+      type: object
+      required: [numeric_app_id, package_name]
+      properties:
+        numeric_app_id: { type: integer, format: int64, minimum: 1 }
+        package_name: { type: string, description: Android 应用包名 }
     AndroidAssetLinks:
       type: array
       description: Digital Asset Links 语句数组（https://developers.google.com/digital-asset-links）
@@ -4766,6 +4806,10 @@ components:
           nullable: true
           maxLength: 512
           description: 可选应用描述，展示在授权确认页；空白或省略表示未设置
+        android_package:
+          type: string
+          nullable: true
+          description: 仅当回调是本 Issuer 主机上的 App Link 回调且该 Client 已发布 Android 声明时返回包名，前端在 Android 上用 intent:// 显式唤起
     AuthorizationDecisionInput:
       type: object
       required: [decision]

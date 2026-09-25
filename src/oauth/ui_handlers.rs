@@ -105,6 +105,11 @@ pub async fn inspect_authorization_request(
             );
         }
     };
+    let android_package = super::app_link_launch::android_launch_package(
+        issuer.issuer(),
+        &client,
+        &pending.redirect_uri,
+    );
     (
         axum::http::StatusCode::OK,
         Json(PendingRequestResponse {
@@ -121,6 +126,7 @@ pub async fn inspect_authorization_request(
             logo_uri: client.logo_uri,
             client_uri: client.client_uri,
             description: client.description,
+            android_package,
         }),
     )
         .into_response()
