@@ -371,7 +371,7 @@ pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
             "/api/v1/auth/external-identities/{slug}",
             delete(unlink_external_identity),
         )
-        .route("/api/v1/auth/chenxing/exchange", post(exchange))
+        .route("/api/v2/auth/chenxing/exchange", post(exchange))
         .route(
             "/api/v1/auth/session",
             axum::routing::delete(revoke_session),

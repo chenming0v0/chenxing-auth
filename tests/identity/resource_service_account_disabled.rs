@@ -34,7 +34,7 @@ use crate::{harness, http};
 const ADMIN_TOKEN: &str = "resource-service-account-disabled-admin";
 const PROVIDER_ISSUER: &str = "https://provider.example.com";
 const CLIENT_SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef";
-const SCOPE: &str = "demo:access";
+const SCOPE: &str = "cltermux:access";
 const OAUTH_CLIENT: &str = "account-disabled-client";
 const BINARY: &str = "rs-acct-disabled";
 
@@ -161,6 +161,11 @@ fn created_ok(body: &Value) -> ProviderHttpResponse {
     ))
     .expect("fixture");
     response["client_binding_id"] = body["client_binding_id"].clone();
+    response["uid"] = json!("cltermux:1001");
+    response["snapshot"] = serde_json::from_str(include_str!(
+        "../../docs/account-provider-v1/fixtures/cltermux-login-snapshot.json"
+    ))
+    .expect("product snapshot");
     ProviderHttpResponse {
         status: 201,
         retry_after_seconds: None,
@@ -172,8 +177,10 @@ fn account_ok() -> ProviderHttpResponse {
     ProviderHttpResponse {
         status: 200,
         retry_after_seconds: None,
-        body: include_bytes!("../../docs/account-provider-v1/fixtures/account-snapshot.json")
-            .to_vec(),
+        body: include_bytes!(
+            "../../docs/account-provider-v1/fixtures/cltermux-login-snapshot.json"
+        )
+        .to_vec(),
     }
 }
 
@@ -286,13 +293,14 @@ async fn browser_session(state: &AppState, user_id: i64) -> (String, String, i64
 async fn seed_exchange_token(env: &Env, user_id: i64) -> String {
     chenxing_auth::sqlx::query(
         "INSERT INTO oauth_clients
-           (client_id, client_name, redirect_uris, scopes, auth_method, created_at)
-           VALUES ($1, $2, $3::jsonb, $4::jsonb, 'none', NOW())",
+           (client_id, client_name, redirect_uris, scopes, auth_method, created_at, android_asset_link)
+           VALUES ($1, $2, $3::jsonb, $4::jsonb, 'none', NOW(), $5::jsonb)",
     )
     .bind(OAUTH_CLIENT)
     .bind("Account Disabled Client")
     .bind(json!(["https://exchange.example/callback"]))
     .bind(json!(["openid", SCOPE]))
+    .bind(json!({"package_name": "top.clyact", "sha256_cert_fingerprints": ["AA:".repeat(31) + "AA"]}))
     .execute(&env.database)
     .await
     .expect("insert client");
@@ -409,6 +417,10 @@ async fn bind_live(label: &str) -> Bound {
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = http::json_body(response).await;
     assert_eq!(body["status"], "active");
+    assert_eq!(body["snapshot"]["fields"][0]["key"], "chrome_termux_login");
+    assert_eq!(body["snapshot"]["fields"][0]["value"], "logged_in");
+    assert_eq!(body["snapshot"]["fields"][1]["key"], "termux_chrome_login");
+    assert_eq!(body["snapshot"]["fields"][1]["value"], "logged_out");
     let binding_id = Uuid::parse_str(body["id"].as_str().expect("binding id")).expect("uuid");
     let token = seed_exchange_token(&env, user_id).await;
     Bound {
@@ -480,11 +492,11 @@ async fn exchange(env: &Env, token: &str) -> (StatusCode, Value) {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/auth/chenxing/exchange")
+                .uri("/api/v2/auth/chenxing/exchange")
                 .header("content-type", "application/json")
                 .header(AUTHORIZATION, format!("Bearer {token}"))
                 .body(Body::from(
-                    json!({"device_id": "device-1", "device_info": "integration test"}).to_string(),
+                    json!({"app_kind": "chrome_termux", "device_id": "device-1", "device_info": "integration test"}).to_string(),
                 ))
                 .expect("exchange request"),
         )
@@ -497,7 +509,7 @@ async fn exchange(env: &Env, token: &str) -> (StatusCode, Value) {
 
 fn assert_issues_300s_ticket(status: StatusCode, body: &Value) {
     assert_eq!(status, StatusCode::OK, "exchange should issue: {body}");
-    let token = body["session_token"].as_str().expect("session token");
+    let token = body["login_ticket"].as_str().expect("login ticket");
     let payload = jwt_payload(token);
     let lifetime = payload["exp"].as_i64().expect("exp") - payload["iat"].as_i64().expect("iat");
     assert_eq!(lifetime, 300, "exchange must issue a 300s ticket");
@@ -506,7 +518,7 @@ fn assert_issues_300s_ticket(status: StatusCode, body: &Value) {
 fn assert_exchange_disabled(status: StatusCode, body: &Value) {
     assert_eq!(status, StatusCode::FORBIDDEN, "exchange body: {body}");
     assert_eq!(error_code(body), "account_disabled");
-    assert!(body.get("session_token").is_none());
+    assert!(body.get("login_ticket").is_none());
 }
 
 fn assert_disabled_without_tombstone(before: &StoredSnapshot, after: &StoredSnapshot) {

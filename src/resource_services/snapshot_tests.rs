@@ -245,3 +245,33 @@ fn snapshot_rebuild_is_parseable_and_stays_truthful() {
     let rebuilt = AccountSnapshot::from_value(&snapshot.to_value()).expect("rebuilt snapshot");
     assert_eq!(rebuilt, snapshot);
 }
+
+#[test]
+fn both_product_login_statuses_survive_snapshot_rebuild_without_new_schema() {
+    let mut value = fixtures::value(include_str!(
+        "../../docs/account-provider-v1/fixtures/cltermux-login-snapshot.json"
+    ));
+    for status in ["unbound", "logged_out", "logged_in"] {
+        value["fields"][0]["value"] = json!(status);
+        let snapshot = AccountSnapshot::from_value(&value).expect("existing AP status type");
+        assert_eq!(snapshot.fields[0].key, "chrome_termux_login");
+        assert_eq!(
+            snapshot.fields[0].value,
+            FieldValue::Status(status.to_owned())
+        );
+        assert_eq!(snapshot.fields[1].key, "termux_chrome_login");
+        assert_eq!(
+            snapshot.fields[1].value,
+            FieldValue::Status("logged_out".to_owned())
+        );
+        assert_eq!(snapshot.to_value()["fields"], value["fields"]);
+    }
+    // Legacy/missing snapshots do not invent unbound slots.
+    value["fields"] = json!([]);
+    assert!(
+        AccountSnapshot::from_value(&value)
+            .expect("legacy snapshot")
+            .fields
+            .is_empty()
+    );
+}

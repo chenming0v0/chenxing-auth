@@ -74,6 +74,12 @@ async fn converge_awaiting(state: &AppState) -> Result<Arc<IssuerRuntimeState>, 
 }
 
 fn unavailable_response(path: &str, issuer_absent: bool) -> Response {
+    if path == "/api/v2/auth/chenxing/exchange" {
+        return crate::error::service_unavailable(
+            "service_unavailable",
+            "authorization state is unavailable",
+        );
+    }
     if crate::error::is_oauth_protocol_path(path) {
         return crate::error::oauth_temporarily_unavailable();
     }
@@ -93,6 +99,7 @@ fn requires_configured_issuer(path: &str) -> bool {
                 | "/api/v1/auth/external-providers"
                 | "/api/v1/auth/totp/setup"
                 | "/api/v1/auth/security/totp/enrollment/start"
+                | "/api/v2/auth/chenxing/exchange"
         )
         || exact_dynamic_route(path, &["api", "v1", "oauth", "authorize", "requests"], None)
         || exact_dynamic_route(
@@ -153,6 +160,7 @@ mod tests {
             "/oauth/userinfo",
             "/api/v1/auth/totp/setup",
             "/api/v1/auth/security/totp/enrollment/start",
+            "/api/v2/auth/chenxing/exchange",
             "/api/v1/oauth/authorize/requests/request-id",
             "/api/v1/oauth/authorize/requests/request-id/bind",
             "/api/v1/admin/oauth/providers",
