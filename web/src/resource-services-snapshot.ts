@@ -1,4 +1,9 @@
-import type { ResourceServiceSnapshotField, ResourceServiceSubscription } from './resource-services-types'
+import type {
+  ResourceServiceLoginFieldKey,
+  ResourceServiceLoginStatus,
+  ResourceServiceSnapshotField,
+  ResourceServiceSubscription,
+} from './resource-services-types'
 
 export type SnapshotTone = 'neutral' | 'success' | 'warning'
 
@@ -25,6 +30,29 @@ const STATUS_LABELS: Record<string, StatusPresentation> = {
 export function statusPresentation(value: string | null): StatusPresentation {
   if (value === null || value === '') return { label: '已绑定', tone: 'success' }
   return STATUS_LABELS[value] ?? { label: value, tone: 'neutral' }
+}
+
+const CLTERMUX_LOGIN_FIELDS: { key: ResourceServiceLoginFieldKey; label: string }[] = [
+  { key: 'chrome_termux_login', label: 'chrome-termux（浏览器版）登录状态' },
+  { key: 'termux_chrome_login', label: 'termux-chrome（WebView 版）登录状态' },
+]
+const LOGIN_LABELS: Record<ResourceServiceLoginStatus, string> = {
+  unbound: '未绑定',
+  logged_out: '未登录',
+  logged_in: '已登录',
+  unknown: '未知',
+}
+
+export function cltermuxLoginStates(uid: string, fields: ResourceServiceSnapshotField[]) {
+  // 绑定 UID 是协议身份，不依赖可编辑的提供方名称，也不以快照自述 UID 猜产品。
+  if (!/^cltermux:[1-9]\d*$/.test(uid)) return []
+  return CLTERMUX_LOGIN_FIELDS.map((product) => {
+    const field = fields.find((item) => item.key === product.key)
+    const value = field?.type === 'status' ? field.value : null
+    const status: ResourceServiceLoginStatus = value === 'unbound' || value === 'logged_out' || value === 'logged_in'
+      ? value : 'unknown'
+    return { ...product, status, value: LOGIN_LABELS[status] }
+  })
 }
 
 function summarizeUntil(endMs: number, now: Date): SubscriptionSummary {
@@ -65,11 +93,16 @@ export function formatDuration(seconds: number): string {
 const HEADER_FIELD_KEYS = new Set(['account_status'])
 /** 订阅摘要已覆盖这几项，有摘要时不再逐条列出。 */
 const SUBSCRIPTION_FIELD_KEYS = new Set(['is_subscribed', 'subscription_expires_at', 'remaining_seconds'])
+/** CLtermux 的两版状态替代聚合设备状态；其他提供方仍按原协议展示。 */
+const PRODUCT_FIELD_KEYS = new Set<string>(['device_status', ...CLTERMUX_LOGIN_FIELDS.map((field) => field.key)])
 
 export function visibleSnapshotFields(
   fields: ResourceServiceSnapshotField[],
   hasSubscriptionSummary: boolean,
+  hasProductLoginSummary = false,
 ): ResourceServiceSnapshotField[] {
   return fields.filter((field) =>
-    !HEADER_FIELD_KEYS.has(field.key) && !(hasSubscriptionSummary && SUBSCRIPTION_FIELD_KEYS.has(field.key)))
+    !HEADER_FIELD_KEYS.has(field.key)
+    && !(hasSubscriptionSummary && SUBSCRIPTION_FIELD_KEYS.has(field.key))
+    && !(hasProductLoginSummary && PRODUCT_FIELD_KEYS.has(field.key)))
 }

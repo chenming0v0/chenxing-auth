@@ -90,7 +90,7 @@ export function ResourceServicesPage() {
         if (action === 'unlink') {
           await unlinkResourceServiceBinding(binding.id)
           setBindings((current) => current.filter((item) => item.id !== binding.id))
-          setNotice({ text: '绑定已解除。', tone: 'success' })
+          setNotice({ text: '已解除账号关联。', tone: 'success' })
         } else {
           const next = action === 'refresh'
             ? await refreshResourceServiceBinding(binding.id, newResourceServiceIdempotencyKey())
@@ -172,7 +172,7 @@ export function ResourceServicesPage() {
         <BindResourceServiceDialog provider={dialog.provider} busy={mutationLock.busy} error={dialogError} onCancel={() => setDialog(null)} onSubmit={(identifier, secret) => bind(dialog.provider, identifier, secret)} />
       ) : null}
       {dialog?.kind === 'unlink' ? (
-        <UnlinkResourceServiceDialog name={providerName(dialog.binding.provider_id, dialog.binding.issuer)} busy={mutationLock.busy} error={dialogError} onCancel={() => setDialog(null)} onSubmit={() => runBindingAction(dialog.binding, 'unlink')} />
+        <UnlinkResourceServiceDialog name={providerName(dialog.binding.provider_id, dialog.binding.issuer)} isCltermux={/^cltermux:[1-9]\d*$/.test(dialog.binding.uid)} busy={mutationLock.busy} error={dialogError} onCancel={() => setDialog(null)} onSubmit={() => runBindingAction(dialog.binding, 'unlink')} />
       ) : null}
     </ConsoleLayout>
   )
