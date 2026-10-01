@@ -1663,22 +1663,41 @@ paths:
   /api/v1/auth/chenxing/exchange:
     post:
       tags: [User Auth/Resource Services]
-      summary: 用辰星 Access Token 换取资源服务会话令牌
+      summary: 已退役的 v1 兑换协议
       operationId: exchangeChenxingSession
+      deprecated: true
+      security: []
+      description: 无条件返回 410 protocol_retired，不校验凭据或请求体、不依赖 Issuer、不重定向或回退。请改用 v2 login_ticket，再向 Go 换取本地业务会话。
+      responses:
+        '410':
+          description: protocol_retired
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+            Pragma: { schema: { type: string, example: no-cache } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChenxingExchangeError' }
+              example: { code: protocol_retired, message: use the v2 login ticket exchange }
+  /api/v2/auth/chenxing/exchange:
+    post:
+      tags: [User Auth/Resource Services]
+      summary: 用普通 OAuth AT 换取产品和设备绑定的登录票据
+      operationId: exchangeChenxingLoginTicketV2
       security: [{ bearerAuth: [] }]
       description: >-
-        资源服务会话兑换。第三方应用持有的辰星用户 Access Token（OAuth 发行者签发）必须含某个已启用资源服务
-        声明的 scope；服务端据此定位资源服务，读取当前用户在该服务的活绑定，并签发面向该服务的短期 Session Token。
-        令牌只在内存中验证，不记录日志。session_token 是 RS256 签名的短期 JWT，有效期不超过 300 秒，claims 含
-        uid / binding_id / binding_version；响应体永远不包含 access_token、refresh_token 或 id_token。
-        该 session_token 不能再次作为 Bearer 兑换：payload 中 uid、binding_id、binding_version 任一出现即
-        按 401 invalid_chenxing_token 拒绝，只有这三个字段都缺的普通 Access Token 可以继续兑换。
-        device_id 与 device_info 仅用于审计，不持久化；device_info 永不以明文写入日志。
-        当 Access Token 同时覆盖多个资源服务的 scope 时，请求体必须用 `provider`（资源服务 slug）指明目标，
-        否则返回 400 invalid_request。scope_access 为 restricted 的资源服务只接受 aud 属于其 allowed_client_ids 的令牌，
-        其他令牌按 401 invalid_chenxing_token 拒绝。
-        错误码：400 invalid_request；401 invalid_chenxing_token；403 account_not_linked / account_disabled / insufficient_scope；
-        429 rate_limited；503 provider_unavailable。
+        只接受本 Issuer 的普通 OAuth Access Token；验证签名、零过期宽限、撤销、当前 Client、同意及 scope。
+        已验签 aud 对应的活跃 OAuth Client 必须有 Owner 管理的 Android Asset Link 声明：
+        top.clyact 对应 chrome_termux，com.termux 对应 termux_chrome。缺失、其他包、非活跃 Client 或产品不一致返回
+        403 app_not_allowed，查库失败返回 503；禁止请求自报 package_name，不新增客户端配置表。
+        沿用 scope 交集选择提供方规则，多候选未指定 provider 返回 400；最终目标必须声明 cltermux:access，
+        restricted 服务仍受 allowed_client_ids 限制，当前关联 UID 必须为 cltermux:正整数。
+        关联必须 live、快照 active、辰星用户启用。每 subject 最多 10 次/60 秒签票尝试。
+        login_ticket 是 RS256/typ JWT/kid 的 300 秒票，不是 OAuth AT，也不是业务 session；
+        claims 为 iss、单字符串 aud、sub、v=2、token_use=cltermux_login、uid、binding_id、正整数 binding_version、
+        scope=cltermux:access、app_kind、精确 device_id、整数 iat 和 exp，exp-iat=300，到期无宽限。
+        新票及旧绑定票不能作为普通 AT 在任何 OAuth AT 消费入口使用或再次兑换。
+        auth 不绑定/解绑设备；Go 验票后管理设备槽。device_info 不落库或明文日志，device_id 可入成功审计。
+        所有响应都有 Cache-Control:no-store 和 Pragma:no-cache，错误使用顶层 code/message（非 AP error 嵌套信封）。
       requestBody:
         required: true
         content:
@@ -1686,42 +1705,53 @@ paths:
             schema: { $ref: '#/components/schemas/ResourceServiceExchangeInput' }
       responses:
         '200':
-          description: 会话令牌兑换成功；响应体只含 session_token、uid 与 expires_at，不包含任何长期凭据
+          description: 登录票据签发成功；无业务 session 或长期凭据
           headers:
             Cache-Control: { schema: { type: string, example: no-store } }
+            Pragma: { schema: { type: string, example: no-cache } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ResourceServiceExchangeResponse' }
         '400':
-          description: 请求体非法，或令牌覆盖多个资源服务 scope 但未指明 provider，错误码 invalid_request
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
-        '401':
-          description: 辰星 Access Token 无效、已撤销、为已签发的资源服务会话令牌，或不属于该资源服务允许的应用，错误码 invalid_chenxing_token
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
-        '403':
-          description: 无权限，错误码 account_not_linked / account_disabled / insufficient_scope
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
-        '413': { $ref: '#/components/responses/PayloadTooLarge' }
-        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
-        '422': { $ref: '#/components/responses/InvalidJsonData' }
-        '429':
-          description: 限流触发，错误码 rate_limited，响应可带 Retry-After
+          description: invalid_json（语法错误）或 invalid_request（缺/坏/未知字段、字节上限、内容类型/请求体大小、多个候选未指定 provider）
           headers:
-            Retry-After: { schema: { type: integer, minimum: 1 } }
+            Cache-Control: { schema: { type: string, example: no-store } }
+            Pragma: { schema: { type: string, example: no-cache } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              schema: { $ref: '#/components/schemas/ChenxingExchangeError' }
+        '401':
+          description: invalid_chenxing_token（缺失、无效、过期、撤销、授权已失效或出示登录票/旧绑定票）
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+            Pragma: { schema: { type: string, example: no-cache } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChenxingExchangeError' }
+        '403':
+          description: account_not_linked / account_disabled / insufficient_scope / app_not_allowed
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+            Pragma: { schema: { type: string, example: no-cache } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChenxingExchangeError' }
+        '429':
+          description: rate_limited
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+            Pragma: { schema: { type: string, example: no-cache } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChenxingExchangeError' }
         '503':
-          description: 资源服务或依赖暂不可用，错误码 provider_unavailable
+          description: provider_unavailable（依赖或签名不可用）/ service_unavailable（Issuer 未就绪或请求超时）；不泄漏存储/签名内部错误
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+            Pragma: { schema: { type: string, example: no-cache } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              schema: { $ref: '#/components/schemas/ChenxingExchangeError' }
   /api/v1/auth/external-providers:
     get:
       tags: [User Auth/Browser Login]
@@ -4159,23 +4189,37 @@ components:
           items: { $ref: '#/components/schemas/ExternalIdentityExtension' }
     ResourceServiceExchangeInput:
       type: object
-      required: [device_id]
+      required: [app_kind, device_id]
       additionalProperties: false
       properties:
-        device_id: { type: string, minLength: 1, maxLength: 255, description: 客户端设备标识，仅用于审计，不持久化 }
-        device_info: { type: string, maxLength: 1024, description: 客户端设备信息，仅用于审计，永不以明文写入日志 }
-        provider: { type: string, pattern: '^[a-z][a-z0-9_-]{0,63}$', description: 目标资源服务 slug；令牌只覆盖一个资源服务 scope 时可省略，覆盖多个时必填 }
+        app_kind: { type: string, enum: [chrome_termux, termux_chrome], description: 必须与 AT aud 的 Owner Android 声明一致 }
+        device_id: { type: string, minLength: 1, maxLength: 255, pattern: '^[^\x00-\x1F\x7F-\x9F]+$', description: 非空且最多 255 UTF-8 字节，无 Unicode 控制字符；不 trim 或折叠，原样签入票据，由 Go 比对/占槽 }
+        device_info: { type: string, nullable: true, maxLength: 1024, description: 可省略/null；最多 1024 UTF-8 字节，仅元数据，不落库或明文日志 }
+        provider: { type: string, nullable: true, description: 目标资源服务 slug；沿用去首尾空白和空值视为省略的规则。候选唯一可省略，多候选必填；选择非 cltermux:access 提供方拒绝 }
     ResourceServiceExchangeResponse:
       type: object
-      required: [session_token, uid, expires_at]
+      required: [v, login_ticket, uid, app_kind, device_id, expires_at]
       additionalProperties: false
       description: >-
-        短期会话令牌兑换结果。响应体永远不包含 access_token、refresh_token 或 id_token；
-        也不包含签名密钥、服务间凭据或任何长期秘密。
+        短期产品登录票。不返回 session_token/access_token/refresh_token/id_token，客户端不得持久保存此票。
+        允许有效票在相同设备重试；不承诺一次消费。Go 本地会话须另行兑换，不得将此票用于业务请求。
       properties:
-        session_token: { type: string, description: RS256 签名的短期会话 JWT，有效期不超过 300 秒，claims 含 uid / binding_id / binding_version }
-        uid: { type: string, maxLength: 255, description: 当前用户在该资源服务的账号 ID }
-        expires_at: { type: string, format: date-time, description: session_token 的过期时间 }
+        v: { type: integer, enum: [2] }
+        login_ticket: { type: string, description: RS256 登录断言；完整 claims 见 v2 exchange 描述，非 OAuth AT 或业务会话 }
+        uid: { type: string, maxLength: 255, pattern: '^cltermux:[1-9][0-9]*$', description: 已关联的 cltermux 正整数账号 ID }
+        app_kind: { type: string, enum: [chrome_termux, termux_chrome] }
+        device_id: { type: string, minLength: 1, maxLength: 255, description: 请求原始设备标识，精确匹配已签 claims }
+        expires_at: { type: string, format: date-time, description: login_ticket.exp 对应 UTC 整秒时间 }
+    ChenxingExchangeError:
+      type: object
+      required: [code, message]
+      additionalProperties: false
+      description: v1 退役和 v2 兑换专用稳定错误枚举，沿用顶层 API ErrorResponse 信封；不改变其他 API/OAuth/AP 错误格式。
+      properties:
+        code:
+          type: string
+          enum: [invalid_json, invalid_request, invalid_chenxing_token, account_not_linked, account_disabled, insufficient_scope, app_not_allowed, protocol_retired, rate_limited, provider_unavailable, service_unavailable]
+        message: { type: string, description: 安全的说明；客户端按 code 分支，不解析 message }
     ScopeCatalogResponse:
       type: object
       required: [items]

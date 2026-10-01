@@ -15,17 +15,6 @@ pub struct AccessTokenClaims {
     pub exp: usize,
     pub iat: usize,
     pub scope: String,
-    /// 资源服务会话令牌扩展：由 exchange 端点签发，携带业务绑定标识。
-    ///
-    /// 普通 Access Token 不携带这些 claim：`skip_serializing_if` 让缺失值在
-    /// 序列化时完全消失，`default` 让旧的、没有这些键的令牌仍可被解码成 `None`。
-    /// 因此扩展 claim 是纯增量，不改变既有令牌的字节形态。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub uid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binding_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binding_version: Option<i32>,
 }
 
 #[cfg(test)]
@@ -103,9 +92,26 @@ fn decode_with_validation(
     let decoding_key = keys
         .verification_key_for(key_id)
         .ok_or_else(|| TokenError::Validation(invalid_token_error()))?;
-    let data = decode::<AccessTokenClaims>(token, &decoding_key, &validation)
+    let data = decode::<serde_json::Value>(token, &decoding_key, &validation)
         .map_err(TokenError::Validation)?;
-    Ok(data.claims)
+    // A login ticket is not an OAuth AT, even when signed by the same key. Check
+    // key presence (including null), not optional values. This also retires old
+    // binding-bearing session JWTs at every AT consumer, not just exchange.
+    if [
+        "v",
+        "token_use",
+        "uid",
+        "binding_id",
+        "binding_version",
+        "app_kind",
+        "device_id",
+    ]
+    .iter()
+    .any(|key| data.claims.get(key).is_some())
+    {
+        return Err(TokenError::Validation(invalid_token_error()));
+    }
+    serde_json::from_value(data.claims).map_err(|_| TokenError::Validation(invalid_token_error()))
 }
 
 fn invalid_token_error() -> jsonwebtoken::errors::Error {
@@ -152,32 +158,7 @@ pub fn issue_access_token_at(
     encode_claims(keys, &claims)
 }
 
-/// 签发携带资源服务绑定扩展的会话令牌。
-///
-/// 与 [`issue_access_token_at`] 共用 RS256 + active `kid` 的签发路径，只在标准
-/// claims 之外填充 `uid` / `binding_id` / `binding_version`。普通 Access Token
-/// 的这些字段保持 `None`，序列化结果不因本函数而改变。
-#[allow(clippy::too_many_arguments)]
-pub fn issue_session_token_at(
-    keys: &KeyManager,
-    issuer: &str,
-    subject: &str,
-    audience: &str,
-    scopes: &[String],
-    lifetime_seconds: u64,
-    now: time::OffsetDateTime,
-    uid: &str,
-    binding_id: &str,
-    binding_version: i32,
-) -> Result<String, TokenError> {
-    let mut claims = base_claims(issuer, subject, audience, scopes, lifetime_seconds, now)?;
-    claims.uid = Some(uid.to_owned());
-    claims.binding_id = Some(binding_id.to_owned());
-    claims.binding_version = Some(binding_version);
-    encode_claims(keys, &claims)
-}
-
-/// 构造标准 claims。扩展字段一律为 `None`，由调用方按需填充。
+/// 构造普通 OAuth AT claims；产品登录票使用独立类型与签发入口。
 fn base_claims(
     issuer: &str,
     subject: &str,
@@ -197,15 +178,16 @@ fn base_claims(
             .ok_or(TokenError::InvalidLifetime)?,
         iat: now,
         scope: scopes.join(" "),
-        uid: None,
-        binding_id: None,
-        binding_version: None,
     })
 }
 
 /// RS256 编码，使用当前 active 的 `kid`。
-fn encode_claims(keys: &KeyManager, claims: &AccessTokenClaims) -> Result<String, TokenError> {
+pub(crate) fn encode_claims<T: Serialize>(
+    keys: &KeyManager,
+    claims: &T,
+) -> Result<String, TokenError> {
     let mut header = Header::new(Algorithm::RS256);
+    header.typ = Some("JWT".to_owned());
     let signing_key = keys
         .active_signing_key_if_ready()
         .ok_or(TokenError::SigningUnavailable)?;

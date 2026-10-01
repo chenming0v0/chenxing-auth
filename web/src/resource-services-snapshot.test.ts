@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseResourceServiceSnapshot } from './resource-services-types'
 import {
+  cltermuxLoginStates,
   formatDuration,
   statusPresentation,
   subscriptionSummary,
@@ -161,5 +162,46 @@ describe('visibleSnapshotFields', () => {
 
   it('keeps subscription fields when there is no summary to replace them', () => {
     expect(visibleSnapshotFields(fields, false).map((field) => field.key)).toEqual(['uid', 'is_subscribed', 'remaining_seconds', 'device_status'])
+  })
+
+  it('only replaces aggregate and product fields when the CLtermux summary is shown', () => {
+    const productFields = [
+      ...fields,
+      { key: 'chrome_termux_login', label: '浏览器版登录状态', type: 'status' as const, value: 'logged_in' },
+      { key: 'termux_chrome_login', label: 'WebView 版登录状态', type: 'text' as const, value: 'unbound' },
+    ]
+    expect(visibleSnapshotFields(productFields, true, true).map((field) => field.key)).toEqual(['uid'])
+    expect(visibleSnapshotFields(productFields, true).map((field) => field.key))
+      .toEqual(['uid', 'device_status', 'chrome_termux_login', 'termux_chrome_login'])
+  })
+})
+
+describe('cltermuxLoginStates', () => {
+  it.each([
+    ['unbound', '未绑定'],
+    ['logged_out', '未登录'],
+    ['logged_in', '已登录'],
+  ])('maps %s for both products to %s', (value, label) => {
+    const snapshot = parseResourceServiceSnapshot({ fields: [
+      { key: 'chrome_termux_login', label: '浏览器版登录状态', type: 'status', value },
+      { key: 'termux_chrome_login', label: 'WebView 版登录状态', type: 'status', value },
+    ] })!
+    expect(cltermuxLoginStates('cltermux:42', snapshot.fields).map((product) => product.value)).toEqual([label, label])
+  })
+
+  it.each([
+    { fields: [] },
+    { fields: [{ key: 'device_status', label: '设备状态', type: 'status', value: 'unbound' }] },
+    { fields: [{ key: 'chrome_termux_login', label: '浏览器版登录状态', type: 'text', value: 'unbound' }] },
+    { fields: [{ key: 'chrome_termux_login', label: '浏览器版登录状态', type: 'status', value: null }] },
+    { fields: [{ key: 'chrome_termux_login', label: '浏览器版登录状态', type: 'status', value: 'future_status' }] },
+    { fields: [{ key: 'chrome_termux_login', label: '浏览器版登录状态', type: 'status', value: '' }] },
+  ])('never infers unbound from missing, malformed or legacy fields: %j', ({ fields }) => {
+    const snapshot = parseResourceServiceSnapshot({ fields })!
+    expect(cltermuxLoginStates('cltermux:42', snapshot.fields).map((product) => product.value)).toEqual(['未知', '未知'])
+  })
+
+  it.each(['acct-1001', 'cltermux:0', 'cltermux:-1', 'cltermux:42extra', 'cltermux:01', 'cltermux:'])('does not treat %s as a CLtermux binding', (uid) => {
+    expect(cltermuxLoginStates(uid, [])).toEqual([])
   })
 })

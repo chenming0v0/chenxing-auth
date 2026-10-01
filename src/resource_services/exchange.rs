@@ -1,22 +1,6 @@
-//! 一键登录兑换端点（Issue #709）。
-//!
-//! `POST /api/v1/auth/chenxing/exchange` 接收浏览器持有的辰星 Access Token，
-//! 校验它确实是本 Issuer 为某个 OAuth Client 签发、且授权（grant gate）此刻仍然
-//! 覆盖某个已启用资源服务声明的 scope，再为「该资源服务上已绑定的账号」签发
-//! 一枚 300 秒的 RS256 会话令牌。
-//!
-//! 本端点由用户浏览器直接调用，没有入站 interop 凭据，认证材料只有用户自己的
-//! Access Token。校验顺序按成本递增、尽早拒绝，并在签发前做一次按 subject 的
-//! 滑动窗口限流。`device_id` / `device_info` 只进审计，不作为设备判定依据，也
-//! 永远不落库。
-//!
-//! 本端点签发的会话令牌带 `uid` / `binding_id` / `binding_version`。这三个字段
-//! 任一出现都不是可再次兑换的辰星 Access Token，必须在撤销检查之前拒绝，避免
-//! 300 秒票自续期。
-//!
-//! 资源服务的选择：令牌 scope 与已启用服务的 scope 取交集；多个候选时请求体
-//! 必须用 `provider`（slug）指明；`restricted` 服务还要求令牌的 `aud` 在其
-//! `allowed_client_ids` 内。
+//! OAuth AT → v2 product/device-bound login ticket. Go owns all device slots.
+//! Provider selection, live grants and AP linkage remain authoritative; this
+//! endpoint only issues a 300-second assertion, never a business session.
 
 use axum::{
     Json,
@@ -28,13 +12,13 @@ use serde::Serialize;
 use time::OffsetDateTime;
 
 use crate::{
-    api::extract::{ApiJson, RequestIssuer},
+    api::extract::RequestIssuer,
     audit::AuditEvent,
     error,
     oauth::{
         grant_gate::{GrantGateError, effective_grant_scopes},
         response::with_no_store_headers,
-        token::{TokenError, decode_userinfo_token, issue_session_token_at},
+        token::{TokenError, decode_userinfo_token},
     },
     state::AppState,
     users::domain::{UserId, UserStatus},
@@ -42,19 +26,26 @@ use crate::{
 
 use super::types::ScopeAccess;
 
+mod http;
 mod support;
+mod ticket;
 
-pub use support::ExchangeInput;
+use http::ExchangeJson;
+pub use http::{response_boundary, retired};
 use support::{
     BAD_REQUEST_MESSAGE, EXCHANGE_RATE_LIMIT, EXCHANGE_RATE_WINDOW_MS, INVALID_TOKEN_MESSAGE,
-    MAX_DEVICE_ID_BYTES, MAX_DEVICE_INFO_BYTES, NOT_LINKED_MESSAGE, SESSION_TOKEN_LIFETIME_SECONDS,
-    Selection, UNAVAILABLE_MESSAGE, bearer_token, select_provider, snapshot_status,
+    NOT_LINKED_MESSAGE, Selection, UNAVAILABLE_MESSAGE, bearer_token, select_provider,
+    snapshot_status,
 };
+use ticket::{AppKind, LIFETIME_SECONDS, LOGIN_SCOPE};
 
 #[derive(Serialize)]
 struct ExchangeResponse {
-    session_token: String,
+    v: u8,
+    login_ticket: String,
     uid: String,
+    app_kind: AppKind,
+    device_id: String,
     #[serde(with = "time::serde::rfc3339")]
     expires_at: OffsetDateTime,
 }
@@ -63,16 +54,9 @@ pub async fn exchange(
     State(state): State<AppState>,
     issuer: RequestIssuer,
     headers: HeaderMap,
-    ApiJson(input): ApiJson<ExchangeInput>,
+    ExchangeJson(input): ExchangeJson,
 ) -> Response {
-    if input.device_id.is_empty() || input.device_id.len() > MAX_DEVICE_ID_BYTES {
-        return error::bad_request("invalid_request", BAD_REQUEST_MESSAGE);
-    }
-    if input
-        .device_info
-        .as_deref()
-        .is_some_and(|value| value.len() > MAX_DEVICE_INFO_BYTES)
-    {
+    if !input.is_valid() {
         return error::bad_request("invalid_request", BAD_REQUEST_MESSAGE);
     }
     let requested_slug = input
@@ -88,17 +72,29 @@ pub async fn exchange(
         Ok(claims) => claims,
         Err(_) => return denied(&state, None, None).await,
     };
-    // 会话令牌携带 uid / binding_id / binding_version。吊销表只按出示字符串
-    // 的摘要记账，原 Access Token 吊销挡不住用这张新票再签下一张，所以必须在
-    // 撤销检查之前按 claim 形状拒绝。三个字段都缺的普通 AT 才能继续兑换。
-    if claims.uid.is_some() || claims.binding_id.is_some() || claims.binding_version.is_some() {
-        return denied(&state, Some(claims.sub.as_str()), None).await;
-    }
     let sub = claims.sub.as_str();
     // 撤销检查 fail-closed：Redis 故障时无法证明令牌未被撤销，不能签出新的会话令牌。
     match state.revocations.is_revoked(token).await {
         Ok(false) => {}
-        Ok(true) | Err(_) => return denied(&state, Some(sub), None).await,
+        Ok(true) => return denied(&state, Some(sub), None).await,
+        Err(_) => return unavailable(&state, Some(sub), None).await,
+    }
+
+    // Reuse the OAuth client store, whose package declaration is Owner-managed.
+    let client = match state.clients.find_registered(&claims.aud).await {
+        Ok(client) => client,
+        Err(_) => return unavailable(&state, Some(sub), None).await,
+    };
+    let app = client
+        .and_then(|client| client.android_package)
+        .as_deref()
+        .and_then(AppKind::from_package);
+    if app != Some(input.app_kind) {
+        record_denied(&state, Some(sub), "app_not_allowed", None).await;
+        return error::forbidden(
+            "app_not_allowed",
+            "the OAuth client is not allowed for this app",
+        );
     }
 
     let presented = claims
@@ -134,6 +130,13 @@ pub async fn exchange(
         }
     };
     let slug = provider.slug.as_str();
+    if provider.scope != LOGIN_SCOPE {
+        record_denied(&state, Some(sub), "insufficient_scope", Some(slug)).await;
+        return error::forbidden(
+            "insufficient_scope",
+            "the access token lacks cltermux:access",
+        );
+    }
     if provider.access == ScopeAccess::Restricted
         && !provider
             .allowed_client_ids
@@ -148,7 +151,11 @@ pub async fn exchange(
     };
     match state.users.find_profile(user_id).await {
         Ok(Some(profile)) if UserStatus::parse(&profile.status) == Some(UserStatus::Active) => {}
-        Ok(Some(_)) | Ok(None) => return denied(&state, Some(sub), Some(slug)).await,
+        Ok(Some(_)) => {
+            record_denied(&state, Some(sub), "account_disabled", Some(slug)).await;
+            return error::forbidden("account_disabled", "the account is disabled");
+        }
+        Ok(None) => return denied(&state, Some(sub), Some(slug)).await,
         Err(_) => return unavailable(&state, Some(sub), Some(slug)).await,
     }
 
@@ -197,37 +204,31 @@ pub async fn exchange(
             return error::forbidden("account_not_linked", NOT_LINKED_MESSAGE);
         }
     }
-    let Ok(binding_version) = i32::try_from(binding.generation) else {
+    if !ticket::valid_uid(&binding.uid) {
+        record_denied(&state, Some(sub), "account_not_linked", Some(slug)).await;
+        return error::forbidden("account_not_linked", NOT_LINKED_MESSAGE);
+    }
+    if binding.generation <= 0 {
         return unavailable(&state, Some(sub), Some(slug)).await;
-    };
+    }
 
     let now = state.clock.now();
+    let now = now - time::Duration::nanoseconds(i64::from(now.nanosecond()));
     let binding_id = binding.id.to_string();
-    let session_token = match issue_session_token_at(
-        &state.keys,
-        issuer.issuer().as_str(),
-        sub,
-        &claims.aud,
-        &scopes,
-        SESSION_TOKEN_LIFETIME_SECONDS,
-        now,
-        &binding.uid,
-        &binding_id,
-        binding_version,
-    ) {
+    let login_ticket = match ticket::issue(&state.keys, &claims, &binding, &input, now) {
         Ok(token) => token,
         Err(token_error) => {
             // 只记录安全的原因分类，绝不输出签名错误细节或令牌材料。
             match &token_error {
                 TokenError::SigningUnavailable => {
-                    tracing::error!("resource service session token signing is unavailable");
+                    tracing::error!("login ticket signing is unavailable");
                 }
-                _ => tracing::error!("failed to sign resource service session token"),
+                _ => tracing::error!("failed to sign login ticket"),
             }
             return unavailable(&state, Some(sub), Some(slug)).await;
         }
     };
-    let expires_at = now + time::Duration::seconds(SESSION_TOKEN_LIFETIME_SECONDS as i64);
+    let expires_at = now + time::Duration::seconds(LIFETIME_SECONDS);
     state
         .audit
         .record_best_effort(AuditEvent::new(
@@ -241,6 +242,7 @@ pub async fn exchange(
                 "uid": &binding.uid,
                 "binding_id": binding_id,
                 "device_id": &input.device_id,
+                "app_kind": input.app_kind,
                 "result": "success",
             }),
         ))
@@ -250,8 +252,11 @@ pub async fn exchange(
         (
             StatusCode::OK,
             Json(ExchangeResponse {
-                session_token,
+                v: 2,
+                login_ticket,
                 uid: binding.uid,
+                app_kind: input.app_kind,
+                device_id: input.device_id,
                 expires_at,
             }),
         )

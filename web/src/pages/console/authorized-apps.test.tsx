@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { StrictMode, type ReactNode } from 'react'
 import { AuthorizedApps } from './authorized-apps'
 import { installCsrfCookie } from '../../test/csrf-cookie'
@@ -48,11 +48,13 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve }
 }
 
+const REVOKE_BODY = '撤销后，该应用将无法再通过辰星通行证获取你的账户信息或保持登录，需要重新授权才能继续使用辰星通行证登录。'
+const REVOKE_NOTICE = '此操作仅撤销辰星通行证对该应用的授权，不会删除或解绑你在该应用中的账号、数据或设备。已签发的访问凭证可能在短时间内仍然有效。如需彻底解除绑定，请在该应用内操作或联系应用管理员。'
+
 /** 列表 GET 按调用顺序返回给定的 deferred，用来构造 B/C 先返回、A 后返回。 */
-function stubListLoads(pending: Array<Deferred<Response>>) {
+function stubListLoads(pending: Array<Deferred<Response>>, deleteResponse?: Response | Promise<Response>) {
   let index = 0
   requests = []
-  vi.stubGlobal('confirm', vi.fn(() => true) as unknown as typeof confirm)
   vi.stubGlobal('fetch', vi.fn((path: string, init?: RequestInit) => {
     const method = (init?.method ?? 'GET').toUpperCase()
     const url = String(path)
@@ -63,10 +65,19 @@ function stubListLoads(pending: Array<Deferred<Response>>) {
       return target ? target.promise : new Promise<Response>(() => {})
     }
     if (url.startsWith(`${APPS_PATH}/`) && method === 'DELETE') {
-      return Promise.resolve({ ok: true, status: 204, json: async () => undefined } as Response)
+      return Promise.resolve(deleteResponse ?? { ok: true, status: 204, json: async () => undefined } as Response)
     }
     return Promise.reject(new Error(`unexpected request: ${method} ${url}`))
   }))
+}
+
+function openRevokeDialog() {
+  fireEvent.click(screen.getByRole('button', { name: '撤销授权' }))
+  return screen.getByRole('dialog', { name: '撤销对“新响应应用”的授权？' })
+}
+
+function confirmRevokeDialog() {
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '撤销授权' }))
 }
 
 beforeEach(() => {
@@ -115,7 +126,8 @@ describe('AuthorizedApps 并发列表加载（#688）', () => {
     })
     expect(await screen.findByText('新响应应用')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: '撤销授权' }))
+    openRevokeDialog()
+    confirmRevokeDialog()
     await screen.findByText('应用授权已撤销。')
     expect(requests).toContainEqual({ path: `${APPS_PATH}/cid-new`, method: 'DELETE' })
 
@@ -154,5 +166,89 @@ describe('AuthorizedApps 并发列表加载（#688）', () => {
       await requestB.promise
     })
     expect(await screen.findByText('新响应应用')).toBeTruthy()
+  })
+})
+
+describe('AuthorizedApps 撤销确认', () => {
+  async function renderOneApp(deleteResponse?: Response | Promise<Response>) {
+    const request = deferred<Response>()
+    stubListLoads([request], deleteResponse)
+    render(<AuthorizedApps />)
+    await act(async () => {
+      request.resolve(jsonResponse({ items: [NEW_APP] }))
+      await request.promise
+    })
+    expect(await screen.findByText('新响应应用')).toBeTruthy()
+  }
+
+  it('打开确认框展示说明；取消、关闭、Escape 和遮罩都不发 DELETE，确认才撤销', async () => {
+    const confirm = vi.spyOn(window, 'confirm')
+    await renderOneApp()
+
+    const dialog = openRevokeDialog()
+    expect(dialog.parentElement?.className).toContain('chenxing-modal-overlay')
+    expect(screen.getByText(REVOKE_BODY)).toBeTruthy()
+    expect(screen.getByText(REVOKE_NOTICE)).toBeTruthy()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '取消' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    fireEvent.click(within(openRevokeDialog()).getByRole('button', { name: '关闭' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    fireEvent.keyDown(openRevokeDialog(), { key: 'Escape' })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    const overlay = openRevokeDialog().parentElement
+    if (!overlay) throw new Error('revoke dialog overlay is missing')
+    fireEvent.mouseDown(overlay)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(requests.some((item) => item.method === 'DELETE')).toBe(false)
+    expect(screen.getByText('新响应应用')).toBeTruthy()
+
+    openRevokeDialog()
+    confirmRevokeDialog()
+    expect(await screen.findByText('应用授权已撤销。')).toBeTruthy()
+    expect(requests).toContainEqual({ path: `${APPS_PATH}/cid-new`, method: 'DELETE' })
+    expect(confirm).not.toHaveBeenCalled()
+    confirm.mockRestore()
+  })
+
+  it('撤销请求未结束前不能关闭确认框', async () => {
+    const deletion = deferred<Response>()
+    await renderOneApp(deletion.promise)
+    openRevokeDialog()
+    confirmRevokeDialog()
+
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByRole('button', { name: '撤销中…' })).toHaveProperty('disabled', true)
+    expect(within(dialog).getByRole('button', { name: '取消' })).toHaveProperty('disabled', true)
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭' }))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    const overlay = dialog.parentElement
+    if (!overlay) throw new Error('revoke dialog overlay is missing')
+    fireEvent.mouseDown(overlay)
+    expect(screen.getByRole('dialog')).toBe(dialog)
+    expect(requests.filter((item) => item.method === 'DELETE')).toHaveLength(1)
+
+    await act(async () => {
+      deletion.resolve({ ok: true, status: 204, json: async () => undefined } as Response)
+      await deletion.promise
+    })
+    expect(await screen.findByText('应用授权已撤销。')).toBeTruthy()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('撤销失败时保留应用，并沿用页面上的失败提示', async () => {
+    await renderOneApp(jsonResponse({ code: 'internal' }, 500))
+    openRevokeDialog()
+    confirmRevokeDialog()
+    expect(await screen.findByText('服务暂时不可用，请稍后重试。')).toBeTruthy()
+    expect(screen.queryByText('应用授权已撤销。')).toBeNull()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByText('新响应应用')).toBeTruthy()
   })
 })

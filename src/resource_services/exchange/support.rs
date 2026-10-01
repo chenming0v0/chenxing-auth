@@ -5,10 +5,10 @@ use std::fmt;
 use axum::http::{HeaderMap, header::AUTHORIZATION};
 use serde::Deserialize;
 
+use super::ticket::AppKind;
 use crate::resource_services::scopes::ProviderScope;
 use crate::resource_services::types::BindingRow;
 
-pub(super) const SESSION_TOKEN_LIFETIME_SECONDS: u64 = 300;
 pub(super) const MAX_DEVICE_ID_BYTES: usize = 255;
 pub(super) const MAX_DEVICE_INFO_BYTES: usize = 1024;
 
@@ -27,7 +27,9 @@ pub(super) const NOT_LINKED_MESSAGE: &str = "the user has no linked account";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExchangeInput {
-    /// 审计用设备标识；必填、非空、≤255 字节，不做设备判定。
+    #[serde(deserialize_with = "deserialize_app_kind")]
+    pub app_kind: AppKind,
+    /// Exact installation ID signed for Go; auth never claims or resets a slot.
     pub device_id: String,
     /// 审计用设备描述；可选、≤1024 字节，明文永不落库。
     #[serde(default)]
@@ -37,9 +39,20 @@ pub struct ExchangeInput {
     pub provider: Option<String>,
 }
 
+/// 先读成字符串再映射：serde_json 对单元枚举遇到 null/数字会报语法类错误，
+/// 那会被边界映射成 invalid_json；字段取值错误应稳定返回 invalid_request。
+fn deserialize_app_kind<'de, D>(deserializer: D) -> Result<AppKind, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    AppKind::from_wire(&value).ok_or_else(|| serde::de::Error::custom("unknown app_kind"))
+}
+
 impl fmt::Debug for ExchangeInput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExchangeInput")
+            .field("app_kind", &self.app_kind)
             .field("device_id", &self.device_id)
             .field(
                 "device_info",
@@ -47,6 +60,18 @@ impl fmt::Debug for ExchangeInput {
             )
             .field("provider", &self.provider)
             .finish()
+    }
+}
+
+impl ExchangeInput {
+    pub(super) fn is_valid(&self) -> bool {
+        !self.device_id.is_empty()
+            && self.device_id.len() <= MAX_DEVICE_ID_BYTES
+            && !self.device_id.chars().any(char::is_control)
+            && self
+                .device_info
+                .as_ref()
+                .is_none_or(|info| info.len() <= MAX_DEVICE_INFO_BYTES)
     }
 }
 

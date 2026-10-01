@@ -20,6 +20,49 @@ fn access_token_is_signed_with_current_key_and_contains_scope() {
     let header = jsonwebtoken::decode_header(&token).expect("JWT header");
     assert_eq!(header.kid.as_deref(), Some(keys.key_id().as_str()));
     assert_eq!(header.alg, jsonwebtoken::Algorithm::RS256);
+    let claims = decode_access_token(&keys, "https://auth.example.com", "cx_project", &token)
+        .expect("ordinary OAuth AT remains usable");
+    let value = serde_json::to_value(claims).expect("AT claims");
+    assert_eq!(value.as_object().unwrap().len(), 6);
+    assert_eq!(value["scope"], "openid profile");
+}
+
+#[test]
+fn every_access_token_decoder_rejects_ticket_markers_even_when_null() {
+    use chenxing_auth::oauth::token::decode_userinfo_token;
+    let keys = KeyManager::generate().expect("signing key");
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let base = serde_json::json!({
+        "iss": "https://auth.example.com", "sub": "user-1", "aud": "cx_project",
+        "iat": now, "exp": now + 300, "scope": "openid cltermux:access"
+    });
+    let key = keys.active_signing_key();
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some(key.key_id().to_owned());
+    for marker in [
+        "v",
+        "token_use",
+        "uid",
+        "binding_id",
+        "binding_version",
+        "app_kind",
+        "device_id",
+    ] {
+        for value in [serde_json::Value::Null, serde_json::json!("cltermux_login")] {
+            let mut claims = base.clone();
+            claims[marker] = value;
+            let token = jsonwebtoken::encode(&header, &claims, key.encoding_key()).unwrap();
+            assert!(
+                decode_access_token(&keys, "https://auth.example.com", "cx_project", &token)
+                    .is_err(),
+                "{marker}"
+            );
+            assert!(
+                decode_userinfo_token(&keys, "https://auth.example.com", &token).is_err(),
+                "{marker}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -38,9 +81,6 @@ fn expired_access_token_is_rejected_without_clock_leeway() {
             .checked_sub(2)
             .expect("current timestamp is after epoch"),
         scope: "openid".to_owned(),
-        uid: None,
-        binding_id: None,
-        binding_version: None,
     };
     let signing_key = keys.active_signing_key();
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);

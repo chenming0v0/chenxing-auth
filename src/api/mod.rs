@@ -49,6 +49,11 @@ pub fn router(state: AppState) -> Router {
     // 超时与 application router 共用同一层，health 有自己的 2 秒预算，不能套进来。
     let system_api = timeout::wrap_with_request_timeout(
         Router::new()
+            // Retired protocol has no issuer/auth/body dependencies and never redirects.
+            .route(
+                "/api/v1/auth/chenxing/exchange",
+                axum::routing::post(crate::resource_services::exchange::retired),
+            )
             .route("/api/v1/admin/bootstrap/status", get(health::system_status))
             // 匿名 status 只回答 initialized/uninitialized，不暴露 Issuer 收敛状态。
             .route(
@@ -81,6 +86,9 @@ pub fn router(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http().make_span_with(request_span))
         .layer(from_fn(map_api_parameter_rejection))
         .layer(from_fn(timeout::map_request_timeout_by_path))
+        .layer(from_fn(
+            crate::resource_services::exchange::response_boundary,
+        ))
         .layer(from_fn_with_state(
             state_for_middleware.clone(),
             bootstrap_navigation_guard,

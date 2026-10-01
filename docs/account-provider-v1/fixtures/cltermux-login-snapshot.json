@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "issuer": "https://provider.example.com",
+  "uid": "cltermux:1001",
+  "account": "demo-account-1001",
+  "name": "示例用户",
+  "status": "active",
+  "subscription": { "kind": "expires_at", "expires_at": "2026-12-31T23:59:59Z" },
+  "fields": [
+    { "key": "chrome_termux_login", "label": "浏览器版登录状态", "type": "status", "value": "logged_in" },
+    { "key": "termux_chrome_login", "label": "WebView 版登录状态", "type": "status", "value": "logged_out" }
+  ],
+  "fetched_at": "2026-09-28T00:00:00Z"
+}

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { ResourceServicesPage } from './resource-services'
 import { formatDate } from '../../data'
@@ -30,7 +30,7 @@ function deferred<T>(): Deferred<T> {
 }
 
 /** 替换 beforeEach 的即时 fetch，让指定的绑定列表 GET 挂起或失败。 */
-function stubPageFetch(onBindingsGet: () => Response | Promise<Response>, onMutate?: (path: string, method: string) => Response) {
+function stubPageFetch(onBindingsGet: () => Response | Promise<Response>, onMutate?: (path: string, method: string) => Response | Promise<Response>) {
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: FetchInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
     const method = (init?.method ?? 'GET').toUpperCase()
@@ -93,9 +93,9 @@ function register(path: string, method: string, handler: (init?: FetchInit) => R
   routes.push({ path, method, handler })
 }
 
-function registerBindings(bindings: unknown[]) {
+function registerBindings(bindings: unknown[], provider = PROVIDER) {
   routes = []
-  register('/api/v1/auth/resource-services', 'GET', () => jsonResponse([PROVIDER]))
+  register('/api/v1/auth/resource-services', 'GET', () => jsonResponse([provider]))
   register('/api/v1/auth/resource-services/bindings', 'GET', () => jsonResponse(bindings))
 }
 
@@ -184,24 +184,44 @@ describe('ResourceServicesPage', () => {
     expect(screen.getByText('授权到期')).toBeTruthy()
   })
 
-  it('unlinks a live binding', async () => {
-    registerBindings([BINDING])
+  it('only deletes the CLtermux account association, with explicit device-binding copy', async () => {
+    registerBindings([{ ...BINDING, uid: 'cltermux:42' }])
     register(`/api/v1/auth/resource-services/bindings/${BINDING.id}`, 'DELETE', () => emptyResponse())
     render(<ResourceServicesPage />)
     expect(await screen.findByText('acct-1001')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '解绑' }))
-    fireEvent.click(screen.getByRole('button', { name: '确认解绑' }))
+    fireEvent.click(screen.getByRole('button', { name: '解除账号关联' }))
+    const dialog = screen.getByRole('dialog', { name: '解除账号关联？' })
+    expect(within(dialog).getByText('仅解除辰星与该账号的授权关联，不会解除设备绑定。设备绑定只能由管理员重置。')).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: '解除账号关联' }))
     await waitFor(() => {
       expect(screen.queryByText('acct-1001')).toBeNull()
     })
+    expect(screen.getByText('已解除账号关联。')).toBeTruthy()
+    expect(calls.filter((call) => call.method !== 'GET').map(({ path, method }) => ({ path, method })))
+      .toEqual([{ path: `/api/v1/auth/resource-services/bindings/${BINDING.id}`, method: 'DELETE' }])
   })
 
-  it('在途列表 GET 返回时不复活已解绑项', async () => {
+  it('keeps non-CLtermux unlink copy neutral even when the provider name and snapshot UID suggest CLtermux', async () => {
+    registerBindings([{ ...BINDING, snapshot: { ...SNAPSHOT, uid: 'cltermux:42' } }], { ...PROVIDER, display_name: 'CLTermux' })
+    render(<ResourceServicesPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '解除账号关联' }))
+    const dialog = within(screen.getByRole('dialog', { name: '解除账号关联？' }))
+    expect(dialog.getByText('将解除与 CLTermux 账号的关联。')).toBeTruthy()
+    expect(dialog.getByText('仅解除辰星与该账号的授权关联。')).toBeTruthy()
+    expect(dialog.queryByText(/设备绑定|管理员/)).toBeNull()
+  })
+
+  it('在途旧列表 GET 返回时不复活已解除关联的账号和两版登录状态', async () => {
     let bindingsGets = 0
     const staleList = deferred<Response>()
+    const productBinding = { ...BINDING, uid: 'cltermux:42', snapshot: { ...SNAPSHOT, fields: [
+      ...SNAPSHOT.fields,
+      { key: 'chrome_termux_login', label: '浏览器版登录状态', type: 'status', value: 'logged_in' },
+      { key: 'termux_chrome_login', label: 'WebView 版登录状态', type: 'status', value: 'logged_out' },
+    ] } }
     stubPageFetch(() => {
       bindingsGets += 1
-      return bindingsGets === 1 ? jsonResponse([BINDING]) : staleList.promise
+      return bindingsGets === 1 ? jsonResponse([productBinding]) : staleList.promise
     }, (path, method) => (
       method === 'DELETE' && path === `/api/v1/auth/resource-services/bindings/${BINDING.id}`
         ? emptyResponse()
@@ -212,12 +232,14 @@ describe('ResourceServicesPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '刷新' }))
     await waitFor(() => expect(bindingsGets).toBe(2))
-    fireEvent.click(screen.getByRole('button', { name: '解绑' }))
-    fireEvent.click(screen.getByRole('button', { name: '确认解绑' }))
+    expect(screen.getByText('已登录')).toBeTruthy()
+    expect(screen.getByText('未登录')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '解除账号关联' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '解除账号关联' }))
     await waitFor(() => expect(screen.queryByText('acct-1001')).toBeNull())
 
     await act(async () => {
-      staleList.resolve(jsonResponse([BINDING]))
+      staleList.resolve(jsonResponse([productBinding]))
       await staleList.promise
       // apiFetch 还要过 response.json() 和 allSettled。排空后再断言，避免复活发生在断言之后。
       await Promise.resolve()
@@ -228,7 +250,23 @@ describe('ResourceServicesPage', () => {
 
     expect(screen.queryByText('acct-1001')).toBeNull()
     expect(screen.queryByText('demo-account-1001')).toBeNull()
+    expect(screen.queryByText('已登录')).toBeNull()
+    expect(screen.queryByText('未登录')).toBeNull()
     expect(screen.getByRole('button', { name: '绑定' })).toBeTruthy()
+  })
+
+  it('locks repeat account-unlink submissions while the DELETE is pending', async () => {
+    const pendingDelete = deferred<Response>()
+    stubPageFetch(() => jsonResponse([BINDING]), () => pendingDelete.promise)
+    render(<ResourceServicesPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '解除账号关联' }))
+    const confirm = within(screen.getByRole('dialog')).getByRole('button', { name: '解除账号关联' })
+    act(() => { fireEvent.click(confirm); fireEvent.click(confirm) })
+    expect(calls.filter((call) => call.method === 'DELETE')).toHaveLength(1)
+    expect(confirm.hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: '同步中…' }).hasAttribute('disabled')).toBe(true)
+    await act(async () => { pendingDelete.resolve(emptyResponse()); await pendingDelete.promise })
+    expect(await screen.findByText('已解除账号关联。')).toBeTruthy()
   })
 
   it('列表刷新失败时保留已显示的绑定', async () => {

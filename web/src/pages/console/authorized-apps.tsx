@@ -5,11 +5,13 @@ import { Badge, Button, Chip, EmptyState, HudPanel, Icon, Notice, PageIntro } fr
 import { formatDate } from '../../data'
 import { Link } from '../../router'
 import type { MessageTone } from './profile-avatar'
+import { RevokeAppDialog } from './revoke-app-dialog'
 
 export function AuthorizedApps() {
   const [apps, setApps] = useState<AuthorizedOAuthApp[]>([])
   const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
   const [busyClientId, setBusyClientId] = useState<string | null>(null)
+  const [pendingApp, setPendingApp] = useState<AuthorizedOAuthApp | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [hasData, setHasData] = useState(false)
@@ -19,6 +21,7 @@ export function AuthorizedApps() {
    * 先发后到的旧快照能让已撤销的授权重新显示为「已连接」。
    */
   const listRequestIdRef = useRef(0)
+  const revokingRef = useRef(false)
   const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
   const warn = (text: string) => notify(text, 'warning')
 
@@ -62,17 +65,23 @@ export function AuthorizedApps() {
   }, [loadApps])
 
   async function revokeApp(app: AuthorizedOAuthApp) {
-    if (!window.confirm(`确认撤销“${app.client_name}”的授权吗？撤销后，该应用将立即失去访问账户数据的权限，若要继续使用，必须重新授权。`)) return
+    // ref 挡住「busy 还没重渲染」时的第二次确认，避免同一条授权被删两次。
+    if (revokingRef.current) return
+    revokingRef.current = true
     setBusyClientId(app.client_id)
     setNotice(null)
     try {
       await apiFetch<void>(`/api/v1/auth/authorized-apps/${encodeURIComponent(app.client_id)}`, { method: 'DELETE' })
       setApps((current) => current.filter((item) => item.client_id !== app.client_id))
       notify('应用授权已撤销。', 'success')
+      setPendingApp(null)
       await refreshAppsSilently()
     } catch (reason) {
       warn(reason instanceof Error ? reason.message : '应用授权撤销失败。')
+      // 失败提示画在页面上；对话框不关的话遮罩会把它挡住。
+      setPendingApp(null)
     } finally {
+      revokingRef.current = false
       setBusyClientId(null)
     }
   }
@@ -118,7 +127,7 @@ export function AuthorizedApps() {
               </div>
               <div className="flex shrink-0 items-center gap-4 lg:flex-col lg:items-end lg:gap-3">
                 <Button variant="ghost" icon="eye" disabled title="详情接口尚未提供">查看详情</Button>
-                <Button variant="danger" icon="unlink" disabled={busyClientId !== null} onClick={() => void revokeApp(app)}>撤销授权</Button>
+                <Button variant="danger" icon="unlink" disabled={busyClientId !== null} onClick={() => { setNotice(null); setPendingApp(app) }}>撤销授权</Button>
               </div>
             </div>
           </HudPanel>
@@ -129,6 +138,14 @@ export function AuthorizedApps() {
           </HudPanel>
         ) : null}
       </div>
+      {pendingApp ? (
+        <RevokeAppDialog
+          name={pendingApp.client_name}
+          busy={busyClientId !== null}
+          onCancel={() => setPendingApp(null)}
+          onConfirm={() => { void revokeApp(pendingApp) }}
+        />
+      ) : null}
     </ConsoleLayout>
   )
 }

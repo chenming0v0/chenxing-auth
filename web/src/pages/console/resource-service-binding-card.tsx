@@ -3,6 +3,7 @@ import { Badge, Button, HudPanel } from '@chenxing/ui'
 import type { ResourceServiceBinding, ResourceServiceSnapshotField } from '../../resource-services-types'
 import { parseResourceServiceSnapshot } from '../../resource-services-types'
 import {
+  cltermuxLoginStates,
   formatDuration,
   statusPresentation,
   subscriptionSummary,
@@ -54,7 +55,8 @@ export function ResourceServiceBindingCard({ binding, providerName, busy, pendin
   const snapshot = parseResourceServiceSnapshot(binding.snapshot)
   const status = statusPresentation(binding.status ?? snapshot?.status ?? null)
   const subscription = snapshot?.subscription ? subscriptionSummary(snapshot.subscription, new Date()) : null
-  const fields = visibleSnapshotFields(snapshot?.fields ?? [], subscription !== null)
+  const loginStates = cltermuxLoginStates(binding.uid, snapshot?.fields ?? [])
+  const fields = visibleSnapshotFields(snapshot?.fields ?? [], subscription !== null, loginStates.length > 0)
   const displayName = binding.name ?? snapshot?.name ?? null
   // 头部展示提供方给出的展示账号；顶层 uid 是绑定键，不作为「UID」展示。
   // 提供方想展示什么 UID，由它自己在 fields[] 里用 uid 字段和 label 决定。
@@ -79,11 +81,14 @@ export function ResourceServiceBindingCard({ binding, providerName, busy, pendin
             {pending ? '同步中…' : '同步'}
           </Button>
           <Button variant="ghost" disabled={busy || pending} onClick={onRefresh}>刷新令牌</Button>
-          <Button variant="danger" icon="unlink" disabled={busy} onClick={onUnlink}>解绑</Button>
+          <Button variant="danger" icon="unlink" disabled={busy} onClick={onUnlink}>解除账号关联</Button>
         </div>
       </div>
 
       <dl className="mt-5 grid grid-cols-1 gap-4 border-t border-[var(--chenxing-border)] pt-5 sm:grid-cols-2">
+        {loginStates.map((product) => (
+          <Item key={product.key} label={product.label}>{product.value}</Item>
+        ))}
         {subscription ? (
           <Item label="订阅">
             <span className="flex flex-wrap items-center gap-2">
@@ -97,6 +102,7 @@ export function ResourceServiceBindingCard({ binding, providerName, busy, pendin
         ))}
         {snapshot?.fetched_at ? <Item label="最近同步">{formatDate(snapshot.fetched_at)}</Item> : null}
       </dl>
+      {loginStates.length > 0 ? <p className="chenxing-caption mt-4">登录状态以最近同步结果为准，不表示实时在线。</p> : null}
 
       <dl className="mt-4 border-t border-[var(--chenxing-border)] pt-4">
         <Item label="授权到期">

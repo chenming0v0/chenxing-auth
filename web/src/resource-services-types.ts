@@ -46,6 +46,10 @@ export type ResourceServiceSubscription =
 
 export type ResourceServiceAccountStatus = 'active' | 'disabled' | 'unknown'
 
+/** CLtermux 两个产品的登录快照；unknown 仅用于页面容错，不代表未绑定。 */
+export type ResourceServiceLoginStatus = 'unbound' | 'logged_out' | 'logged_in' | 'unknown'
+export type ResourceServiceLoginFieldKey = 'chrome_termux_login' | 'termux_chrome_login'
+
 /** 提供方自述的展示字段，按 `type` 区分取值类型；未知类型在解析阶段丢弃。 */
 export type ResourceServiceSnapshotField = { key: string; label: string } & (
   | { type: 'text'; value: string }

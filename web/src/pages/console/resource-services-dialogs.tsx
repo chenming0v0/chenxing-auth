@@ -90,12 +90,14 @@ export function BindResourceServiceDialog({
 
 export function UnlinkResourceServiceDialog({
   name,
+  isCltermux,
   busy,
   error,
   onCancel,
   onSubmit,
 }: {
   name: string
+  isCltermux: boolean
   busy: boolean
   error: string | null
   onCancel: () => void
@@ -109,16 +111,18 @@ export function UnlinkResourceServiceDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="resource-service-unlink-title"
+        aria-describedby="resource-service-unlink-description"
         tabIndex={-1}
         className="relative z-[var(--chenxing-z-dialog)] my-auto w-full max-w-md"
       >
-        <h2 id="resource-service-unlink-title" className="chenxing-h2">解除 {name} 绑定？</h2>
-        <p className="chenxing-caption mt-2">本地授权会立即失效。资源服务侧的撤销会在后台完成。</p>
+        <h2 id="resource-service-unlink-title" className="chenxing-h2">解除账号关联？</h2>
+        <p className="chenxing-body mt-2">将解除与 {name} 账号的关联。</p>
+        <p id="resource-service-unlink-description" className="chenxing-caption mt-2">仅解除辰星与该账号的授权关联{isCltermux ? '，不会解除设备绑定。设备绑定只能由管理员重置。' : '。'}</p>
         {error ? <div className="mt-4"><Notice tone="warning">{error}</Notice></div> : null}
         <div className="mt-6 flex justify-end gap-2">
           <Button variant="ghost" type="button" onClick={onCancel} disabled={busy}>取消</Button>
           <Button variant="danger" icon="unlink" type="button" disabled={busy} onClick={() => { void onSubmit().then((done) => { if (done) onCancel() }) }}>
-            {busy ? '解绑中…' : '确认解绑'}
+            {busy ? '正在解除账号关联…' : '解除账号关联'}
           </Button>
         </div>
       </HudPanel>
