@@ -22,6 +22,7 @@ mod provider_result;
 mod refresh;
 mod revoke;
 mod scope_input;
+mod sync;
 mod worker;
 
 pub use admin::ProviderWrite;

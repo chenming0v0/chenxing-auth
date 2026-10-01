@@ -1621,21 +1621,28 @@ paths:
           csrfCookie: []
           csrfHeader: []
       description: >-
-        用当前 access_token 向资源服务拉取最新账号快照。网络失败、5xx 或解密失败时返回本地缓存，不使令牌失效。
+        用当前 access_token 向资源服务拉取最新账号快照。access_token 已过期（或 30 秒内过期）、
+        或资源服务以 invalid_access_token 拒绝时，自动按刷新流程轮换令牌，返回刷新响应携带的最新快照；
+        刷新失败的错误码与 refresh 接口一致（如 409 reauthorization_required）。
+        网络失败、5xx 返回 503 provider_unavailable，协议不合返回 400 invalid_response，均不改快照、不使令牌失效，
+        不再以本地缓存冒充同步成功。
         提供方返回终态 account_disabled 时，把仍 live 的快照 status 写成 disabled（不 tombstone）并返回 403 binding_revoked。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         '200':
-          description: 最新或缓存的绑定视图
+          description: 同步（或自动刷新）后的最新绑定视图
           headers:
             Cache-Control: { schema: { type: string, example: no-store } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ResourceServiceBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/oauth-scopes:
     get:

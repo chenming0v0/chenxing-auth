@@ -19,6 +19,14 @@ pub(super) fn is_account_disabled(error: &ClientError) -> bool {
     )
 }
 
+/// 提供方拒绝 access_token（过期或已轮换）。同步遇到它应改走刷新，而不是放弃。
+pub(super) fn is_invalid_access_token(error: &ClientError) -> bool {
+    matches!(
+        error.provider_failure().map(|failure| failure.code),
+        Some(KnownErrorCode::InvalidAccessToken)
+    )
+}
+
 pub(super) fn provider_already_committed(error: &ClientError) -> bool {
     matches!(
         error.provider_failure().map(|failure| failure.code),
@@ -178,6 +186,24 @@ mod tests {
             );
             assert!(!provider_already_committed(&provider(code)));
         }
+    }
+
+    #[test]
+    fn only_invalid_access_token_triggers_sync_refresh() {
+        assert!(is_invalid_access_token(&provider(
+            KnownErrorCode::InvalidAccessToken
+        )));
+        for code in [
+            KnownErrorCode::InvalidRefreshToken,
+            KnownErrorCode::InvalidClient,
+            KnownErrorCode::AccountDisabled,
+            KnownErrorCode::ProviderUnavailable,
+        ] {
+            assert!(!is_invalid_access_token(&provider(code)), "{code:?}");
+        }
+        assert!(!is_invalid_access_token(&ClientError::UnexpectedStatus(
+            401
+        )));
     }
 
     #[test]
