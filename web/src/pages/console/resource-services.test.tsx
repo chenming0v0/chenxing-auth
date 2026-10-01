@@ -269,6 +269,18 @@ describe('ResourceServicesPage', () => {
     expect(await screen.findByText('已解除账号关联。')).toBeTruthy()
   })
 
+  it('同步失败时显示同步失败，不再显示快照已同步', async () => {
+    registerBindings([BINDING])
+    register(`/api/v1/auth/resource-services/bindings/${BINDING.id}/sync`, 'POST', () => jsonResponse({ code: 'provider_unavailable', message: 'the provider is unavailable' }, 503))
+    render(<ResourceServicesPage />)
+    expect(await screen.findByText('demo-account-1001')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '同步' }))
+
+    expect(await screen.findByText(/^同步失败：/)).toBeTruthy()
+    expect(screen.queryByText('快照已同步。')).toBeNull()
+  })
+
   it('列表刷新失败时保留已显示的绑定', async () => {
     let bindingsGets = 0
     stubPageFetch(() => {

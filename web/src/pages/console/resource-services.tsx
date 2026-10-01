@@ -102,7 +102,7 @@ export function ResourceServicesPage() {
       } catch (error) {
         const text = error instanceof Error ? error.message : '操作失败。'
         if (dialog?.kind === 'unlink') setDialogError(text)
-        else setNotice({ text, tone: 'warning' })
+        else setNotice({ text: `${action === 'refresh' ? '刷新令牌失败' : '同步失败'}：${text}`, tone: 'warning' })
         return false
       } finally {
         setPendingId(null)

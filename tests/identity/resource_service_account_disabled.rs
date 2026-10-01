@@ -2,7 +2,9 @@
 //!
 //! 兑换只看 `snapshot_json.status`（`active` 签发 300 秒票，`disabled` 拒绝，
 //! 其它当未绑定）。这里不改兑换门，只证明同步 / 刷新 / 创建把终态写进去之后，
-//! 现有门不再签发。网络错误和 5xx 仍返回旧的 active 快照。
+//! 现有门不再签发。网络错误和 5xx 如实返回 503，不改快照也不烧令牌。
+//!
+//! 同步遇到过期或被拒的 access_token 时自动走刷新，刷新响应带回最新快照。
 
 use std::sync::{
     Arc, Mutex,
@@ -45,6 +47,7 @@ enum Script {
     Disabled,
     Status502,
     Transport,
+    InvalidAccessToken,
 }
 
 struct StubProvider {
@@ -54,6 +57,8 @@ struct StubProvider {
     database: chenxing_auth::sqlx::PgPool,
     /// 在 GET /account 返回之前把这条门户会话标成已撤销。
     revoke_session_on_account: Mutex<Option<i64>>,
+    account_calls: AtomicUsize,
+    refresh_calls: AtomicUsize,
 }
 
 impl StubProvider {
@@ -64,6 +69,8 @@ impl StubProvider {
             account: Mutex::new(Script::Ok),
             database,
             revoke_session_on_account: Mutex::new(None),
+            account_calls: AtomicUsize::new(0),
+            refresh_calls: AtomicUsize::new(0),
         }
     }
 
@@ -106,20 +113,16 @@ impl ProviderTransport for StubProvider {
                 });
             }
             if path == "/api/v1/account-provider/account" {
+                self.account_calls.fetch_add(1, Ordering::SeqCst);
                 self.maybe_revoke_session().await;
                 let script = *self.account.lock().expect("account script");
                 return scripted(script, account_ok());
             }
             if path == "/api/v1/account-provider/link-sessions/refresh" {
+                self.refresh_calls.fetch_add(1, Ordering::SeqCst);
                 let script = *self.refresh.lock().expect("refresh script");
-                return scripted(
-                    script,
-                    ProviderHttpResponse {
-                        status: 404,
-                        retry_after_seconds: None,
-                        body: Vec::new(),
-                    },
-                );
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                return scripted(script, refreshed_ok(&body));
             }
             if path == "/api/v1/account-provider/link-sessions" {
                 let script = *self.create.lock().expect("create script");
@@ -152,6 +155,11 @@ fn scripted(
             body: br#"{"error":{"code":"provider_unavailable"}}"#.to_vec(),
         }),
         Script::Transport => Err(TransportError::Unavailable),
+        Script::InvalidAccessToken => Ok(ProviderHttpResponse {
+            status: 401,
+            retry_after_seconds: None,
+            body: br#"{"error":{"code":"invalid_access_token","retryable":false}}"#.to_vec(),
+        }),
     }
 }
 
@@ -168,6 +176,27 @@ fn created_ok(body: &Value) -> ProviderHttpResponse {
     .expect("product snapshot");
     ProviderHttpResponse {
         status: 201,
+        retry_after_seconds: None,
+        body: serde_json::to_vec(&response).expect("json"),
+    }
+}
+
+/// 刷新响应带回的快照把 WebView 版改成已登录，用来证明页面拿到的是刷新后的新快照。
+fn refreshed_ok(body: &Value) -> ProviderHttpResponse {
+    let mut response: Value = serde_json::from_str(include_str!(
+        "../../docs/account-provider-v1/fixtures/refresh-response.json"
+    ))
+    .expect("fixture");
+    response["client_binding_id"] = body["client_binding_id"].clone();
+    response["uid"] = json!("cltermux:1001");
+    let mut snapshot: Value = serde_json::from_str(include_str!(
+        "../../docs/account-provider-v1/fixtures/cltermux-login-snapshot.json"
+    ))
+    .expect("product snapshot");
+    snapshot["fields"][1]["value"] = json!("logged_in");
+    response["snapshot"] = snapshot;
+    ProviderHttpResponse {
+        status: 200,
         retry_after_seconds: None,
         body: serde_json::to_vec(&response).expect("json"),
     }
@@ -644,7 +673,7 @@ async fn create_account_disabled_marks_the_existing_live_row() {
 }
 
 #[tokio::test]
-async fn sync_provider_5xx_keeps_active_snapshot_and_exchange_still_issues() {
+async fn sync_provider_5xx_reports_failure_and_keeps_active_snapshot() {
     let bound = bind_live("sync-502").await;
     bound.env.stub.set_account(Script::Status502);
     let response = post_sync(
@@ -654,9 +683,9 @@ async fn sync_provider_5xx_keeps_active_snapshot_and_exchange_still_issues() {
         bound.binding_id,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = http::json_body(response).await;
-    assert_eq!(body["status"], "active");
+    assert_eq!(error_code(&body), "provider_unavailable");
 
     let row = stored_snapshot(&bound.env.database, bound.binding_id).await;
     assert_eq!(row.status.as_deref(), Some("active"));
@@ -667,7 +696,7 @@ async fn sync_provider_5xx_keeps_active_snapshot_and_exchange_still_issues() {
 }
 
 #[tokio::test]
-async fn sync_transport_error_keeps_active_snapshot_and_exchange_still_issues() {
+async fn sync_transport_error_reports_failure_and_keeps_active_snapshot() {
     let bound = bind_live("sync-transport").await;
     bound.env.stub.set_account(Script::Transport);
     let response = post_sync(
@@ -677,9 +706,9 @@ async fn sync_transport_error_keeps_active_snapshot_and_exchange_still_issues() 
         bound.binding_id,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = http::json_body(response).await;
-    assert_eq!(body["status"], "active");
+    assert_eq!(error_code(&body), "provider_unavailable");
 
     let row = stored_snapshot(&bound.env.database, bound.binding_id).await;
     assert_eq!(row.status.as_deref(), Some("active"));
@@ -833,4 +862,119 @@ async fn account_disabled_errors_when_snapshot_write_misses_twice() {
     assert_eq!(row.has_ciphertext, before.has_ciphertext);
     let (status, body) = exchange(&bound.env, &bound.token).await;
     assert_issues_300s_ticket(status, &body);
+}
+
+async fn expire_access_token(database: &chenxing_auth::sqlx::PgPool, binding_id: Uuid) {
+    chenxing_auth::sqlx::query(
+        "UPDATE resource_service_bindings
+         SET access_expires_at = statement_timestamp() - interval '11 days'
+         WHERE id = $1",
+    )
+    .bind(binding_id)
+    .execute(database)
+    .await
+    .expect("expire access token");
+}
+
+async fn access_expires_in_future(
+    database: &chenxing_auth::sqlx::PgPool,
+    binding_id: Uuid,
+) -> bool {
+    chenxing_auth::sqlx::query_scalar(
+        "SELECT access_expires_at > statement_timestamp()
+         FROM resource_service_bindings WHERE id = $1",
+    )
+    .bind(binding_id)
+    .fetch_one(database)
+    .await
+    .expect("access expiry")
+}
+
+fn assert_refreshed_snapshot(body: &Value) {
+    assert_eq!(body["status"], "active");
+    assert_eq!(body["snapshot"]["fields"][0]["value"], "logged_in");
+    assert_eq!(
+        body["snapshot"]["fields"][1]["value"], "logged_in",
+        "sync must return the snapshot carried by the refresh response"
+    );
+}
+
+#[tokio::test]
+async fn sync_with_expired_access_token_refreshes_instead_of_reporting_stale_success() {
+    let bound = bind_live("sync-expired").await;
+    let before = stored_snapshot(&bound.env.database, bound.binding_id).await;
+    expire_access_token(&bound.env.database, bound.binding_id).await;
+
+    let response = post_sync(
+        &bound.env.router,
+        &bound.cookie,
+        &bound.csrf,
+        bound.binding_id,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_refreshed_snapshot(&http::json_body(response).await);
+
+    assert_eq!(
+        bound.env.stub.account_calls.load(Ordering::SeqCst),
+        0,
+        "an expired token must not be sent to GET /account"
+    );
+    assert_eq!(bound.env.stub.refresh_calls.load(Ordering::SeqCst), 1);
+    let after = stored_snapshot(&bound.env.database, bound.binding_id).await;
+    assert!(
+        after.generation > before.generation,
+        "refresh rotates the bundle"
+    );
+    assert!(after.has_ciphertext);
+    assert!(access_expires_in_future(&bound.env.database, bound.binding_id).await);
+}
+
+#[tokio::test]
+async fn sync_rejected_access_token_refreshes_and_returns_new_snapshot() {
+    let bound = bind_live("sync-rejected").await;
+    let before = stored_snapshot(&bound.env.database, bound.binding_id).await;
+    bound.env.stub.set_account(Script::InvalidAccessToken);
+
+    let response = post_sync(
+        &bound.env.router,
+        &bound.cookie,
+        &bound.csrf,
+        bound.binding_id,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_refreshed_snapshot(&http::json_body(response).await);
+
+    assert_eq!(bound.env.stub.account_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(bound.env.stub.refresh_calls.load(Ordering::SeqCst), 1);
+    let after = stored_snapshot(&bound.env.database, bound.binding_id).await;
+    assert!(after.generation > before.generation);
+}
+
+#[tokio::test]
+async fn sync_with_expired_token_surfaces_refresh_failure() {
+    let bound = bind_live("sync-expired-502").await;
+    let before = stored_snapshot(&bound.env.database, bound.binding_id).await;
+    expire_access_token(&bound.env.database, bound.binding_id).await;
+    bound.env.stub.set_refresh(Script::Status502);
+
+    let response = post_sync(
+        &bound.env.router,
+        &bound.cookie,
+        &bound.csrf,
+        bound.binding_id,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = http::json_body(response).await;
+    assert_eq!(error_code(&body), "provider_unavailable");
+
+    let after = stored_snapshot(&bound.env.database, bound.binding_id).await;
+    assert_eq!(after.generation, before.generation);
+    assert_eq!(after.status.as_deref(), Some("active"));
+    assert!(
+        after.has_ciphertext,
+        "a 5xx refresh must not burn the grant"
+    );
 }
