@@ -6,10 +6,12 @@
  * 慢时用户只能看到这条假错误，误以为授权失败。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { PendingAuthorization } from '../api'
 import { installCsrfCookie } from '../test/csrf-cookie'
 import { OAuthConsentPage } from './oauth'
+import { OAuthHandoffView } from './oauth-handoff'
+import { replaceUrl } from '../router'
 
 installCsrfCookie()
 
@@ -156,5 +158,32 @@ describe('OAuthConsentPage 决策成功后的交接态', () => {
     render(<OAuthConsentPage />)
 
     expect(await screen.findByText('授权请求缺少 request_id，请重新发起。')).toBeTruthy()
+  })
+})
+
+describe('OAuthHandoffView 交接后切回浏览器', () => {
+  function setVisibility(state: DocumentVisibilityState) {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+  }
+
+  afterEach(() => {
+    delete (document as { visibilityState?: unknown }).visibilityState
+  })
+
+  it.each(['approve', 'deny'] as const)('%s：隐藏后再可见时 replace 到 /console', (decision) => {
+    replaceUrl('/oauth/consent')
+    const lengthBefore = window.history.length
+    render(<OAuthHandoffView decision={decision} />)
+
+    setVisibility('visible')
+    expect(window.location.pathname).toBe('/oauth/consent')
+
+    setVisibility('hidden')
+    setVisibility('visible')
+    expect(window.location.pathname).toBe('/console')
+    expect(window.history.length).toBe(lengthBefore)
   })
 })

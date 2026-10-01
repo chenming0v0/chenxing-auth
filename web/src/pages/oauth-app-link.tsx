@@ -4,6 +4,7 @@ import { OAuthShell } from '../components/shells'
 import { BrandMark, HudPanel } from '@chenxing/ui'
 import { appLaunchTarget, isAndroidBrowser } from '../android-intent'
 import { scrubLocationQuery } from './oauth'
+import { useReturnHomeAfterHandoff } from '../use-return-home-after-handoff'
 
 /**
  * 移动端客户端的回调地址形如 `https://<issuer>/app/<numeric_id>/oauth/callback`
@@ -68,6 +69,9 @@ export function AppLinkCallbackPage() {
     }
   })
   const [androidPackage, setAndroidPackage] = useState<string | null>(null)
+  // 有效回调一旦交给应用，授权码就用掉了；切回浏览器时换成控制台，免得再点出一个
+  // 死回调。无效回调没有交接过，保留页面上的手动按钮即可。
+  useReturnHomeAfterHandoff(callbackState.valid)
 
   // useLayoutEffect 先于绘制执行：避免敏感参数在地址栏闪现一个可被截图/观察的窗口
   useLayoutEffect(() => {
