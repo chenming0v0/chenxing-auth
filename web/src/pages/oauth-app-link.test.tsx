@@ -240,3 +240,43 @@ describe('AppLinkCallbackPage 在 Android 上把打开应用链接换成 intent:
     expect(signal?.aborted).toBe(true)
   })
 })
+
+describe('AppLinkCallbackPage 交接后切回浏览器', () => {
+  function setVisibility(state: DocumentVisibilityState) {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+  }
+
+  afterEach(() => {
+    delete (document as { visibilityState?: unknown }).visibilityState
+  })
+
+  it.each([
+    ['成功', '/app/1/oauth/callback?code=secret-code&state=xyz'],
+    ['错误', '/app/1/oauth/callback?error=access_denied'],
+  ])('%s回调：隐藏后再可见时 replace 到 /console', (_label, url) => {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+    window.history.replaceState({}, '', url)
+    render(<AppLinkCallbackPage />)
+
+    setVisibility('visible')
+    expect(window.location.pathname).toBe('/app/1/oauth/callback')
+
+    setVisibility('hidden')
+    setVisibility('visible')
+    expect(window.location.pathname).toBe('/console')
+  })
+
+  it('无效回调：切回浏览器不跳转，保留手动按钮', () => {
+    window.history.replaceState({}, '', '/app/1/oauth/callback')
+    render(<AppLinkCallbackPage />)
+
+    setVisibility('hidden')
+    setVisibility('visible')
+
+    expect(window.location.pathname).toBe('/app/1/oauth/callback')
+    expect(screen.getByRole('heading', { name: '授权回调无效' })).toBeTruthy()
+  })
+})

@@ -219,6 +219,12 @@ async fn authorize_request(
         Ok(true) if prompt_options.requires_consent() => {
             save_and_redirect_to_ui(&state, pending, UiDestination::Consent, &client).await
         }
+        Ok(true)
+            if !prompt_options.none
+                && is_issuer_app_link(issuer.issuer(), &client, &validated.redirect_uri) =>
+        {
+            save_and_redirect_to_ui(&state, pending, UiDestination::Consent, &client).await
+        }
         Ok(true) => {
             issue_preconsented_request(
                 &state,
@@ -241,6 +247,18 @@ async fn authorize_request(
             )
         }
     }
+}
+
+/// 回调是否为本 Issuer 上的 Android App Link。
+///
+/// Chrome Android 不会把同主机导航（含服务端 302）交给 App，已授权直通的 302
+/// 会让浏览器停在回调兜底页。命中时改走确认页，由 SPA 用 `intent://` 唤起 App。
+fn is_issuer_app_link(
+    issuer: &crate::config::IssuerUrl,
+    client: &super::authorization::RegisteredClient,
+    redirect_uri: &str,
+) -> bool {
+    super::app_link_launch::android_launch_package(issuer, client, redirect_uri).is_some()
 }
 
 /// 交给 SPA 处理的交互落点。三者的落盘与 Cookie 处理完全一致，只有 URL 不同。

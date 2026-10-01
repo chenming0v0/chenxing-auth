@@ -151,3 +151,47 @@ fn authorization_error_does_not_reflect_overlong_state() {
     assert!(location.contains("error=invalid_request"));
     assert!(!location.contains("state="));
 }
+
+fn issuer_url(value: &str) -> crate::config::IssuerUrl {
+    crate::config::IssuerUrl::parse(value).expect("issuer url")
+}
+
+fn android_client(redirect_uri: &str) -> super::super::authorization::RegisteredClient {
+    super::super::authorization::RegisteredClient {
+        redirect_uris: vec![redirect_uri.to_owned()],
+        android_package: Some("com.chengming.termux".to_owned()),
+        ..client()
+    }
+}
+
+/// 已授权直通前的分流判定：同主机 App Link 必须改走确认页（由 SPA 用 intent:// 唤起）。
+#[test]
+fn preconsented_issuer_app_link_is_routed_to_consent_page() {
+    let redirect = "https://oauth.clya.top/app/1/oauth/callback";
+    assert!(is_issuer_app_link(
+        &issuer_url("https://oauth.clya.top"),
+        &android_client(redirect),
+        redirect,
+    ));
+}
+
+/// 普通回调（外部主机、无包名）保持原样：继续直接签发授权码。
+#[test]
+fn preconsented_ordinary_redirect_keeps_direct_issuance() {
+    let issuer = issuer_url("https://oauth.clya.top");
+    assert!(!is_issuer_app_link(
+        &issuer,
+        &client(),
+        "https://client.example/callback",
+    ));
+    let other_host = "https://client.example/app/1/oauth/callback";
+    assert!(!is_issuer_app_link(
+        &issuer,
+        &android_client(other_host),
+        other_host
+    ));
+    let same_host = "https://oauth.clya.top/app/1/oauth/callback";
+    let mut no_package = android_client(same_host);
+    no_package.android_package = None;
+    assert!(!is_issuer_app_link(&issuer, &no_package, same_host));
+}

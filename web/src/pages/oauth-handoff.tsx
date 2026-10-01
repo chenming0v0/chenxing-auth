@@ -1,5 +1,6 @@
 import { BrandMark, HudPanel, Icon } from '@chenxing/ui'
 import { OAuthShell } from '../components/shells'
+import { useReturnHomeAfterHandoff } from '../use-return-home-after-handoff'
 
 export type OAuthHandoffDecision = 'approve' | 'deny'
 
@@ -13,6 +14,8 @@ export type OAuthHandoffDecision = 'approve' | 'deny'
  */
 export function OAuthHandoffView({ decision }: { decision: OAuthHandoffDecision }) {
   const approved = decision === 'approve'
+  // 已经交给应用：用户切回浏览器时不再停在这条过期的交接页上
+  useReturnHomeAfterHandoff()
   return (
     <OAuthShell>
       <HudPanel className="oauth-card" role="region" aria-live="polite" aria-label="辰星通行证授权结果">
