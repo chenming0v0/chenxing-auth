@@ -1,6 +1,6 @@
 /**
  * #723：App Link 回调不是受保护路由，会在 status==='loading' 时挂上并立刻擦掉地址栏。
- * 随后 /api/v1/auth/me 401 走 clear()，generation +1。若本页仍包在这个 key 里，
+ * 真实跨标签登出会令 generation +1。若本页仍包在这个 key 里，
  * 重挂后 useState 读到的是已擦掉的地址，有效回调会被画成「授权回调无效」。
  *
  * 这里挂真实 App（内部是 auth-state 的 AuthProvider，不 mock）。地址栏上的
@@ -12,7 +12,7 @@ import App from '../App'
 import { clearApiCache } from '../api'
 import { replaceUrl } from '../router'
 
-/** clear() 在 401 时写入的跨标签登出事件。出现即表示本地状态已切到未登录。 */
+/** 真实跨标签登出通道；首次未登录探针不会发布登出事件。 */
 const AUTH_SYNC_STORAGE_KEY = 'chenxing-auth-sync-event'
 
 const CALLBACK_PATH = '/app/1/oauth/callback'
@@ -73,9 +73,13 @@ describe('App Link 回调不随未登录 401 的 generation 重挂（#723）', (
       await Promise.resolve()
     })
 
-    const sync = window.localStorage.getItem(AUTH_SYNC_STORAGE_KEY)
-    expect(sync).toBeTruthy()
-    expect((JSON.parse(sync ?? '') as { type?: string }).type).toBe('logout')
+    expect(window.localStorage.getItem(AUTH_SYNC_STORAGE_KEY)).toBeNull()
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: AUTH_SYNC_STORAGE_KEY,
+        newValue: JSON.stringify({ type: 'logout', nonce: 'callback-remote-logout', occurredAt: Date.now() + 1_000 }),
+      }))
+    })
 
     const anchor = screen.getByRole('link', { name: '打开应用继续' })
     expect(anchor.getAttribute('href')).toBe(originalHref)

@@ -17,8 +17,8 @@ use webauthn_rs::prelude::{AuthenticationResult, Passkey};
 
 use crate::{harness, http};
 
-pub(super) const ORIGIN: &str = "http://127.0.0.1:3000";
-pub(super) const RP_ID: &str = "127.0.0.1";
+pub(super) const ORIGIN: &str = "http://localhost:3000";
+pub(super) const RP_ID: &str = "localhost";
 pub(super) const START: &str = "/api/v1/auth/passkeys/authentication/start";
 pub(super) const FINISH: &str = "/api/v1/auth/passkeys/authentication/finish";
 

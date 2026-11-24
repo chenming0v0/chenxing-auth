@@ -21,7 +21,8 @@ impl WaitAt {
             Self::UserRow => "FROM users",
             Self::DefaultSet => "pg_advisory_xact_lock",
             Self::PlanRow => "FROM plans WHERE id",
-            Self::QuotaCount => "SELECT COUNT(*) FROM oauth_clients",
+            // 计数已收进最终 INSERT 的 CTE；pg_stat_activity 的默认截断可能看不到尾部 COUNT。
+            Self::QuotaCount => "WITH decision_time",
             Self::IdempotencyClaim => "client_operation_idempotency",
         }
     }

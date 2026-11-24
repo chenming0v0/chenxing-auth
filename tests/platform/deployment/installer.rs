@@ -378,7 +378,7 @@ fn remote_manager_pulls_the_release_before_running_migrations() {
             .find("run --rm migrate")
             .expect("remote scripts must run the migration job");
         let start_at = script
-            .find("compose up -d app")
+            .rfind("compose up -d ")
             .expect("remote scripts must start the app after migration");
         assert!(pull_at < migrate_at && migrate_at < start_at);
     }
