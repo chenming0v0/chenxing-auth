@@ -47,10 +47,10 @@ class ApifoxSyncWorkflowContractTest(unittest.TestCase):
             "https://api.apifox.com/v1/projects/8642631/import-openapi?locale=zh-CN",
             self.text,
         )
-        self.assertIn(
-            "https://raw.githubusercontent.com/chenming0v0/chenxing-auth/dev/openapi.yaml",
-            self.text,
-        )
+        self.assertIn("--rawfile spec openapi.yaml", self.text)
+        self.assertIn('"input": $spec', self.text)
+        self.assertIn('--data-binary @"$RUNNER_TEMP/apifox-import.json"', self.text)
+        self.assertNotIn("https://raw.githubusercontent.com", self.text)
 
     def test_retries_without_continue_on_error(self) -> None:
         # Failures belong on this workflow. continue-on-error was only needed
@@ -66,9 +66,12 @@ class ApifoxSyncWorkflowContractTest(unittest.TestCase):
         self.assertIn("  group: apifox-sync", self.lines)
         self.assertIn("  cancel-in-progress: true", self.lines)
 
-    def test_does_not_checkout_or_use_unpinned_actions(self) -> None:
-        # Import is by URL; a checkout would only add supply-chain surface.
-        self.assertFalse(any(re.match(r"^\s+uses:", line) for line in self.lines))
+    def test_checks_out_the_triggering_commit_with_pinned_action(self) -> None:
+        references = re.findall(r"^\s+- uses: ([^\s#]+)", self.text, re.MULTILINE)
+        self.assertEqual(len(references), 1)
+        self.assertRegex(references[0], r"^actions/checkout@[0-9a-f]{40}$")
+        self.assertIn("ref: ${{ github.sha }}", self.text)
+        self.assertIn("persist-credentials: false", self.text)
 
     def test_deletes_resources_removed_from_openapi(self) -> None:
         self.assertIn('"deleteUnmatchedResources": true', self.text)
