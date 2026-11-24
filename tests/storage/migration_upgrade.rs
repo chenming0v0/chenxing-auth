@@ -200,6 +200,8 @@ fn published_migrator() -> Migrator {
 
 async fn revert_migrations_after_description(pool: &chenxing_auth::sqlx::PgPool) {
     for statement in [
+        // 0061 在当前库中已经执行；回退到 0047 的夹具必须同时移除新列。
+        "ALTER TABLE email_outbox DROP COLUMN failed_attempts",
         "DROP TABLE resource_service_revocation_outbox",
         "DROP TABLE resource_service_operations",
         "DROP TABLE resource_service_bindings",
