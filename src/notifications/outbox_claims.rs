@@ -8,6 +8,8 @@ use crate::{
     users::domain::UserId,
 };
 
+type OutboxClaimRow = (i64, UserId, Uuid, String, i32, i32, i64, String);
+
 impl EmailOutbox {
     pub(super) async fn claim(&self) -> Result<Option<OutboxEntry>, EmailOutboxError> {
         let mut transaction = self
@@ -16,9 +18,8 @@ impl EmailOutbox {
             .await
             .map_err(EmailOutboxError::Database)?;
         let claim_token = Uuid::new_v4().simple().to_string();
-        let row: Option<(i64, UserId, Uuid, String, i32, i32, i64, String)> =
-            crate::sqlx::query_as(
-                "WITH next AS (
+        let row: Option<OutboxClaimRow> = crate::sqlx::query_as(
+            "WITH next AS (
                  SELECT id FROM email_outbox
                  WHERE processed_at IS NULL
                    AND cancelled_at IS NULL
@@ -38,12 +39,12 @@ impl EmailOutbox {
              RETURNING outbox.id, outbox.user_id, outbox.challenge_id, outbox.kind,
                        outbox.attempts, outbox.failed_attempts,
                        outbox.claim_generation, outbox.claim_token",
-            )
-            .bind(OUTBOX_LEASE)
-            .bind(&claim_token)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(EmailOutboxError::Database)?;
+        )
+        .bind(OUTBOX_LEASE)
+        .bind(&claim_token)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(EmailOutboxError::Database)?;
         transaction
             .commit()
             .await

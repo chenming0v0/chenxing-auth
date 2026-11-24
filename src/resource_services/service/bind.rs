@@ -149,8 +149,7 @@ impl ResourceServiceService {
                     provider.id,
                     OPERATION_CREATE,
                     idempotency_key,
-                    binding.id,
-                    binding.generation,
+                    &binding,
                     error,
                     None,
                 )

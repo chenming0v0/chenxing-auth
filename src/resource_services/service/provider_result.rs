@@ -69,11 +69,12 @@ impl ResourceServiceService {
         provider_id: Uuid,
         operation_type: &str,
         idempotency_key: Uuid,
-        binding_id: Uuid,
-        observed_generation: i64,
+        binding: &BindingRow,
         error: ClientError,
         snapshot_observation: Option<(i64, i64)>,
     ) -> Result<BindingView, ServiceError> {
+        let binding_id = binding.id;
+        let observed_generation = binding.generation;
         // 对外统一收口为 provider_unavailable 等稳定错误码，但运维需要能区分
         // 「连不上 / 对端拒绝 / 协议不合」；错误 Display 只含分类与状态码，不含凭据。
         tracing::warn!(

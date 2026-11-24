@@ -173,8 +173,7 @@ impl ResourceServiceService {
                         provider.id,
                         OPERATION_REFRESH,
                         idempotency_key,
-                        binding.id,
-                        binding.generation,
+                        &binding,
                         error,
                         Some((provider.revision, snapshot_revision)),
                     )

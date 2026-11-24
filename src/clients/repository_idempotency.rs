@@ -100,14 +100,14 @@ where
             })
         }
         Claim::New { secret_kid } => {
-            if enforce_owner_quota && let Some(owner_user_id) = owner_user_id {
-                if owned_registration::locked_effective_plan(&mut transaction, owner_user_id)
+            if enforce_owner_quota
+                && let Some(owner_user_id) = owner_user_id
+                && owned_registration::locked_effective_plan(&mut transaction, owner_user_id)
                     .await?
                     .is_none()
-                {
-                    transaction.rollback().await?;
-                    return Err(IdempotentClientOperationError::QuotaExceeded);
-                }
+            {
+                transaction.rollback().await?;
+                return Err(IdempotentClientOperationError::QuotaExceeded);
             }
 
             let created_at = OffsetDateTime::now_utc();
