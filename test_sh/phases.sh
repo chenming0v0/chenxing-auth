@@ -242,14 +242,12 @@ phase_audit() {
 
     log="$LOG_DIR/audit.log"
     spinner_start "cargo audit"
-    # RUSTSEC-2023-0071 目前没有修复版本：它经 webauthn-rs -> crypto-glue -> rsa
-    # 引入，本项目不用该依赖做 RSA 私钥解密/签名。上游修复后删掉这个 ignore。
-    # 与 .github/workflows/ci.yml 保持一致，本地和 CI 不能有两套判定。
-    cargo audit --ignore RUSTSEC-2023-0071 >"$log" 2>&1
+    # 与 CI 保持一致：旧 RSA 与 crypto-bigint 已升级到修复版本，无漏洞忽略项。
+    cargo audit >"$log" 2>&1
     status=$?
     spinner_stop
 
-    note="已忽略 RUSTSEC-2023-0071"
+    note="无漏洞忽略项"
     if [ "$status" -eq 0 ]; then
         record "依赖审计" ok "$(( $(now_ms) - begin ))" "$note"
         return 0

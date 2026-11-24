@@ -32,6 +32,8 @@ OAuth 授权确认页照常进入并完成普通授权。应用取得 OAuth AT �
 
 新增迁移 0060、0061、0062 均加入内嵌迁移列表及校验清单；已发布迁移字节不变。升级不反向回滚数据库，旧版本与新账本不兼容时回滚检查会明确报错；候选就绪检查在替换旧容器之前完成。
 
+CI 发现旧锁文件中的近期依赖公告后，Cookie、SMTP、TLS、URL 与 QUIC 依赖升级到兼容修复版。WebAuthn 从预发布版升级至 0.6.2，`crypto-glue` 固定上游已合并的 [RSA 0.10 兼容提交](https://github.com/kanidm/crypto-glue/commit/a3c634ceca6bf338cc42d20d7c87d7bc771f8441)，使用 `crypto-bigint` 0.7.11；[上游正式发布该修复](https://github.com/kanidm/crypto-glue/issues/53)后移除 Git 补丁。旧 RSA 漏洞忽略项同时移除，本地和 CI 依赖审计保持一致。
+
 ## 源文件行数弱警告
 
 本次变更没有超过 500 行的源文件。301–500 行文件如下：
