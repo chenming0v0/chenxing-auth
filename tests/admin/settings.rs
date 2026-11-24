@@ -325,7 +325,6 @@ async fn concurrent_smtp_and_registration_sender_updates_do_not_deadlock() {
     let smtp_request = {
         let barrier = barrier.clone();
         let settings = settings.clone();
-        let smtp_email = smtp_email.clone();
         let smtp_from = smtp_from.clone();
         tokio::spawn(async move {
             barrier.wait().await;
@@ -333,7 +332,7 @@ async fn concurrent_smtp_and_registration_sender_updates_do_not_deadlock() {
                 .set_smtp(SmtpSettingUpdate {
                     host: "smtp.example.com".to_owned(),
                     port: 587,
-                    username: smtp_email,
+                    username: String::new(),
                     from_address: smtp_from,
                     ssl_enabled: true,
                     force_auth_login: false,
@@ -437,7 +436,7 @@ async fn concurrent_smtp_and_registration_sender_updates_do_not_deadlock() {
     let stored_smtp: Value = serde_json::from_str(&stored_smtp).expect("stored smtp JSON");
     assert_eq!(stored_smtp["host"], "smtp.example.com");
     assert_eq!(stored_smtp["port"], 587);
-    assert_eq!(stored_smtp["username"], smtp_email);
+    assert_eq!(stored_smtp["username"], "");
     assert_eq!(stored_smtp["ssl_enabled"].as_bool(), Some(true));
     assert_eq!(stored_smtp["force_auth_login"].as_bool(), Some(false));
     assert!(stored_smtp.get("password_ciphertext").is_none());

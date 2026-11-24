@@ -13,7 +13,10 @@ const REMOTE_COMPOSE: &str = include_str!("../../deploy/compose.yml");
 const PRODUCTION_COMPOSE: &str = include_str!("../../docker-compose.prod.yml");
 const REDIS_CRASH_RECOVERY_SCRIPT: &str = include_str!("../../test_sh/redis_crash_recovery.sh");
 const TEST_RUNNER_CONTRACT_SCRIPT: &str = include_str!("../../test_sh/test_runner_contract.sh");
-const DB_MODULE: &str = include_str!("../../src/db/mod.rs");
+const DB_MODULE: &str = concat!(
+    include_str!("../../src/db/mod.rs"),
+    include_str!("../../src/db/embedded_migrations.rs")
+);
 const DB_POOL_MODULE: &str = include_str!("../../src/db/pool.rs");
 const DB_AUDIT_BOUNDARY_MODULE: &str = include_str!("../../src/db/audit_boundary.rs");
 const DB_ROLES_MODULE: &str = include_str!("../../src/db/roles.rs");

@@ -19,6 +19,7 @@ mod access_token_revocation_durability;
 mod api;
 mod authorization_code;
 mod authorization_code_issuer;
+mod authorization_parameters;
 mod client_auth;
 mod client_auth_method_secret;
 mod client_credentials;

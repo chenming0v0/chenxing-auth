@@ -152,6 +152,7 @@ Authorization: Bearer <access_token>
 - `Authorization: Bearer <access_token>`。
 - **无**任意 `uid` 参数；只返回令牌所绑定账号的快照。
 - 成功 `200`，body 即 `snapshot.schema.json` 根对象。
+- 消费方将 `200` 快照里的 `active`/`disabled` 与 `403 account_disabled` 一致纳入账号状态缓存；已获知的状态不因出网期间门户会话失效而丢弃，迟到回复不得覆盖更新查询，已解除关联不得恢复。请求响应仍遵守门户会话校验。
 
 ### 7.2 `POST /api/v1/account-provider/link-sessions/revoke`
 

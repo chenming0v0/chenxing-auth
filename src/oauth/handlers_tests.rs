@@ -23,6 +23,9 @@ fn request(redirect_uri: &str) -> AuthorizationRequest {
         client_id: "client-1".to_owned(),
         redirect_uri: redirect_uri.to_owned(),
         response_type: "code".to_owned(),
+        response_mode: None,
+        request: None,
+        request_uri: None,
         scope: "openid".to_owned(),
         state: Some("state-1".to_owned()),
         nonce: None,
@@ -55,6 +58,33 @@ fn authorization_error_never_redirects_to_unregistered_uri() {
         AuthorizationRequestError::RedirectUriNotAllowed,
     );
 
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(response.headers().get(LOCATION).is_none());
+}
+
+#[test]
+fn authorization_error_never_redirects_with_a_mismatched_client_id() {
+    let mut request = request("https://client.example/callback");
+    request.client_id = "other-client".to_owned();
+    let response = authorization_error(
+        &request,
+        &client(),
+        AuthorizationRequestError::InvalidClient,
+    );
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(response.headers().get(LOCATION).is_none());
+}
+
+#[test]
+fn authorization_error_never_redirects_to_a_registered_wrong_numeric_app_callback() {
+    let redirect_uri = "https://client.example/app/2/oauth/callback";
+    let mut client = client();
+    client.redirect_uris = vec![redirect_uri.to_owned()];
+    let response = authorization_error(
+        &request(redirect_uri),
+        &client,
+        AuthorizationRequestError::RedirectUriNotAllowed,
+    );
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(response.headers().get(LOCATION).is_none());
 }

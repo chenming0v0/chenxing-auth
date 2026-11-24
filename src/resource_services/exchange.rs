@@ -26,6 +26,7 @@ use crate::{
 
 use super::types::ScopeAccess;
 
+mod check;
 mod http;
 mod support;
 mod ticket;
@@ -102,8 +103,8 @@ pub async fn exchange(
         .split_whitespace()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let scopes = match effective_grant_scopes(&state, sub, &claims.aud, &presented).await {
-        Ok(grant) => grant.scopes,
+    let grant = match effective_grant_scopes(&state, sub, &claims.aud, &presented).await {
+        Ok(grant) => grant,
         Err(GrantGateError::Denied(_)) => return denied(&state, Some(sub), None).await,
         Err(GrantGateError::Unavailable(_)) => return unavailable(&state, Some(sub), None).await,
     };
@@ -112,7 +113,7 @@ pub async fn exchange(
         Ok(providers) => providers,
         Err(_) => return unavailable(&state, Some(sub), None).await,
     };
-    let provider = match select_provider(providers, &scopes, requested_slug) {
+    let provider = match select_provider(providers, &grant.scopes, requested_slug) {
         Selection::Chosen(provider) => provider,
         Selection::NoScope => {
             record_denied(&state, Some(sub), "insufficient_scope", requested_slug).await;
@@ -193,6 +194,35 @@ pub async fn exchange(
         }
         Err(_) => return unavailable(&state, Some(sub), Some(slug)).await,
     };
+    if !ticket::valid_uid(&binding.uid) {
+        record_denied(&state, Some(sub), "account_not_linked", Some(slug)).await;
+        return error::forbidden("account_not_linked", NOT_LINKED_MESSAGE);
+    }
+    if binding.generation <= 0 {
+        return unavailable(&state, Some(sub), Some(slug)).await;
+    }
+    // 旧快照不作为提前拦截条件，即使是 disabled 也允许本次申请查询是否已恢复。
+    let query_result = state
+        .resource_services
+        .sync_for_exchange(user_id, binding.id)
+        .await;
+    let binding = match check::revalidate(
+        &state,
+        &claims,
+        token,
+        grant.consent_version,
+        &provider,
+        &binding,
+        input.app_kind,
+    )
+    .await
+    {
+        Ok(binding) => binding,
+        Err(response) => return response,
+    };
+    if let Err(error_value) = query_result {
+        return check::query_error(&state, &binding, sub, &provider, error_value).await;
+    }
     match snapshot_status(&binding) {
         Some("active") => {}
         Some("disabled") => {

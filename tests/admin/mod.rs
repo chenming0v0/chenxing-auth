@@ -26,6 +26,7 @@ mod bootstrap_audit;
 mod bootstrap_identity;
 mod bootstrap_invariant;
 mod client_actor_revalidation;
+mod client_quota_exemption;
 mod core;
 mod domain;
 mod invitation_codes;

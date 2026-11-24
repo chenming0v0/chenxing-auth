@@ -72,6 +72,7 @@ impl ResourceServiceService {
         binding_id: Uuid,
         observed_generation: i64,
         error: ClientError,
+        snapshot_observation: Option<(i64, i64)>,
     ) -> Result<BindingView, ServiceError> {
         // 对外统一收口为 provider_unavailable 等稳定错误码，但运维需要能区分
         // 「连不上 / 对端拒绝 / 协议不合」；错误 Display 只含分类与状态码，不含凭据。
@@ -94,7 +95,23 @@ impl ResourceServiceService {
         // 先写 disabled。写不上就返回错误，不 fail lease：否则幂等键已失败、
         // 快照仍是 active，同一操作不能再探。
         if is_account_disabled(&error) {
-            self.record_account_disabled(binding_id).await?;
+            if let Some((provider_revision, snapshot_revision)) = snapshot_observation {
+                let mut tx = self.pool.begin().await?;
+                if let Some(row) =
+                    super::super::store::Store::lock_binding(&mut tx, binding_id).await?
+                {
+                    super::super::store::Store::mark_observed_disabled(
+                        &mut tx,
+                        &row,
+                        provider_revision,
+                        snapshot_revision,
+                    )
+                    .await?;
+                }
+                tx.commit().await?;
+            } else {
+                self.record_account_disabled(binding_id).await?;
+            }
         }
         if should_fail_operation(&error) {
             self.fail_operation(provider_id, operation_type, idempotency_key)

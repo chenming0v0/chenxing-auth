@@ -8,11 +8,10 @@
 use time::Duration;
 use uuid::Uuid;
 
-use crate::users::{
-    UserSessionCredential, UserSessionValidation, validate_user_session_in_transaction,
-};
+use crate::users::{UserSessionCredential, domain::UserId};
 
 use super::ResourceServiceService;
+use super::access::BindingAccess;
 use super::provider_result::{is_account_disabled, is_invalid_access_token};
 use crate::resource_services::bundle::TokenBundle;
 use crate::resource_services::service_error::ServiceError;
@@ -36,9 +35,29 @@ impl ResourceServiceService {
         credential: UserSessionCredential,
         binding_id: Uuid,
     ) -> Result<BindingView, ServiceError> {
-        let (binding, provider) = self.load_sync_target(credential, binding_id).await?;
+        self.sync_authorized(BindingAccess::Browser(credential), binding_id)
+            .await
+    }
+
+    /// 仅供已通过 OAuth AT、应用权限和关联校验的兑换边界调用，不要求浏览器 Cookie。
+    pub(crate) async fn sync_for_exchange(
+        &self,
+        user_id: UserId,
+        binding_id: Uuid,
+    ) -> Result<BindingView, ServiceError> {
+        self.sync_authorized(BindingAccess::Exchange(user_id), binding_id)
+            .await
+    }
+
+    async fn sync_authorized(
+        &self,
+        access: BindingAccess,
+        binding_id: Uuid,
+    ) -> Result<BindingView, ServiceError> {
+        let (binding, provider, snapshot_revision) =
+            self.load_sync_target(access, binding_id).await?;
         if self.access_token_expired(&binding) {
-            return self.refresh_for_sync(credential, &binding, "expired").await;
+            return self.refresh_for_sync(access, &binding, "expired").await;
         }
         let ciphertext = binding
             .token_bundle_ciphertext
@@ -51,15 +70,19 @@ impl ResourceServiceService {
         let error = match client.account(&bundle.access_token, &binding.uid).await {
             Ok(snapshot) => {
                 return self
-                    .persist_synced_snapshot(credential, provider.revision, &binding, snapshot)
+                    .persist_synced_snapshot(
+                        access,
+                        provider.revision,
+                        &binding,
+                        snapshot,
+                        snapshot_revision,
+                    )
                     .await;
             }
             Err(error) => error,
         };
         if is_invalid_access_token(&error) {
-            return self
-                .refresh_for_sync(credential, &binding, "rejected")
-                .await;
+            return self.refresh_for_sync(access, &binding, "rejected").await;
         }
         tracing::warn!(
             provider_id = %provider.id,
@@ -69,25 +92,26 @@ impl ResourceServiceService {
         );
         if is_account_disabled(&error) {
             // 终态没写上就返回这个错误，不能退回旧的 active 成功视图。
-            self.record_account_disabled(binding.id).await?;
+            let mut tx = self.pool.begin().await?;
+            Store::mark_observed_disabled(&mut tx, &binding, provider.revision, snapshot_revision)
+                .await?;
+            tx.commit().await?;
         }
+        self.revalidate_access(access).await?;
         Err(ServiceError::from(error))
     }
 
     async fn load_sync_target(
         &self,
-        credential: UserSessionCredential,
+        access: BindingAccess,
         binding_id: Uuid,
-    ) -> Result<(BindingRow, ProviderRow), ServiceError> {
+    ) -> Result<(BindingRow, ProviderRow, i64), ServiceError> {
         let mut tx = self.pool.begin().await?;
-        match validate_user_session_in_transaction(&mut tx, credential).await? {
-            UserSessionValidation::Valid => {}
-            other => return Err(ServiceError::from(other)),
-        }
+        access.validate(&mut tx).await?;
         let Some(binding) = Store::lock_binding(&mut tx, binding_id).await? else {
             return Err(ServiceError::BindingNotFound);
         };
-        if binding.user_id != credential.user_id || !binding.is_live() {
+        if binding.user_id != access.user_id() || !binding.is_live() {
             return Err(ServiceError::BindingNotFound);
         }
         let Some(provider) = Store::lock_provider(&mut tx, binding.provider_id).await? else {
@@ -96,8 +120,9 @@ impl ResourceServiceService {
         if !provider.enabled {
             return Err(ServiceError::ProviderDisabled);
         }
+        let snapshot_revision = Store::reserve_snapshot_revision(&mut tx, binding.id).await?;
         tx.commit().await?;
-        Ok((binding, provider))
+        Ok((binding, provider, snapshot_revision))
     }
 
     /// 没记录过期时间按未过期处理，交给提供方的 401 决定是否刷新。
@@ -111,7 +136,7 @@ impl ResourceServiceService {
     /// 行锁、lease 和提供方错误收口。
     async fn refresh_for_sync(
         &self,
-        credential: UserSessionCredential,
+        access: BindingAccess,
         binding: &BindingRow,
         reason: &'static str,
     ) -> Result<BindingView, ServiceError> {
@@ -121,7 +146,7 @@ impl ResourceServiceService {
             reason,
             "resource service sync refreshing access token"
         );
-        self.refresh_binding(credential, binding.id, Uuid::new_v4())
+        self.refresh_authorized(access, binding.id, Uuid::new_v4())
             .await
     }
 
@@ -129,38 +154,42 @@ impl ResourceServiceService {
     /// 返回当前 live 行，不改令牌包。
     async fn persist_synced_snapshot(
         &self,
-        credential: UserSessionCredential,
+        access: BindingAccess,
         expected_provider_revision: i64,
         binding: &BindingRow,
         snapshot: AccountSnapshot,
+        snapshot_revision: i64,
     ) -> Result<BindingView, ServiceError> {
         let mut tx = self.pool.begin().await?;
-        match validate_user_session_in_transaction(&mut tx, credential).await? {
-            UserSessionValidation::Valid => {}
-            other => return Err(ServiceError::from(other)),
-        }
-        let Some(persisted) = Store::update_live_snapshot(
+        // 外部回复的真实性不随门户会话过期改变，先保存同一有效关联上的新快照。
+        let persisted = Store::update_observed_snapshot(
             &mut tx,
             LiveSnapshotWrite {
                 binding_id: binding.id,
-                user_id: credential.user_id,
+                user_id: access.user_id(),
                 expected_generation: binding.generation,
                 expected_provider_revision,
                 snapshot_json: snapshot.to_value(),
             },
+            snapshot_revision,
+            binding,
         )
-        .await?
-        else {
-            let current = Store::lock_binding(&mut tx, binding.id).await?;
-            return match current {
-                Some(row) if row.user_id == credential.user_id && row.is_live() => {
-                    tx.commit().await?;
-                    Ok(BindingView::from_row(&row))
-                }
-                _ => Err(ServiceError::BindingNotFound),
-            };
-        };
+        .await?;
         tx.commit().await?;
+        self.revalidate_access(access).await?;
+        let Some(persisted) = persisted else {
+            let current = self.store.get_binding(binding.id).await?;
+            let Some(current) =
+                current.filter(|row| row.user_id == access.user_id() && row.is_live())
+            else {
+                return Err(ServiceError::BindingNotFound);
+            };
+            // 兑换必须拿到本次确认的状态，不能把并发查询之前的缓存当成检查成功。
+            if matches!(access, BindingAccess::Exchange(_)) {
+                return Err(ServiceError::Conflict);
+            }
+            return Ok(BindingView::from_row(&current));
+        };
         Ok(BindingView::from_row(&persisted))
     }
 }

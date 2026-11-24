@@ -23,7 +23,7 @@ fn smtp_body(password_action: Option<&str>, password: Option<&str>) -> String {
     let mut body = json!({
         "host": "smtp.example.com",
         "port": 587,
-        "username": "noreply@example.com",
+        "username": if password_action == Some("clear") { "" } else { "noreply@example.com" },
         "from_address": "辰星认证中枢 <noreply@example.com>",
         "ssl_enabled": true,
         "force_auth_login": false,
@@ -42,6 +42,10 @@ async fn put_smtp(
     password_action: Option<&str>,
     password: Option<&str>,
 ) -> axum::response::Response {
+    put_smtp_body(router, smtp_body(password_action, password)).await
+}
+
+async fn put_smtp_body(router: &Router, body: String) -> axum::response::Response {
     router
         .clone()
         .oneshot(
@@ -50,7 +54,7 @@ async fn put_smtp(
                 .uri("/api/v1/admin/settings/smtp")
                 .header("authorization", format!("Bearer {ADMIN}"))
                 .header("content-type", "application/json")
-                .body(Body::from(smtp_body(password_action, password)))
+                .body(Body::from(body))
                 .expect("smtp put"),
         )
         .await
@@ -192,5 +196,38 @@ async fn smtp_password_rejects_conflicts_and_empty_string_keep() {
     }
 
     let _ = database;
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn smtp_rejects_partial_credentials_without_changing_saved_configuration() {
+    let (router, database, key_directory) = setup().await;
+    let response = put_smtp(&router, Some("keep"), None).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let response = put_smtp(&router, Some("set"), Some(SECRET)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let before = stored_smtp(&database).await;
+
+    let mut password_only: Value = serde_json::from_str(&smtp_body(Some("keep"), None)).unwrap();
+    password_only["username"] = json!("");
+    let mut username_only: Value = serde_json::from_str(&smtp_body(Some("clear"), None)).unwrap();
+    username_only["username"] = json!("noreply@example.com");
+    let mut login_without_user: Value =
+        serde_json::from_str(&smtp_body(Some("clear"), None)).unwrap();
+    login_without_user["force_auth_login"] = json!(true);
+    for body in [password_only, username_only, login_without_user] {
+        let response = put_smtp_body(&router, body.to_string()).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error = http::json_body(response).await;
+        assert_eq!(error["code"], "invalid_smtp_setting");
+        assert_redacted(&error);
+        assert_eq!(stored_smtp(&database).await, before);
+    }
+
+    let response = put_smtp(&router, Some("clear"), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let relay = http::json_body(response).await;
+    assert_eq!(relay["username"], "");
+    assert_eq!(relay["password_configured"], false);
     let _ = std::fs::remove_dir_all(key_directory);
 }

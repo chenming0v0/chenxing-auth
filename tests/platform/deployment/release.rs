@@ -122,19 +122,22 @@ fn build_workflow_scopes_write_permissions_and_drops_checkout_credentials() {
 }
 
 #[test]
-fn publish_workflow_builds_release_tags_without_waiting_for_ci() {
+fn publish_workflow_requires_the_tag_commits_successful_release_ci() {
+    let provenance = include_str!("../../../.github/scripts/verify_release_provenance.py");
     assert!(BUILD_WORKFLOW.contains("actions: read"));
-    assert!(BUILD_WORKFLOW.contains("manual-${{ github.sha }}"));
+    assert!(BUILD_WORKFLOW.contains("manual-${{ needs.verify-provenance.outputs.sha }}"));
     assert!(!BUILD_WORKFLOW.contains("type=ref,event=branch"));
     assert!(BUILD_WORKFLOW.contains("github.event_name == 'workflow_dispatch'"));
     assert!(
         BUILD_WORKFLOW
             .contains("github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')")
     );
-    assert!(BUILD_WORKFLOW.contains("github.event.workflow_run.head_sha"));
-    assert!(BUILD_WORKFLOW.contains("merge-base --is-ancestor"));
-    assert!(!BUILD_WORKFLOW.contains("actions/workflows/ci.yml/runs"));
-    assert!(!BUILD_WORKFLOW.contains(".workflow_runs[]"));
+    assert!(BUILD_WORKFLOW.contains("python3 .github/scripts/verify_release_provenance.py"));
+    assert!(BUILD_WORKFLOW.contains("needs.verify-provenance.outputs.sha"));
+    assert!(provenance.contains("CI_BRANCH = \"releases\""));
+    assert!(provenance.contains("actions/workflows/ci.yml/runs"));
+    assert!(provenance.contains("\"merge-base\", \"--is-ancestor\""));
+    assert!(provenance.contains("latest.get(\"conclusion\") != \"success\""));
     assert!(BUILD_WORKFLOW.contains("github.event_name == 'workflow_run'"));
     assert!(!BUILD_WORKFLOW.contains("github.ref == 'refs/heads/dev'"));
     assert!(!BUILD_WORKFLOW.contains("github.event_name != 'workflow_run'\n"));

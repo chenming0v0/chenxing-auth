@@ -6,8 +6,13 @@ use axum::{
 };
 use chenxing_auth::{api, oauth::token::issue_access_token, sqlx, state::AppState};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
+
+#[path = "provider.rs"]
+mod provider;
+pub(super) use provider::ExchangeProvider;
 
 pub(super) const CLIENT: &str = "v2-exchange-test-client";
 pub(super) const SCOPE: &str = "cltermux:access";
@@ -20,10 +25,11 @@ pub(super) struct Env {
     pub provider_id: Uuid,
     pub binding_id: Uuid,
     pub token: String,
+    pub stub: Arc<ExchangeProvider>,
 }
 
 pub(super) async fn setup() -> Env {
-    let (state, database, _, _, suffix) =
+    let (mut state, database, _, _, suffix) =
         crate::harness::HarnessBuilder::new("resource_service_exchange")
             .redis_keyspace(
                 chenxing_auth::redis_keyspace::RedisKeyspace::new(&format!(
@@ -40,9 +46,15 @@ pub(super) async fn setup() -> Env {
     sqlx::query("INSERT INTO oauth_clients (client_id, client_name, redirect_uris, scopes, auth_method, created_at) VALUES ($1, 'Exchange Test', '[\"https://example.test/callback\"]'::jsonb, '[]'::jsonb, 'none', NOW())")
         .bind(CLIENT).execute(&database).await.unwrap();
     let provider_id = seed_provider(&database, "cltermux", SCOPE).await;
+    let stub = Arc::new(ExchangeProvider::new(database.clone()));
+    state.resource_services = state
+        .resource_services
+        .clone()
+        .with_transport_override(stub.clone());
     let binding_id = Uuid::new_v4();
     sqlx::query("INSERT INTO resource_service_bindings (id, provider_id, user_id, uid, issuer, generation, snapshot_json, created_at, updated_at) VALUES ($1, $2, $3, 'cltermux:42', 'https://cltermux.example.test', 1, '{\"status\":\"active\",\"fields\":[]}'::jsonb, NOW(), NOW())")
         .bind(binding_id).bind(provider_id).bind(user_id).execute(&database).await.unwrap();
+    seed_query_credentials(&state, &database, provider_id, binding_id).await;
     let mut env = Env {
         router: api::router(state.clone()),
         state,
@@ -51,11 +63,64 @@ pub(super) async fn setup() -> Env {
         provider_id,
         binding_id,
         token: String::new(),
+        stub,
     };
     set_package(&env, Some("top.clyact")).await;
     grant_scopes(&env, &["openid", SCOPE]).await;
     env.token = token_for(&env, &["openid", SCOPE]);
     env
+}
+
+async fn seed_query_credentials(
+    state: &AppState,
+    database: &sqlx::PgPool,
+    provider_id: Uuid,
+    binding_id: Uuid,
+) {
+    use chenxing_auth::resource_services::{
+        SecretContext, SecretString, encrypt_secret, load_account_provider_secret_manager,
+    };
+    let secrets = load_account_provider_secret_manager(&state.config.key_directory, false)
+        .await
+        .unwrap();
+    let secret = encrypt_secret(
+        &secrets,
+        SecretContext::ResourceServiceProvider(provider_id),
+        &SecretString::new("0123456789abcdef0123456789abcdef".to_owned()),
+    )
+    .unwrap()
+    .encode();
+    let mut bundle: Value = serde_json::from_str(include_str!(
+        "../../../docs/account-provider-v1/fixtures/refresh-response.json"
+    ))
+    .unwrap();
+    bundle["issuer"] = json!("https://cltermux.example.test");
+    bundle["client_binding_id"] = json!(binding_id.to_string());
+    bundle["uid"] = json!("cltermux:42");
+    bundle["snapshot"]["issuer"] = bundle["issuer"].clone();
+    bundle["snapshot"]["uid"] = bundle["uid"].clone();
+    let ciphertext = encrypt_secret(
+        &secrets,
+        SecretContext::ResourceServiceBindingToken {
+            provider: provider_id,
+            binding: binding_id,
+        },
+        &SecretString::new(bundle.to_string()),
+    )
+    .unwrap()
+    .encode();
+    sqlx::query(
+        "UPDATE resource_service_providers SET client_secret_ciphertext = $2 WHERE id = $1",
+    )
+    .bind(provider_id)
+    .bind(secret)
+    .execute(database)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE resource_service_bindings SET token_bundle_ciphertext = $2, grant_id = $3, grant_expires_at = $4, access_expires_at = NOW() + INTERVAL '1 hour' WHERE id = $1")
+        .bind(binding_id).bind(ciphertext).bind(Uuid::parse_str(bundle["grant_id"].as_str().unwrap()).unwrap())
+        .bind(time::OffsetDateTime::parse(bundle["grant_expires_at"].as_str().unwrap(), &time::format_description::well_known::Rfc3339).unwrap())
+        .execute(database).await.unwrap();
 }
 
 pub(super) async fn seed_provider(database: &sqlx::PgPool, slug: &str, scope: &str) -> Uuid {

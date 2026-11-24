@@ -136,6 +136,9 @@ pub enum AuthFactorServiceError {
     /// 调用方不得把它当成认证成功。
     #[error("passkey credential update could not be applied")]
     PasskeyUpdateConflict,
+    /// 已验签结果的非零计数未超过当前值；只拒绝本次认证，允许新 challenge 重试。
+    #[error("passkey signature counter requires a fresh authentication challenge")]
+    PasskeyCounterConflict,
     #[error("account already has an authentication factor")]
     FirstFactorAlreadyExists,
     #[error("passkey authentication is disabled")]

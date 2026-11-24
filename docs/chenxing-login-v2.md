@@ -15,6 +15,9 @@
 - provider 沿用现有选择规则：与当前有效 scopes 匹配的资源服务唯一时可省略，多候选返回 400，必须明确 slug。最终选中的服务必须声明 `cltermux:access`。
 - 从已验签 AT 的单字符串 `aud` 经现有 `ClientService::find_registered` 读取活跃 OAuth Client。只使用 Owner 在 Android Asset Links 管理面登记的声明：`top.clyact → chrome_termux`、`com.termux → termux_chrome`。无声明、其他包、非活跃 Client、与输入不一致均拒绝；不接受请求包名、不另建配置或硬编码生产 client ID。
 - 保留 AT 撤销、实时同意和 scope 收窄、资源服务 allowlist、启用状态、辰星用户状态、live 关联、提供方账号状态和 subject 限流。关联 UID 只接受 `cltermux:[1-9][0-9]*`。
+- 每次 exchange 在本地身份、应用权限和关联校验后查询提供方最新快照，查询令牌过期时复用刷新流程。旧的 disabled 快照不拦截查询；active 恢复签票，明确 disabled 更新缓存并拒绝。网络、5xx、协议或存储失败返回可重试错误，保留旧快照，本次不签票。
+- OAuth 授权确认页及普通 OAuth 授权不查询外部账号状态、不以外部缓存或网络故障拦截页面；状态检查只发生在应用取得 OAuth AT 后调用 exchange 的阶段。
+- 查询在短事务之外执行。结果按独立查询序号保存，不能复活已解除关联或覆盖更新查询；签票前再复核 AT、应用和授权。订阅到期不直接等于账号禁用，最终业务资格由外部服务判断。
 
 成功响应恰好六字段：
 
@@ -28,7 +31,7 @@
 | --- | --- |
 | 400 | invalid_json（JSON 语法）；invalid_request（请求结构/字段/上限/媒体类型/候选歧义） |
 | 401 | invalid_chenxing_token |
-| 403 | app_not_allowed / insufficient_scope / account_not_linked / account_disabled |
+| 403 | app_not_allowed / insufficient_scope / account_not_linked / account_disabled / reauthorization_required |
 | 410 | protocol_retired，仅旧 v1 |
 | 429 | rate_limited |
 | 503 | provider_unavailable（存储、限流或签名不可用）/ service_unavailable（Issuer/超时） |

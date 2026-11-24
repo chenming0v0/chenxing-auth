@@ -15,32 +15,7 @@ use crate::{clients::domain::ValidatedClientRegistration, sqlx::PgPool, users::d
 
 type Transaction<'a> = crate::sqlx::Transaction<'a, crate::sqlx::Postgres>;
 
-pub(super) async fn effective_limit(
-    transaction: &mut Transaction<'_>,
-    owner_user_id: UserId,
-) -> Result<Option<i64>, crate::sqlx::Error> {
-    Ok(
-        crate::plans::repository::lock_effective_for_user(transaction, owner_user_id)
-            .await?
-            .map(|plan| i64::from(plan.oauth_clients_limit)),
-    )
-}
-
-pub(super) async fn quota_available(
-    transaction: &mut Transaction<'_>,
-    owner_user_id: UserId,
-    limit: i64,
-) -> Result<bool, crate::sqlx::Error> {
-    let count: i64 = crate::sqlx::query_scalar(
-        "SELECT COUNT(*) FROM oauth_clients WHERE owner_user_id = $1 AND quota_exempt = false",
-    )
-    .bind(owner_user_id)
-    .fetch_one(&mut **transaction)
-    .await?;
-    Ok(count < limit)
-}
-
-async fn locked_effective_plan(
+pub(super) async fn locked_effective_plan(
     transaction: &mut Transaction<'_>,
     owner_user_id: UserId,
 ) -> Result<Option<crate::plans::domain::Plan>, crate::sqlx::Error> {
@@ -121,16 +96,15 @@ async fn insert_owned_client_in_transaction<F>(
 where
     F: FnOnce(&NewClient) -> crate::audit::AuditEvent,
 {
-    let Some(effective_plan) = locked_effective_plan(transaction, owner_user_id).await? else {
+    if locked_effective_plan(transaction, owner_user_id)
+        .await?
+        .is_none()
+    {
         return Ok(None);
-    };
-    let limit = i64::from(effective_plan.oauth_clients_limit);
-    if !quota_available(transaction, owner_user_id, limit).await? {
-        return Err(InsertError::QuotaExceeded);
     }
     // 保留墙钟（Issue #299 的明确例外）：行创建时间。
     let created_at = OffsetDateTime::now_utc();
-    let (id, numeric_app_id) = insert_client_row(
+    let inserted = insert_client_row(
         &mut **transaction,
         &registration,
         &client_id,
@@ -140,9 +114,23 @@ where
         false,
     )
     .await?;
+    let Some(inserted) = inserted else {
+        // 锁后解析的套餐可能自然到期；最终 INSERT 已按默认套餐回退并检查额度。
+        // 无默认套餐时保留自助通道关闭的 Ok(None)，其余零行表示当前配额用尽。
+        if crate::plans::repository::find_effective_for_locked_user(transaction, owner_user_id)
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        return Err(InsertError::QuotaExceeded);
+    };
+    let quota_limits = inserted
+        .quota_limits
+        .ok_or(crate::sqlx::Error::RowNotFound)?;
     let client = NewClient {
-        id,
-        numeric_app_id,
+        id: inserted.id,
+        numeric_app_id: inserted.numeric_app_id,
         client_id,
         client_name: registration.client_name,
         redirect_uris: registration.redirect_uris,
@@ -163,7 +151,7 @@ where
     }
     Ok(Some(NewOwnedClient {
         client,
-        quota_limits: effective_plan.auth_quota_limits(),
+        quota_limits,
     }))
 }
 

@@ -21,6 +21,7 @@ mod email_change_outbox;
 mod email_change_outbox_alerts;
 mod email_change_outbox_support;
 mod external_identity_binding;
+mod passkey_counter;
 // Issue #729：提供方 account_disabled 必须落到本地快照，兑换才不再签发。
 mod resource_service_account_disabled;
 mod resource_service_binding;

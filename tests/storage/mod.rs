@@ -15,6 +15,7 @@ mod oauth_flow;
 #[path = "../support/plans.rs"]
 mod plans_support;
 
+mod audit_archive_search_path;
 #[path = "db_isolation.rs"]
 mod database_isolation;
 mod database_schema;

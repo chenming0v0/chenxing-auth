@@ -32,6 +32,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use crate::{harness, http};
+mod freshness;
 
 const ADMIN_TOKEN: &str = "resource-service-account-disabled-admin";
 const PROVIDER_ISSUER: &str = "https://provider.example.com";
@@ -45,6 +46,7 @@ enum Script {
     #[default]
     Ok,
     Disabled,
+    DisabledSnapshot,
     Status502,
     Transport,
     InvalidAccessToken,
@@ -59,6 +61,7 @@ struct StubProvider {
     revoke_session_on_account: Mutex<Option<i64>>,
     account_calls: AtomicUsize,
     refresh_calls: AtomicUsize,
+    check_metadata_lock: std::sync::atomic::AtomicBool,
 }
 
 impl StubProvider {
@@ -71,6 +74,7 @@ impl StubProvider {
             revoke_session_on_account: Mutex::new(None),
             account_calls: AtomicUsize::new(0),
             refresh_calls: AtomicUsize::new(0),
+            check_metadata_lock: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -105,6 +109,20 @@ impl ProviderTransport for StubProvider {
         Box::pin(async move {
             let path = request.url.path().to_owned();
             if path == "/.well-known/account-provider" {
+                if self.check_metadata_lock.load(Ordering::SeqCst) {
+                    let mut tx = self
+                        .database
+                        .begin()
+                        .await
+                        .expect("metadata probe transaction");
+                    chenxing_auth::sqlx::query(
+                        "SELECT id FROM resource_service_providers LIMIT 1 FOR UPDATE NOWAIT",
+                    )
+                    .fetch_one(&mut *tx)
+                    .await
+                    .expect("metadata HTTP must not hold provider row lock");
+                    tx.commit().await.expect("metadata probe commit");
+                }
                 return Ok(ProviderHttpResponse {
                     status: 200,
                     retry_after_seconds: None,
@@ -149,6 +167,18 @@ fn scripted(
             retry_after_seconds: None,
             body: br#"{"error":{"code":"account_disabled","retryable":false}}"#.to_vec(),
         }),
+        Script::DisabledSnapshot => {
+            let mut body: Value = serde_json::from_slice(&ok.body).expect("snapshot");
+            if body.get("snapshot").is_some() {
+                body["snapshot"]["status"] = json!("disabled");
+            } else {
+                body["status"] = json!("disabled");
+            }
+            Ok(ProviderHttpResponse {
+                body: serde_json::to_vec(&body).unwrap(),
+                ..ok
+            })
+        }
         Script::Status502 => Ok(ProviderHttpResponse {
             status: 502,
             retry_after_seconds: None,
@@ -599,6 +629,7 @@ async fn refresh_account_disabled_marks_snapshot_and_exchange_stops_issuing() {
     assert_issues_300s_ticket(status, &body);
 
     bound.env.stub.set_refresh(Script::Disabled);
+    bound.env.stub.set_account(Script::Disabled);
     let response = post_refresh(
         &bound.env.router,
         &bound.cookie,
@@ -669,7 +700,8 @@ async fn create_account_disabled_marks_the_existing_live_row() {
 
     let token = seed_exchange_token(&env, user_id).await;
     let (status, body) = exchange(&env, &token).await;
-    assert_exchange_disabled(status, &body);
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(error_code(&body), "account_not_linked");
 }
 
 #[tokio::test]
@@ -692,7 +724,8 @@ async fn sync_provider_5xx_reports_failure_and_keeps_active_snapshot() {
     assert!(row.live);
     assert!(row.has_ciphertext);
     let (status, body) = exchange(&bound.env, &bound.token).await;
-    assert_issues_300s_ticket(status, &body);
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error_code(&body), "provider_unavailable");
 }
 
 #[tokio::test]
@@ -713,7 +746,8 @@ async fn sync_transport_error_reports_failure_and_keeps_active_snapshot() {
     let row = stored_snapshot(&bound.env.database, bound.binding_id).await;
     assert_eq!(row.status.as_deref(), Some("active"));
     let (status, body) = exchange(&bound.env, &bound.token).await;
-    assert_issues_300s_ticket(status, &body);
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error_code(&body), "provider_unavailable");
 }
 
 #[tokio::test]
@@ -757,9 +791,9 @@ async fn sync_account_disabled_persists_when_portal_session_is_revoked_mid_call(
         bound.binding_id,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let body = http::json_body(response).await;
-    assert_eq!(error_code(&body), "binding_revoked");
+    assert_eq!(error_code(&body), "session_invalid");
 
     let revoked: bool = chenxing_auth::sqlx::query_scalar(
         "SELECT revoked_at IS NOT NULL FROM user_sessions WHERE id = $1",
@@ -825,6 +859,7 @@ async fn account_disabled_second_write_lands_when_provider_revision_advances() {
 
     let row = stored_snapshot(&bound.env.database, bound.binding_id).await;
     assert_disabled_without_tombstone(&before, &row);
+    bound.env.stub.set_account(Script::Disabled);
     let (status, body) = exchange(&bound.env, &bound.token).await;
     assert_exchange_disabled(status, &body);
 }

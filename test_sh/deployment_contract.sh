@@ -176,12 +176,17 @@ cat > "$fake_bin/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 marker="@UPGRADE_MARKER@"
+if [[ "${1:-}" == inspect ]]; then
+    printf 'sha256:%064d\n' 1
+    exit 0
+fi
 if [[ "${1:-}" == compose ]]; then
     shift
     command_line="$*"
     case "$command_line" in
+        *" ps --all --quiet app"*) printf '%s\n' previous-app-container ;;
         *" run --rm migrate"*) printf '%s\n' migrate >> "$marker" ;;
-        *" up -d app"*) printf '%s\n' up-app >> "$marker" ;;
+        *" up -d --no-deps --pull never app"*) printf '%s\n' up-app >> "$marker" ;;
     esac
     exit 0
 fi
@@ -204,6 +209,10 @@ grep -q '^CHENXING_RELEASE_VERSION=v0.0.1$' "$upgrade_root/.env"
 grep -q '^CHENXING_IMAGE=ghcr.io/chenming0v0/chenxing-auth:v0.0.1$' "$upgrade_root/.env"
 [[ "$(tr '\n' ' ' < "$upgrade_marker")" == 'migrate up-app ' ]]
 rm -f "$fake_bin/docker"
+
+# 升级故障恢复和标签发布来源的回归在 CI 的部署契约内执行一次。
+python3 "$ROOT_DIR/test_sh/upgrade_rollback_contract.py"
+python3 -m unittest discover -s "$ROOT_DIR/.github/scripts" -p 'test_release_provenance.py'
 
 # Exercise the source installer upgrade path with a minimal temporary checkout.
 # The fake Docker implementation records whether `up` was reached and reports

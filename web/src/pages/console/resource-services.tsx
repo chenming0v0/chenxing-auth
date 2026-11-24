@@ -28,11 +28,14 @@ export function ResourceServicesPage() {
   const [dialog, setDialog] = useState<DialogState | null>(null)
   const [dialogError, setDialogError] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
-  // 与 load 共用一条单调序号（#732）。绑定变更会改本地列表，必须在发请求前让在途 GET 失效。
+  // 与 load 共用一条单调序号（#732、#746），所有绑定变更都通过同一入口隔离列表 GET。
   const requestIdRef = useRef(0)
+  const mutationPendingRef = useRef(false)
   const mutationLock = useMutationLock()
 
   const load = useCallback(async () => {
+    // ref 同步生效，错误态重试也不能在按钮尚未重渲染时越过变更锁。
+    if (mutationPendingRef.current) return
     const requestId = ++requestIdRef.current
     const [bindingsResult, providersResult] = await Promise.allSettled([
       listResourceServiceBindings(),
@@ -63,10 +66,23 @@ export function ResourceServicesPage() {
     return providers.find((item) => item.id === providerId)?.display_name ?? issuer
   }
 
-  async function bind(provider: ResourceServicePublicProvider, identifier: string, secret: string): Promise<boolean> {
+  async function mutate(action: () => Promise<boolean>): Promise<boolean> {
+    if (!mutationLock.acquire()) return false
+    mutationPendingRef.current = true
     requestIdRef.current += 1
-    setDialogError(null)
-    return await mutationLock.run(async () => {
+    try {
+      return await action()
+    } finally {
+      // 完成时再次封住旧回复，避免请求在变更期间取得序号后覆盖已提交的本地结果。
+      requestIdRef.current += 1
+      mutationPendingRef.current = false
+      mutationLock.release()
+    }
+  }
+
+  async function bind(provider: ResourceServicePublicProvider, identifier: string, secret: string): Promise<boolean> {
+    return mutate(async () => {
+      setDialogError(null)
       try {
         const bound = await createResourceServiceBinding(
           { provider_id: provider.id, identifier, secret },
@@ -79,13 +95,12 @@ export function ResourceServicesPage() {
         setDialogError(error instanceof Error ? error.message : '绑定失败。')
         return false
       }
-    }) === true
+    })
   }
 
   async function runBindingAction(binding: ResourceServiceBinding, action: 'refresh' | 'sync' | 'unlink'): Promise<boolean> {
-    requestIdRef.current += 1
-    setPendingId(binding.id)
-    return await mutationLock.run(async () => {
+    return mutate(async () => {
+      setPendingId(binding.id)
       try {
         if (action === 'unlink') {
           await unlinkResourceServiceBinding(binding.id)
@@ -107,7 +122,7 @@ export function ResourceServicesPage() {
       } finally {
         setPendingId(null)
       }
-    }) === true
+    })
   }
 
   const boundIds = new Set(bindings.map((item) => item.provider_id))
@@ -126,7 +141,7 @@ export function ResourceServicesPage() {
       {state.kind === 'error' ? (
         <HudPanel>
           <Notice tone="warning">无法加载资源服务。{state.message}
-            <button type="button" className="chenxing-link ml-2" onClick={() => void load()}>重试</button>
+            <button type="button" className="chenxing-link ml-2" disabled={mutationLock.busy} onClick={() => void load()}>重试</button>
           </Notice>
         </HudPanel>
       ) : null}

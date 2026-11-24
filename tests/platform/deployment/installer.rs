@@ -57,9 +57,13 @@ fn installers_harden_env_files_before_any_legacy_read_or_write() {
     let update_harden = REMOTE_UPDATE_SCRIPT
         .find("chmod 600 -- \"$ENV_FILE\"")
         .expect("remote updater must harden .env permissions");
-    let update_first_read = REMOTE_UPDATE_SCRIPT
-        .find("read_env_value CHENXING_RELEASE_VERSION")
-        .expect("remote updater reads the recorded release");
+    let release_stage = REMOTE_UPDATE_SCRIPT
+        .rfind("stage \"解析发布版本\"")
+        .expect("remote updater parses the release after environment hardening");
+    let update_first_read = release_stage
+        + REMOTE_UPDATE_SCRIPT[release_stage..]
+            .find("read_env_value CHENXING_RELEASE_VERSION")
+            .expect("remote updater reads the recorded release");
     assert!(update_symlink < update_first_read);
     assert!(update_harden < update_first_read);
 }

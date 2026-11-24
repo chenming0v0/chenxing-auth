@@ -2,11 +2,11 @@ use super::{
     account_has_factor, active_user_epoch_matches, issuer_generation_matches, lock_factor_account,
 };
 use crate::{sqlx::PgPool, users::domain::UserId};
-use webauthn_rs::prelude::{AuthenticationResult, Passkey};
+use webauthn_rs::prelude::Passkey;
 
-/// 单次 CAS 重试上限。超过后返回 [`PasskeyPersistOutcome::Exhausted`]，
-/// 绝不把“没写进去”伪装成成功。
-const PASSKEY_CAS_ATTEMPTS: u32 = 8;
+#[path = "repository_passkey_authentication.rs"]
+mod authentication;
+pub use authentication::{PasskeyPersistOutcome, persist_passkey_authentication};
 
 #[derive(Debug, Clone)]
 pub struct StoredPasskey {
@@ -40,30 +40,6 @@ pub enum PasskeyUpdateOutcome {
     Updated,
     Conflict,
     Missing,
-}
-
-/// 认证后把 `AuthenticationResult` 合并进当前行的结果。
-///
-/// `Updated` 会被压扁成布尔值，调用方就分不清“已经是更新的安全状态”
-/// 和“行已经没了”。这两种情况绝不能走同一条成功路径。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PasskeyPersistOutcome {
-    /// 本次 CAS 写入了合并后的凭据。
-    Applied,
-    /// 行还在，webauthn-rs 规则判定当前安全状态已经覆盖这次结果。
-    AlreadyCurrent,
-    /// 行已不存在，或 `id` 对应的已不是签发 challenge 时的那一行
-    /// （删除后用同一 `credential_id` 重新注册）。
-    Missing,
-    /// 有限次重读合并后仍抢不到 CAS：不能假装成功。
-    Exhausted,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PasskeyMergeOutcome {
-    Changed,
-    Unchanged,
-    Mismatch,
 }
 
 pub async fn list_passkeys(
@@ -269,60 +245,6 @@ pub async fn update_passkey(
     })
 }
 
-/// 把一次已验签的 `AuthenticationResult` 合并进指定行。
-///
-/// 冲突时按行 `id` 重读，再用 webauthn-rs 的单调/克隆检测规则合并，
-/// 禁止把基于过期 JSON 的更新原样重放上去。
-pub async fn persist_passkey_authentication(
-    pool: &PgPool,
-    user_id: UserId,
-    row_id: i64,
-    credential_id: &[u8],
-    result: &AuthenticationResult,
-) -> Result<PasskeyPersistOutcome, crate::sqlx::Error> {
-    for _ in 0..PASSKEY_CAS_ATTEMPTS {
-        let Some(mut stored) = find_passkey_row(pool, user_id, row_id).await? else {
-            return Ok(PasskeyPersistOutcome::Missing);
-        };
-        if stored.credential_id != credential_id {
-            return Ok(PasskeyPersistOutcome::Missing);
-        }
-        if !result.needs_update() {
-            return Ok(PasskeyPersistOutcome::AlreadyCurrent);
-        }
-        match apply_authentication_result(&mut stored.credential, result) {
-            PasskeyMergeOutcome::Mismatch => return Ok(PasskeyPersistOutcome::Missing),
-            PasskeyMergeOutcome::Unchanged => return Ok(PasskeyPersistOutcome::AlreadyCurrent),
-            PasskeyMergeOutcome::Changed => match update_passkey(
-                pool,
-                user_id,
-                stored.id,
-                &stored.credential_id,
-                stored.state_version,
-                &stored.credential,
-            )
-            .await?
-            {
-                PasskeyUpdateOutcome::Updated => return Ok(PasskeyPersistOutcome::Applied),
-                PasskeyUpdateOutcome::Missing => return Ok(PasskeyPersistOutcome::Missing),
-                PasskeyUpdateOutcome::Conflict => continue,
-            },
-        }
-    }
-    Ok(PasskeyPersistOutcome::Exhausted)
-}
-
-pub(crate) fn apply_authentication_result(
-    stored: &mut Passkey,
-    result: &AuthenticationResult,
-) -> PasskeyMergeOutcome {
-    match stored.update_credential(result) {
-        Some(true) => PasskeyMergeOutcome::Changed,
-        Some(false) => PasskeyMergeOutcome::Unchanged,
-        None => PasskeyMergeOutcome::Mismatch,
-    }
-}
-
 fn decode_stored_passkey(
     id: i64,
     credential_id: Vec<u8>,
@@ -340,124 +262,5 @@ fn decode_stored_passkey(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use base64::Engine;
-
-    fn encode(value: &[u8]) -> String {
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value)
-    }
-
-    fn test_passkey(credential_id: &[u8], counter: u32, backup_eligible: bool) -> Passkey {
-        serde_json::from_value(serde_json::json!({
-            "cred": {
-                "cred_id": encode(credential_id),
-                "cred": {
-                    "type_": "ES256",
-                    "key": {
-                        "EC_EC2": {
-                            "curve": "SECP256R1",
-                            "x": encode(&[4; 32]),
-                            "y": encode(&[5; 32])
-                        }
-                    }
-                },
-                "counter": counter,
-                "transports": null,
-                "user_verified": false,
-                "backup_eligible": backup_eligible,
-                "backup_state": false,
-                "registration_policy": "required",
-                "extensions": {},
-                "attestation": {"data": "None", "metadata": "None"},
-                "attestation_format": "none"
-            }
-        }))
-        .expect("test passkey")
-    }
-
-    fn authentication_result(
-        credential_id: &[u8],
-        counter: u32,
-        backup_eligible: bool,
-        backup_state: bool,
-    ) -> AuthenticationResult {
-        serde_json::from_value(serde_json::json!({
-            "cred_id": encode(credential_id),
-            "needs_update": true,
-            "user_verified": true,
-            "backup_state": backup_state,
-            "backup_eligible": backup_eligible,
-            "counter": counter,
-            "extensions": {}
-        }))
-        .expect("authentication result")
-    }
-
-    fn counter_of(passkey: &Passkey) -> u32 {
-        serde_json::to_value(passkey).expect("passkey JSON")["cred"]["counter"]
-            .as_u64()
-            .expect("counter") as u32
-    }
-
-    fn backup_eligible_of(passkey: &Passkey) -> bool {
-        serde_json::to_value(passkey).expect("passkey JSON")["cred"]["backup_eligible"]
-            .as_bool()
-            .expect("backup_eligible")
-    }
-
-    #[test]
-    fn absent_issuer_row_matches_only_the_initial_runtime_generation() {
-        let initial = super::super::INITIAL_ISSUER_GENERATION;
-        assert!(issuer_generation_matches(None, initial));
-        assert!(!issuer_generation_matches(None, initial + 1));
-    }
-
-    #[test]
-    fn merge_keeps_newer_counter_when_stale_result_arrives_later() {
-        let credential_id = b"cred-1";
-        let mut stored = test_passkey(credential_id, 2, false);
-        let stale = authentication_result(credential_id, 1, false, false);
-        assert_eq!(
-            apply_authentication_result(&mut stored, &stale),
-            PasskeyMergeOutcome::Unchanged
-        );
-        assert_eq!(counter_of(&stored), 2);
-    }
-
-    #[test]
-    fn merge_applies_newer_counter_onto_older_stored_state() {
-        let credential_id = b"cred-1";
-        let mut stored = test_passkey(credential_id, 1, false);
-        let newer = authentication_result(credential_id, 2, false, false);
-        assert_eq!(
-            apply_authentication_result(&mut stored, &newer),
-            PasskeyMergeOutcome::Changed
-        );
-        assert_eq!(counter_of(&stored), 2);
-    }
-
-    #[test]
-    fn merge_can_raise_backup_eligible_without_rewinding_counter() {
-        let credential_id = b"cred-1";
-        let mut stored = test_passkey(credential_id, 4, false);
-        let stale_with_upgrade = authentication_result(credential_id, 3, true, true);
-        assert_eq!(
-            apply_authentication_result(&mut stored, &stale_with_upgrade),
-            PasskeyMergeOutcome::Changed
-        );
-        assert_eq!(counter_of(&stored), 4);
-        assert!(backup_eligible_of(&stored));
-    }
-
-    #[test]
-    fn merge_rejects_result_for_a_different_credential() {
-        let mut stored = test_passkey(b"cred-1", 1, false);
-        let other = authentication_result(b"cred-2", 2, false, false);
-        assert_eq!(
-            apply_authentication_result(&mut stored, &other),
-            PasskeyMergeOutcome::Mismatch
-        );
-        assert_eq!(counter_of(&stored), 1);
-    }
-}
+#[path = "repository_passkey_tests.rs"]
+mod tests;

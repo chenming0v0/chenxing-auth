@@ -499,6 +499,10 @@ paths:
       tags: [User Auth/MFA]
       summary: 完成 passkey 登录验证
       operationId: finishPasskeyAuthentication
+      description: >-
+        验签后对最新持久化计数复核。计数型认证器的计数未递增时返回 409 passkey_counter_conflict，
+        不签发会话、不停用账号或凭据；登录 ticket 保留，调用 authentication/start 获取新 challenge 后重试。
+        双方计数均为零的同步 Passkey 继续支持。
       parameters:
         - { $ref: '#/components/parameters/SessionResponseMode' }
       requestBody:
@@ -523,6 +527,7 @@ paths:
               schema: { $ref: '#/components/schemas/PendingLoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { description: "passkey_counter_conflict：凭据计数已变化，重新调用 authentication/start 获取新 challenge 后重试", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
@@ -553,6 +558,9 @@ paths:
       tags: [User Auth/Browser Login]
       summary: 完成无密码 Passkey 登录
       operationId: finishDiscoverablePasskeyAuthentication
+      description: >-
+        对当前持久化计数复核，计数型认证器计数未递增时返回 409 passkey_counter_conflict，不签发会话。
+        旧 challenge 已消费，调用 discoverable/start 开始新验证；不永久停用凭据或账号，零计数同步 Passkey 继续支持。
       parameters:
         - { $ref: '#/components/parameters/SessionResponseMode' }
       requestBody:
@@ -577,6 +585,7 @@ paths:
               schema: { $ref: '#/components/schemas/PendingLoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { description: "passkey_counter_conflict：重新调用 discoverable/start 获取新 challenge 后重试", content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
@@ -1627,6 +1636,8 @@ paths:
         网络失败、5xx 返回 503 provider_unavailable，协议不合返回 400 invalid_response，均不改快照、不使令牌失效，
         不再以本地缓存冒充同步成功。
         提供方返回终态 account_disabled 时，把仍 live 的快照 status 写成 disabled（不 tombstone）并返回 403 binding_revoked。
+        成功返回的 active/disabled 快照都会按查询序号更新缓存，即使出网期间门户会话失效；响应仍要求有效门户会话。
+        迟到回复不得覆盖更新查询的结果，已解除的关联不会被恢复。200 正文 disabled 与 403 account_disabled 一样保存禁用状态。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -1698,7 +1709,12 @@ paths:
         403 app_not_allowed，查库失败返回 503；禁止请求自报 package_name，不新增客户端配置表。
         沿用 scope 交集选择提供方规则，多候选未指定 provider 返回 400；最终目标必须声明 cltermux:access，
         restricted 服务仍受 allowed_client_ids 限制，当前关联 UID 必须为 cltermux:正整数。
-        关联必须 live、快照 active、辰星用户启用。每 subject 最多 10 次/60 秒签票尝试。
+        关联必须 live、辰星用户启用。每 subject 最多 10 次/60 秒签票尝试。
+        每次申请会向外部查询最新账号状态；旧缓存 disabled 不提前阻止查询。查询令牌过期时自动刷新一次，
+        外部明确禁用时保存 disabled 并拒绝签票，查到 active 时更新缓存并继续签票。
+        外部超时、5xx、协议或存储错误返回 503 provider_unavailable，不把查询失败写成账号禁用，也不凭旧缓存签票。
+        外部读取授权无法刷新时返回 403 reauthorization_required。出网后复核辰星令牌、应用声明、实时授权和原关联。
+        外部账号状态不拦截 OAuth 授权确认页或普通 OAuth 授权流程；最终业务登录仍由外部服务检查。
         login_ticket 是 RS256/typ JWT/kid 的 300 秒票，不是 OAuth AT，也不是业务 session；
         claims 为 iss、单字符串 aud、sub、v=2、token_use=cltermux_login、uid、binding_id、正整数 binding_version、
         scope=cltermux:access、app_kind、精确 device_id、整数 iat 和 exp，exp-iat=300，到期无宽限。
@@ -1736,7 +1752,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ChenxingExchangeError' }
         '403':
-          description: account_not_linked / account_disabled / insufficient_scope / app_not_allowed
+          description: account_not_linked / account_disabled / insufficient_scope / app_not_allowed / reauthorization_required
           headers:
             Cache-Control: { schema: { type: string, example: no-store } }
             Pragma: { schema: { type: string, example: no-cache } }
@@ -1852,6 +1868,8 @@ paths:
         不会复用原 Session；`prompt=none` 禁止登录/同意 UI，无法静默完成时通过已校验的 redirect_uri
         返回 `login_required` 或 `consent_required`。`max_age=0` 始终要求重新认证，且这些参数会保留在 pending
         请求中，跨越登录与授权确认往返后继续生效。
+        response_mode 仅支持省略、空字符串或 query；其他值返回 invalid_request。非空 request 返回 request_not_supported，
+        非空 request_uri 返回 request_uri_not_supported，不创建授权码。空字符串按未提供处理；其他未知扩展参数继续忽略。
         Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。无记录、空值/无效值、
         数据库读取失败、Runtime Pending/Invalid 或事实无法一致应用，以及请求超时时，统一返回 RFC 6749 JSON 信封的
         503 `temporarily_unavailable`。此时尚无可用的 redirect_uri 上下文做错误重定向，
@@ -1860,6 +1878,9 @@ paths:
         - { $ref: '#/components/parameters/ClientId' }
         - { name: redirect_uri, in: query, required: true, description: "canonicalize 后必须匹配注册值；授权码兑换时必须原样回送本次请求文本", schema: { type: string, format: uri } }
         - { name: response_type, in: query, required: true, schema: { type: string, enum: [code] } }
+        - { name: response_mode, in: query, allowEmptyValue: true, description: "支持省略、空字符串或 query；不支持的值返回 invalid_request", schema: { type: string, enum: ['', query] } }
+        - { name: request, in: query, description: "不支持 Request Object；非空值返回 request_not_supported，空字符串按未提供处理", schema: { type: string } }
+        - { name: request_uri, in: query, description: "不支持 Request URI；非空值返回 request_uri_not_supported，空字符串按未提供处理", schema: { type: string } }
         - { name: scope, in: query, required: true, description: "空格分隔的 scope；每个值必须同时属于服务端 allowlist（OAUTH_CLIENT_ALLOWED_SCOPES 基础 scope，默认 openid、profile、email，加上该 Client 可申请的已启用资源服务 scope）和该 Client 已注册的 scope 集合", schema: { type: string, example: 'openid email profile' } }
         - { name: state, in: query, required: true, description: 最多 512 个字符, schema: { type: string, maxLength: 512 } }
         - { name: nonce, in: query, description: 最多 512 个字符, schema: { type: string, maxLength: 512 } }
@@ -1895,6 +1916,9 @@ paths:
                 client_id: { type: string }
                 redirect_uri: { type: string, format: uri, description: "canonicalize 后必须匹配注册值；授权码兑换时必须原样回送本次请求文本" }
                 response_type: { type: string, enum: [code] }
+                response_mode: { type: string, enum: ['', query], description: "支持省略、空字符串或 query；其他值返回 invalid_request" }
+                request: { type: string, description: "非空值返回 request_not_supported，空字符串按未提供处理" }
+                request_uri: { type: string, description: "非空值返回 request_uri_not_supported，空字符串按未提供处理" }
                 scope: { type: string, description: "空格分隔的 scope；受服务端 allowlist（基础 scope 加该 Client 可申请的资源服务 scope）和 Client 已注册 scopes 双重约束" }
                 state: { type: string, maxLength: 512 }
                 nonce: { type: string, maxLength: 512 }
@@ -4225,7 +4249,7 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_json, invalid_request, invalid_chenxing_token, account_not_linked, account_disabled, insufficient_scope, app_not_allowed, protocol_retired, rate_limited, provider_unavailable, service_unavailable]
+          enum: [invalid_json, invalid_request, invalid_chenxing_token, account_not_linked, account_disabled, insufficient_scope, app_not_allowed, reauthorization_required, protocol_retired, rate_limited, provider_unavailable, service_unavailable]
         message: { type: string, description: 安全的说明；客户端按 code 分支，不解析 message }
     ScopeCatalogResponse:
       type: object
@@ -4795,6 +4819,7 @@ components:
         - grant_types_supported
         - response_modes_supported
         - request_uri_parameter_supported
+        - request_parameter_supported
         - subject_types_supported
         - id_token_signing_alg_values_supported
         - prompt_values_supported
@@ -4819,6 +4844,9 @@ components:
         request_uri_parameter_supported:
           type: boolean
           description: "是否支持 request_uri 参数；当前为 false"
+        request_parameter_supported:
+          type: boolean
+          description: "是否支持 OIDC Request Object；当前为 false"
         subject_types_supported: { type: array, items: { type: string } }
         id_token_signing_alg_values_supported: { type: array, items: { type: string } }
         prompt_values_supported:
@@ -5219,11 +5247,11 @@ components:
       required: [host, port, username, from_address, ssl_enabled, force_auth_login, password_configured]
       properties:
         host: { type: string }
-        port: { type: integer, minimum: 1, maximum: 65535 }
+        port: { type: integer, minimum: 1, maximum: 65535, default: 587 }
         username: { type: string }
         from_address: { type: string }
-        ssl_enabled: { type: boolean }
-        force_auth_login: { type: boolean }
+        ssl_enabled: { type: boolean, default: true, description: "587 使用强制 STARTTLS；其他端口 true 使用隐式 TLS，false 使用强制 STARTTLS；均校验证书" }
+        force_auth_login: { type: boolean, default: false, description: "启用时只协商 AUTH LOGIN；要求同时配置用户名和密码" }
         password_configured: { type: boolean }
     SmtpPasswordAction:
       type: string
@@ -5240,6 +5268,8 @@ components:
         省略 password_action 仅兼容旧客户端——此时省略或 null 的 password 视为 keep，
         非空 password 视为 set。空字符串不再等于 keep，与 action 冲突或 set 缺值返回
         400 invalid_smtp_setting。GET/PUT 响应只有 password_configured，不含明文或密文。
+        用户名和密码都为空且不强制 AUTH LOGIN 时允许无认证 TLS 中继；只配置一侧凭据或强制 AUTH LOGIN 缺凭据会被拒绝。
+        587 端口使用强制 STARTTLS；其他端口沿用 ssl_enabled 的隐式 TLS / 强制 STARTTLS 选择，不允许明文降级。
       properties:
         host: { type: string }
         port: { type: integer, minimum: 1, maximum: 65535 }

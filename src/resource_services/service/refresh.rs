@@ -1,11 +1,10 @@
 use time::Duration;
 use uuid::Uuid;
 
-use crate::users::{
-    UserSessionCredential, UserSessionValidation, validate_user_session_in_transaction,
-};
+use crate::users::UserSessionCredential;
 
 use super::ResourceServiceService;
+use super::access::BindingAccess;
 use crate::resource_services::bundle::{RefreshBinding, TokenBundle};
 use crate::resource_services::fingerprint::{
     fingerprint_hmac_key, keyed_fingerprint, refresh_message,
@@ -28,16 +27,27 @@ impl ResourceServiceService {
         binding_id: Uuid,
         idempotency_key: Uuid,
     ) -> Result<BindingView, ServiceError> {
+        self.refresh_authorized(
+            BindingAccess::Browser(credential),
+            binding_id,
+            idempotency_key,
+        )
+        .await
+    }
+
+    pub(super) async fn refresh_authorized(
+        &self,
+        access: BindingAccess,
+        binding_id: Uuid,
+        idempotency_key: Uuid,
+    ) -> Result<BindingView, ServiceError> {
         let now = self.clock.now();
         let mut tx = self.pool.begin().await?;
-        match validate_user_session_in_transaction(&mut tx, credential).await? {
-            UserSessionValidation::Valid => {}
-            other => return Err(ServiceError::from(other)),
-        }
+        access.validate(&mut tx).await?;
         let Some(binding) = Store::lock_binding(&mut tx, binding_id).await? else {
             return Err(ServiceError::BindingNotFound);
         };
-        if binding.user_id != credential.user_id || !binding.is_live() {
+        if binding.user_id != access.user_id() || !binding.is_live() {
             return Err(ServiceError::BindingTombstoned);
         }
         let Some(provider) = Store::lock_provider(&mut tx, binding.provider_id).await? else {
@@ -57,13 +67,13 @@ impl ResourceServiceService {
             fingerprint_hmac_key(self.decrypt_provider_secret(&provider)?.expose().as_bytes());
         let fingerprint = keyed_fingerprint(
             &hmac_key,
-            &refresh_message(provider.id, binding.id, credential.user_id),
+            &refresh_message(provider.id, binding.id, access.user_id()),
         );
         let lease = OperationLease {
             idempotency_key,
             provider_id: provider.id,
             binding_id: binding.id,
-            user_id: credential.user_id,
+            user_id: access.user_id(),
             operation_type: OPERATION_REFRESH.to_owned(),
             request_fingerprint: fingerprint.clone(),
             provider_revision: provider.revision,
@@ -79,7 +89,7 @@ impl ResourceServiceService {
                         .get_binding(existing.binding_id)
                         .await?
                         .ok_or(ServiceError::BindingNotFound)?;
-                    if row.user_id != credential.user_id {
+                    if row.user_id != access.user_id() {
                         return Err(ServiceError::BindingNotFound);
                     }
                     tx.commit().await?;
@@ -94,6 +104,7 @@ impl ResourceServiceService {
                 }
             }
         }
+        let snapshot_revision = Store::reserve_snapshot_revision(&mut tx, binding.id).await?;
         tx.commit().await?;
         let grant_id = binding
             .grant_id
@@ -114,10 +125,6 @@ impl ResourceServiceService {
         {
             Ok(bundle) => {
                 let mut tx = self.pool.begin().await?;
-                match validate_user_session_in_transaction(&mut tx, credential).await? {
-                    UserSessionValidation::Valid => {}
-                    other => return Err(ServiceError::from(other)),
-                }
                 let Some(current) = Store::lock_binding(&mut tx, binding.id).await? else {
                     return Err(ServiceError::BindingNotFound);
                 };
@@ -138,6 +145,8 @@ impl ResourceServiceService {
                         snapshot_json: bundle.snapshot.to_value(),
                         access_expires_at: now + Duration::seconds(bundle.expires_in as i64),
                         refresh_expires_at: bundle.refresh_expires_at.as_datetime(),
+                        snapshot_revision: Some(snapshot_revision),
+                        expected_provider_revision: provider.revision,
                     },
                 )
                 .await
@@ -149,19 +158,29 @@ impl ResourceServiceService {
                     idempotency_key,
                 )
                 .await?;
+                let snapshot_applied =
+                    Store::observation_is_current(&mut tx, binding.id, snapshot_revision).await?;
                 tx.commit().await?;
+                self.revalidate_access(access).await?;
+                if matches!(access, BindingAccess::Exchange(_)) && !snapshot_applied {
+                    return Err(ServiceError::Conflict);
+                }
                 Ok(BindingView::from_row(&committed))
             }
             Err(error) => {
-                self.handle_provider_error(
-                    provider.id,
-                    OPERATION_REFRESH,
-                    idempotency_key,
-                    binding.id,
-                    binding.generation,
-                    error,
-                )
-                .await
+                let result = self
+                    .handle_provider_error(
+                        provider.id,
+                        OPERATION_REFRESH,
+                        idempotency_key,
+                        binding.id,
+                        binding.generation,
+                        error,
+                        Some((provider.revision, snapshot_revision)),
+                    )
+                    .await;
+                self.revalidate_access(access).await?;
+                result
             }
         }
     }

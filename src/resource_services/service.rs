@@ -15,6 +15,7 @@ use super::store::Store;
 use super::transport::{ProviderTransport, ReqwestProviderTransport};
 use super::types::ProviderRow;
 
+mod access;
 mod account;
 mod admin;
 mod bind;

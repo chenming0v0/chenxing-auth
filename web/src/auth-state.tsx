@@ -16,7 +16,7 @@ type AuthContextValue = {
   completeBootstrap: () => void
   clear: () => void
   logout: () => Promise<LogoutResult>
-  /** Changes whenever the authenticated account/session generation changes. */
+  /** 已确认的账户切换或登出时递增，用于清理账户页面状态。 */
   generation: number
 }
 
@@ -59,11 +59,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const sessionExpiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastRevalidationRef = useRef(0)
   const [generation, setGeneration] = useState(0)
-  // generation：clear/logout 时递增，丢弃登出后才落地的 refresh 写入（#99）。
+  // 请求代数在清除认证状态时递增，丢弃登出后才落地的 refresh 写入（#99）。
+  // 页面代数只在真正登出或切换账户时递增，首次确认未登录不能重挂公开表单（#745）。
   // refreshSeq：同一代内每次 refresh 递增。代数分辨不了同代并发请求，
   // 启动时的 /auth/me 与登录后的 refresh 会重叠，只有最新序号可以写回（#473）。
   // 使用 useRef 而非 useState：不触发重渲染，且读到的始终是最新值而非快照。
-  const generationRef = useRef<number>(0)
+  const requestGenerationRef = useRef<number>(0)
   const refreshSeqRef = useRef<number>(0)
   const userIdRef = useRef<UserMe['id'] | null>(null)
   const authChangedAtRef = useRef(0)
@@ -86,10 +87,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return true
   }, [])
 
-  const clearLocal = useCallback(() => {
-    // 递增代数——所有正在进行的 refresh() await 返回后会发现代数不匹配，自动丢弃结果
-    generationRef.current += 1
-    setGeneration(generationRef.current)
+  const clearLocal = useCallback((resetAccountViews = true) => {
+    // 即使只是首次确认未登录，也要使在途请求失效，不能把请求保护绑在页面是否重挂上。
+    requestGenerationRef.current += 1
+    if (resetAccountViews) setGeneration((current) => current + 1)
     setUser(null)
     setStatus('unauthenticated')
     userIdRef.current = null
@@ -128,11 +129,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async ({ broadcast = true }: RefreshOptions = {}) => {
     // 记下本轮代数和序号。logout 改代数；后续 refresh 改序号。
     // 任一不匹配都说明自己过期，不得覆盖当前 user/status。
-    const generation = generationRef.current
+    const generation = requestGenerationRef.current
     const requestId = ++refreshSeqRef.current
     const requestStartedAt = Date.now()
     const isCurrentRequest = () =>
-      generation === generationRef.current && requestId === refreshSeqRef.current
+      generation === requestGenerationRef.current && requestId === refreshSeqRef.current
     // 已认证页面刷新资料时保持现有内容；初次加载、登录完成和错误重试则进入 loading。
     setStatus((current) => current === 'authenticated' ? current : 'loading')
     try {
@@ -145,12 +146,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!isCurrentRequest()) return null
 
       if (userIdRef.current !== null && String(userIdRef.current) !== String(profile.id)) {
-        // Entitlements and every mounted account-scoped view belong to the previous
-        // identity. Advance the public generation before exposing the new profile so
-        // keyed consumers synchronously discard their data and in-flight effects.
+        // 套餐缓存和账户页面属于上一身份，展示新账户前先让旧页面与在途请求失效。
         clearApiCache()
-        generationRef.current += 1
-        setGeneration(generationRef.current)
+        requestGenerationRef.current += 1
+        setGeneration((current) => current + 1)
       }
       const wasAuthenticated = statusRef.current === 'authenticated'
       userIdRef.current = profile.id
@@ -168,7 +167,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // 网络错误（ApiError.status === 0）和服务端错误（5xx）不等于已登出：
       // 在网络抖动时误调 clear() 会把仍有效的会话踢出，属于错误行为。
       if (error instanceof ApiError && error.status === 401) {
-        clear(requestStartedAt)
+        if (userIdRef.current !== null) clear(requestStartedAt)
+        else {
+          // 未知或未登录身份没有账户页面需要清理；保留输入、MFA 和初始化完成状态。
+          clearLocal(false)
+        }
       } else {
         // 非 401 故障不代表会话失效。已认证页面继续保留当前用户；初次加载则
         // 进入显式可恢复状态，由受保护路由提供重试动作，避免永久停在 loading。
@@ -176,7 +179,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       return null
     }
-  }, [broadcastAuthEvent, clear])
+  }, [broadcastAuthEvent, clear, clearLocal])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -270,7 +273,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // logout 的网络请求失败时仍须本地登出（fail-secure）：
   // 服务端不可达不等于会话仍有效，保守做法是始终清除本地状态。
-  // finally 块中的 clear() 会递增 generationRef，使任何进行中的
+  // finally 块中的 clear() 会递增请求代数，使任何进行中的
   // refresh() 在 await 返回后检查代数时自动丢弃结果。
   // 撤销失败**不向外抛错**（#325）：调用点漏接 .catch 会产生 unhandled
   // rejection，且跳转行为与成功路径不一致。失败显式收进返回值 revoked，

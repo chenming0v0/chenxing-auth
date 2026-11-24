@@ -19,6 +19,12 @@ use crate::users::{
     },
 };
 
+#[path = "repository_effective.rs"]
+mod effective;
+pub(crate) use effective::{
+    EFFECTIVE_PLAN_FROM_USER, find_effective_for_locked_user, lock_effective_for_user,
+};
+
 #[derive(Debug, Error)]
 pub enum PlanRepositoryError {
     #[error(transparent)]
@@ -46,9 +52,6 @@ pub struct PlanWithUsers {
     pub plan: Plan,
     pub assigned_users: i64,
 }
-
-/// 用户行锁同时读取的套餐指针，以及该指针在数据库事务时间下是否仍有效。
-type LockedUserPlan = (Option<i64>, bool);
 
 fn map_plan_row(row: PlanRow) -> Result<Plan, crate::sqlx::Error> {
     row.into_plan()
@@ -196,36 +199,6 @@ async fn find_default_for_update(
     .fetch_optional(&mut **transaction)
     .await?;
     row.map(map_plan_row).transpose()
-}
-
-/// 在调用方事务内锁定用户及其当前有效套餐。
-///
-/// 用户的显式套餐失效、归档或缺失时回退到 active 默认套餐；没有默认套餐则
-/// 返回 `None`。业务锁让默认套餐切换和任意套餐更新都不能穿过本次解析，套餐行锁
-/// 则把随后依赖该配额的 COUNT + INSERT 固定在同一事务事实之上。
-pub(crate) async fn lock_effective_for_user(
-    transaction: &mut Transaction<'_, Postgres>,
-    user_id: UserId,
-) -> Result<Option<Plan>, crate::sqlx::Error> {
-    let (assigned_plan_id, assignment_is_current): LockedUserPlan = crate::sqlx::query_as(
-        "SELECT plan_id, (plan_expires_at IS NULL OR plan_expires_at > NOW())
-         FROM users
-         WHERE id = $1
-         FOR UPDATE",
-    )
-    .bind(user_id)
-    .fetch_one(&mut **transaction)
-    .await?;
-
-    lock_default_plan_set(transaction).await?;
-    if assignment_is_current
-        && let Some(plan_id) = assigned_plan_id
-        && let Some(plan) = find_for_update(transaction, plan_id).await?
-        && plan.status == "active"
-    {
-        return Ok(Some(plan));
-    }
-    find_default_for_update(transaction).await
 }
 
 /// 统计挂载到指定套餐的用户数。在事务内调用，保证与刚写入的套餐处于同一快照。

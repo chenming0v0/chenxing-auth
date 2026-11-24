@@ -141,6 +141,35 @@ impl ResourceServiceService {
         validate_display_name(&input.display_name)?;
         validate_client_id(&input.client_id)?;
         let declaration = input.scope_declaration()?;
+        let current = self
+            .store
+            .get_provider(id)
+            .await?
+            .ok_or(ServiceError::ProviderNotFound)?;
+        if current.revision != input.expected_revision {
+            return Err(ServiceError::Conflict);
+        }
+        let ciphertext = if let Some(secret) = input
+            .client_secret
+            .as_ref()
+            .filter(|value| !value.is_empty())
+        {
+            if secret.len() < 32 || secret.len() > 512 {
+                return Err(ServiceError::InvalidInput("client_secret"));
+            }
+            self.encrypt_provider_secret(id, &SecretString::new(secret.clone()))?
+        } else {
+            current.client_secret_ciphertext.clone()
+        };
+        let mut next = current.clone();
+        next.issuer = issuer.as_str().to_owned();
+        next.client_id = input.client_id.clone();
+        next.client_secret_ciphertext = ciphertext.clone();
+        let secret = self.decrypt_provider_secret(&next)?;
+        // 网络请求在短写事务之前完成；锁内再核对 revision 和身份约束。
+        let metadata = self
+            .fetch_metadata(&issuer, &input.client_id, &secret)
+            .await?;
         let mut tx = self.pool.begin().await?;
         validate_management_actor_in_transaction(
             &mut tx,
@@ -160,23 +189,6 @@ impl ResourceServiceService {
         if locked && (current.issuer != issuer.as_str() || current.client_id != input.client_id) {
             return Err(ServiceError::IdentityLocked);
         }
-        let ciphertext = if let Some(secret) = input.client_secret.filter(|value| !value.is_empty())
-        {
-            if secret.len() < 32 || secret.len() > 512 {
-                return Err(ServiceError::InvalidInput("client_secret"));
-            }
-            self.encrypt_provider_secret(id, &SecretString::new(secret))?
-        } else {
-            current.client_secret_ciphertext.clone()
-        };
-        let mut next = current.clone();
-        next.issuer = issuer.as_str().to_owned();
-        next.client_id = input.client_id.clone();
-        next.client_secret_ciphertext = ciphertext.clone();
-        let secret = self.decrypt_provider_secret(&next)?;
-        let metadata = self
-            .fetch_metadata(&issuer, &input.client_id, &secret)
-            .await?;
         let updated = Store::update_provider(
             &mut tx,
             input.expected_revision,
