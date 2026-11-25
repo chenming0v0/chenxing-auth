@@ -76,10 +76,10 @@ jobs:
             runner: windows-latest
             builder: cargo
           - target: x86_64-apple-darwin
-            runner: macos-14
+            runner: macos-15-intel
             builder: cargo
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
             builder: cargo
     runs-on: ${{ matrix.runner }}
     steps:
