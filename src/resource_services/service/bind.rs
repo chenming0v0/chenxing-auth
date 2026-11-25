@@ -149,9 +149,9 @@ impl ResourceServiceService {
                     provider.id,
                     OPERATION_CREATE,
                     idempotency_key,
-                    binding.id,
-                    binding.generation,
+                    &binding,
                     error,
+                    None,
                 )
                 .await
             }
@@ -198,6 +198,8 @@ impl ResourceServiceService {
                 snapshot_json: bundle.snapshot.to_value(),
                 access_expires_at: now + Duration::seconds(bundle.expires_in as i64),
                 refresh_expires_at: bundle.refresh_expires_at.as_datetime(),
+                snapshot_revision: None,
+                expected_provider_revision: provider_locked.revision,
             },
         )
         .await

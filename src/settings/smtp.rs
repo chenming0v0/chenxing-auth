@@ -69,6 +69,17 @@ pub(crate) struct SmtpDeliveryConfig {
     pub force_auth_login: bool,
     pub password: String,
 }
+
+impl SmtpDeliveryConfig {
+    pub(crate) fn validate_authentication(&self) -> Result<(), SettingsValidationError> {
+        validate_authentication(
+            &self.username,
+            !self.password.is_empty(),
+            self.force_auth_login,
+        )
+    }
+}
+
 impl fmt::Debug for SmtpDeliveryConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -93,6 +104,31 @@ pub struct SmtpSetting {
     pub ssl_enabled: bool,
     pub force_auth_login: bool,
     pub password_configured: bool,
+}
+
+impl SmtpSetting {
+    pub(crate) fn validate_authentication(&self) -> Result<(), SettingsValidationError> {
+        validate_authentication(
+            &self.username,
+            self.password_configured,
+            self.force_auth_login,
+        )
+    }
+}
+
+// 免认证中继必须同时清空用户名和密码；有用户名时必须提供有效密码。
+fn validate_authentication(
+    username: &str,
+    password_configured: bool,
+    force_auth_login: bool,
+) -> Result<(), SettingsValidationError> {
+    if username.is_empty() && (password_configured || force_auth_login) {
+        return Err(SettingsValidationError::InvalidSmtpUsername);
+    }
+    if !username.is_empty() && !password_configured {
+        return Err(SettingsValidationError::InvalidSmtpPassword);
+    }
+    Ok(())
 }
 
 impl Default for SmtpSetting {

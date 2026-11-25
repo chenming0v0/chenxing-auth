@@ -26,6 +26,8 @@ pub struct CommittedBundle {
     pub snapshot_json: Value,
     pub access_expires_at: OffsetDateTime,
     pub refresh_expires_at: OffsetDateTime,
+    pub snapshot_revision: Option<i64>,
+    pub expected_provider_revision: i64,
 }
 
 /// 账号同步只覆盖 snapshot_json（含 fetched_at）。不改令牌包、不抬 generation。
@@ -167,6 +169,20 @@ impl super::Store {
         commit_bundle(tx, bundle, false).await
     }
 
+    pub async fn observation_is_current(
+        tx: &mut Transaction<'_, Postgres>,
+        binding_id: Uuid,
+        revision: i64,
+    ) -> Result<bool, crate::sqlx::Error> {
+        crate::sqlx::query_scalar(
+            "SELECT snapshot_revision = $2 FROM resource_service_bindings WHERE id = $1",
+        )
+        .bind(binding_id)
+        .bind(revision)
+        .fetch_one(&mut **tx)
+        .await
+    }
+
     pub async fn tombstone_binding(
         tx: &mut Transaction<'_, Postgres>,
         id: Uuid,
@@ -238,7 +254,8 @@ async fn commit_bundle(
              grant_id = $4,
              grant_expires_at = $5,
              token_bundle_ciphertext = $6,
-             snapshot_json = $7,
+             snapshot_json = CASE WHEN $11::bigint IS NULL OR snapshot_revision = $11
+                                  THEN $7 ELSE snapshot_json END,
              access_expires_at = $8,
              refresh_expires_at = $9,
              generation = generation + 1,
@@ -246,6 +263,9 @@ async fn commit_bundle(
          WHERE id = $1
            AND tombstoned_at IS NULL
            AND generation = $2
+           AND EXISTS (SELECT 1 FROM resource_service_providers
+                       WHERE id = resource_service_bindings.provider_id
+                         AND revision = $12 AND enabled = TRUE)
            AND (
                 ($10 AND uid = '')
                 OR (NOT $10 AND uid = $3 AND grant_id = $4 AND grant_expires_at = $5)
@@ -264,6 +284,8 @@ async fn commit_bundle(
     .bind(bundle.access_expires_at)
     .bind(bundle.refresh_expires_at)
     .bind(creating)
+    .bind(bundle.snapshot_revision)
+    .bind(bundle.expected_provider_revision)
     .fetch_optional(&mut **tx)
     .await;
     match updated {

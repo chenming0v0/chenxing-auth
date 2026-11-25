@@ -131,7 +131,7 @@ async fn persist_keeps_newer_counter_when_stale_result_loses_cas() {
         )
         .await
         .expect("persist stale counter"),
-        repository::PasskeyPersistOutcome::AlreadyCurrent
+        repository::PasskeyPersistOutcome::CounterConflict
     );
 
     let persisted = repository::find_passkey_row(&pool, user_id, stored.id)

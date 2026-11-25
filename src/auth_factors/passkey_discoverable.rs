@@ -201,6 +201,11 @@ impl AuthFactorService {
         match outcome {
             repository::PasskeyPersistOutcome::Applied
             | repository::PasskeyPersistOutcome::AlreadyCurrent => {}
+            repository::PasskeyPersistOutcome::CounterConflict => {
+                // 已消费的旧 challenge 不恢复；新 start 会生成新的凭据验证状态。
+                self.release_dimensions(reservation).await?;
+                return Err(AuthFactorServiceError::PasskeyCounterConflict);
+            }
             repository::PasskeyPersistOutcome::Missing => {
                 self.release_dimensions(reservation).await?;
                 return Ok(DiscoverablePasskeyConfirmation::Invalid);

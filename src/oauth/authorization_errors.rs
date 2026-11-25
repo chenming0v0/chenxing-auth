@@ -6,12 +6,12 @@ use axum::{
 use super::super::{
     authorization::{
         AuthorizationRequest, AuthorizationRequestError, MAX_STATE_LENGTH, RegisteredClient,
-        redirect_uri_matches,
+        validate_client_and_redirect_uri,
     },
     consent::PendingAuthorization,
     session::SessionLookupError,
 };
-use crate::{clients::domain::canonicalize_redirect_uri, error};
+use crate::error;
 
 pub(super) fn accepts_html(headers: &HeaderMap) -> bool {
     headers
@@ -37,6 +37,17 @@ pub(super) fn authorization_error(
         AuthorizationRequestError::UnsupportedResponseType => {
             ("unsupported_response_type", "response type is unsupported")
         }
+        AuthorizationRequestError::UnsupportedResponseMode => {
+            ("invalid_request", "response_mode is unsupported; use query")
+        }
+        AuthorizationRequestError::RequestNotSupported => (
+            "request_not_supported",
+            "request parameter is not supported",
+        ),
+        AuthorizationRequestError::RequestUriNotSupported => (
+            "request_uri_not_supported",
+            "request_uri parameter is not supported",
+        ),
         AuthorizationRequestError::ScopeNotAllowed => ("invalid_scope", "scope is invalid"),
         AuthorizationRequestError::MissingState => ("invalid_request", "state is required"),
         AuthorizationRequestError::StateTooLong => ("invalid_request", "state is too long"),
@@ -61,11 +72,7 @@ pub(super) fn authorization_error_redirect(
     code: &'static str,
     description: &str,
 ) -> Response {
-    if let Some(canonical_redirect_uri) = canonicalize_redirect_uri(&request.redirect_uri)
-        && client
-            .redirect_uris
-            .iter()
-            .any(|registered| redirect_uri_matches(registered, &canonical_redirect_uri))
+    if let Ok(canonical_redirect_uri) = validate_client_and_redirect_uri(client, request)
         && let Ok(mut redirect) = url::Url::parse(&canonical_redirect_uri)
     {
         redirect
@@ -94,6 +101,9 @@ pub(super) fn trusted_pending_error(
         client_id: pending.client_id.clone(),
         redirect_uri: pending.redirect_uri.clone(),
         response_type: "code".to_owned(),
+        response_mode: None,
+        request: None,
+        request_uri: None,
         scope: pending.scope.clone(),
         state: Some(pending.state.clone()),
         nonce: pending.nonce.clone(),

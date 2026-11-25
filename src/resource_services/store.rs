@@ -8,6 +8,7 @@ use super::types::{BindingRow, OperationRow, OutboxRow, ProviderRow, ScopeAccess
 mod binding;
 mod operation;
 mod provider;
+mod snapshot;
 
 pub use binding::*;
 pub use operation::*;

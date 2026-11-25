@@ -13,8 +13,13 @@
 
 use std::{collections::BTreeMap, fs, path::Path};
 
-const ROUTE_SOURCES: [&str; 3] = [
+const ROUTE_SOURCES: [&str; 8] = [
     include_str!("../../src/api/routes.rs"),
+    include_str!("../../src/api/routes/account.rs"),
+    include_str!("../../src/api/routes/clients.rs"),
+    include_str!("../../src/api/routes/management.rs"),
+    include_str!("../../src/api/routes/oauth.rs"),
+    include_str!("../../src/api/routes/settings.rs"),
     include_str!("../../src/api/mod.rs"),
     // 资源服务路由挂在独立模块里，写端点同样必须走 SessionWrite / AdminWrite。
     include_str!("../../src/resource_services/routes.rs"),

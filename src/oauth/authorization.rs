@@ -1,157 +1,16 @@
 use super::pkce::validate_s256_challenge;
-use crate::clients::domain::{DEFAULT_ALLOWED_SCOPES, canonicalize_redirect_uri};
-use crate::users::domain::UserId;
-use serde::{Deserialize, Serialize};
+use crate::clients::domain::DEFAULT_ALLOWED_SCOPES;
 use std::collections::HashSet;
-use std::fmt;
-use thiserror::Error;
 use time::OffsetDateTime;
-use url::{Host, Url};
 
-/// Maximum number of Unicode scalar values accepted for the OAuth `state` value.
-pub const MAX_STATE_LENGTH: usize = 512;
-/// Maximum number of Unicode scalar values accepted for the OIDC `nonce` value.
-pub const MAX_NONCE_LENGTH: usize = 512;
-/// `max_age` is compared against Unix seconds, so values outside the signed
-/// timestamp range cannot be represented safely by the shared clock.
-pub const MAX_MAX_AGE: u64 = i64::MAX as u64;
+mod redirect;
+mod types;
 
-#[derive(Clone, Deserialize, Serialize)]
-pub struct AuthorizationRequest {
-    pub client_id: String,
-    pub redirect_uri: String,
-    pub response_type: String,
-    pub scope: String,
-    pub state: Option<String>,
-    pub nonce: Option<String>,
-    pub code_challenge: Option<String>,
-    pub code_challenge_method: Option<String>,
-    /// OpenID Connect Core `prompt` values, separated by spaces.
-    pub prompt: Option<String>,
-    /// Maximum permitted age of the authentication event, in seconds.
-    pub max_age: Option<u64>,
-}
-
-impl fmt::Debug for AuthorizationRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AuthorizationRequest")
-            .field("client_id", &self.client_id)
-            .field("redirect_uri", &self.redirect_uri)
-            .field("response_type", &self.response_type)
-            .field("scope", &self.scope)
-            .field("state", &self.state.as_ref().map(|_| "<redacted>"))
-            .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
-            .field(
-                "code_challenge",
-                &self.code_challenge.as_ref().map(|_| "<redacted>"),
-            )
-            .field("code_challenge_method", &self.code_challenge_method)
-            .field("prompt", &self.prompt)
-            .field("max_age", &self.max_age)
-            .finish()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct RegisteredClient {
-    pub client_id: String,
-    pub client_name: String,
-    pub redirect_uris: Vec<String>,
-    pub scopes: Vec<String>,
-    pub owner_user_id: Option<UserId>,
-    pub logo_uri: Option<String>,
-    pub client_uri: Option<String>,
-    pub description: Option<String>,
-    pub numeric_app_id: i64,
-    pub android_package: Option<String>,
-    pub quota_exempt: bool,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub struct ValidatedAuthorizationRequest {
-    pub client_id: String,
-    /// 授权请求提交的原始 `redirect_uri` 文本。
-    ///
-    /// 注册匹配使用 canonical 形式，但授权码必须绑定这份原始文本；Token
-    /// 端点只接受同一原始值，不能把 `:443`、根斜杠等文本差异再规范化掉。
-    pub redirect_uri: String,
-    pub scopes: Vec<String>,
-    pub state: String,
-    pub nonce: Option<String>,
-    pub code_challenge: String,
-    /// Normalized OIDC `prompt` value. `None` means the default prompt policy.
-    pub prompt: Option<String>,
-    pub max_age: Option<u64>,
-    /// Set by the authorization handler when the request requires a fresh
-    /// login. The optional hash identifies the pre-existing session that must
-    /// not satisfy the request by itself.
-    pub reauth_required: bool,
-    pub reauth_session_token_hash: Option<String>,
-    pub owner_user_id: Option<UserId>,
-    /// 发起该授权请求的浏览器会话令牌 SHA-256 摘要，用于把签发出的授权码绑定到会话。
-    ///
-    /// 协议校验阶段拿不到会话（`/oauth/authorize` 的查询参数里不该、也不能带
-    /// 会话凭据，否则会话令牌会进 Referer 和访问日志），因此
-    /// `validate_authorization_request` 一律填 `None`，由持有会话的调用方
-    /// （`handlers::authorize_request` / 授权确认页）在校验之后回填。
-    pub session_token_hash: Option<String>,
-}
-
-impl fmt::Debug for ValidatedAuthorizationRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ValidatedAuthorizationRequest")
-            .field("client_id", &self.client_id)
-            .field("redirect_uri", &self.redirect_uri)
-            .field("scopes", &self.scopes)
-            .field("state", &"<redacted>")
-            .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
-            .field("code_challenge", &"<redacted>")
-            .field("prompt", &self.prompt)
-            .field("max_age", &self.max_age)
-            .field("reauth_required", &self.reauth_required)
-            .field(
-                "reauth_session_token_hash",
-                &self
-                    .reauth_session_token_hash
-                    .as_ref()
-                    .map(|_| "<redacted>"),
-            )
-            .field("owner_user_id", &self.owner_user_id)
-            .field(
-                "session_token_hash",
-                &self.session_token_hash.as_ref().map(|_| "<redacted>"),
-            )
-            .finish()
-    }
-}
-
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum AuthorizationRequestError {
-    #[error("client id is invalid")]
-    InvalidClient,
-    #[error("redirect URI is not registered")]
-    RedirectUriNotAllowed,
-    #[error("response type must be code")]
-    UnsupportedResponseType,
-    #[error("requested scope is not allowed")]
-    ScopeNotAllowed,
-    #[error("state is required")]
-    MissingState,
-    #[error("state is too long")]
-    StateTooLong,
-    #[error("nonce is too long")]
-    NonceTooLong,
-    #[error("prompt is invalid")]
-    InvalidPrompt,
-    #[error("prompt=none cannot be combined with another prompt value")]
-    PromptNoneCombined,
-    #[error("max_age is too large")]
-    MaxAgeTooLarge,
-    #[error("PKCE S256 is required")]
-    PkceRequired,
-    #[error("PKCE S256 challenge is invalid")]
-    InvalidCodeChallenge,
-}
+pub(crate) use redirect::{redirect_uri_matches, validate_client_and_redirect_uri};
+pub use types::{
+    AuthorizationRequest, AuthorizationRequestError, MAX_MAX_AGE, MAX_NONCE_LENGTH,
+    MAX_STATE_LENGTH, RegisteredClient, ValidatedAuthorizationRequest,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PromptOptions {
@@ -271,21 +130,8 @@ pub fn validate_authorization_request_with_allowlist(
     request: AuthorizationRequest,
     allowed_scopes: &[String],
 ) -> Result<ValidatedAuthorizationRequest, AuthorizationRequestError> {
-    if request.client_id != client.client_id {
-        return Err(AuthorizationRequestError::InvalidClient);
-    }
-    let canonical_redirect_uri = canonicalize_redirect_uri(&request.redirect_uri)
-        .ok_or(AuthorizationRequestError::RedirectUriNotAllowed)?;
-    if !client
-        .redirect_uris
-        .iter()
-        .any(|uri| redirect_uri_matches(uri, &canonical_redirect_uri))
-    {
-        return Err(AuthorizationRequestError::RedirectUriNotAllowed);
-    }
-    if !numeric_app_callback_allowed(&canonical_redirect_uri, client.numeric_app_id) {
-        return Err(AuthorizationRequestError::RedirectUriNotAllowed);
-    }
+    validate_client_and_redirect_uri(client, &request)?;
+    validate_supported_parameters(&request)?;
     if request.response_type != "code" {
         return Err(AuthorizationRequestError::UnsupportedResponseType);
     }
@@ -342,66 +188,32 @@ pub fn validate_authorization_request_with_allowlist(
     })
 }
 
-/// Mobile App Link callbacks are `/app/<numeric_app_id>/oauth/callback`.
-/// Query and fragment are ignored because `Url::path()` already strips them.
-/// Paths that do not match this exact shape, including ordinary and loopback
-/// URIs, skip the check. A registered URI with the wrong id is still rejected.
-fn numeric_app_callback_allowed(canonical_redirect_uri: &str, numeric_app_id: i64) -> bool {
-    let Ok(url) = Url::parse(canonical_redirect_uri) else {
-        return false;
-    };
-    let Some(digits) = url.path().strip_prefix("/app/").and_then(|rest| {
-        rest.strip_suffix("/oauth/callback").filter(|digits| {
-            !digits.is_empty()
-                && !digits.contains('/')
-                && digits.bytes().all(|b| b.is_ascii_digit())
-        })
-    }) else {
-        return true;
-    };
-    digits
-        .parse::<i64>()
-        .is_ok_and(|parsed| parsed == numeric_app_id)
-}
-
-/// RFC 8252 section 7.3 permits native apps using a literal loopback address
-/// to vary only the port between registration and authorization. All other
-/// redirect URIs retain exact matching after canonicalization.
-pub(crate) fn redirect_uri_matches(registered: &str, requested: &str) -> bool {
-    if registered == requested {
-        return true;
+fn validate_supported_parameters(
+    request: &AuthorizationRequest,
+) -> Result<(), AuthorizationRequestError> {
+    // RFC 6749 §3.1：空值参数视为未提供；非空的 Request Object 参数按 OIDC §6 拒绝。
+    if request
+        .request
+        .as_ref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Err(AuthorizationRequestError::RequestNotSupported);
     }
-
-    let (Ok(registered_url), Ok(requested_url)) = (Url::parse(registered), Url::parse(requested))
-    else {
-        return false;
-    };
-    if registered_url.as_str() != registered || requested_url.as_str() != requested {
-        return false;
+    if request
+        .request_uri
+        .as_ref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Err(AuthorizationRequestError::RequestUriNotSupported);
     }
-    if registered_url.scheme() != "http" || requested_url.scheme() != "http" {
-        return false;
+    if request
+        .response_mode
+        .as_deref()
+        .is_some_and(|mode| !mode.is_empty() && mode != "query")
+    {
+        return Err(AuthorizationRequestError::UnsupportedResponseMode);
     }
-
-    let same_literal_loopback_ip = match (registered_url.host(), requested_url.host()) {
-        (Some(Host::Ipv4(registered_ip)), Some(Host::Ipv4(requested_ip))) => {
-            registered_ip.is_loopback() && registered_ip == requested_ip
-        }
-        (Some(Host::Ipv6(registered_ip)), Some(Host::Ipv6(requested_ip))) => {
-            registered_ip.is_loopback() && registered_ip == requested_ip
-        }
-        _ => false,
-    };
-
-    same_literal_loopback_ip
-        && registered_url.username().is_empty()
-        && requested_url.username().is_empty()
-        && registered_url.password().is_none()
-        && requested_url.password().is_none()
-        && registered_url.path() == requested_url.path()
-        && registered_url.query() == requested_url.query()
-        && registered_url.fragment().is_none()
-        && requested_url.fragment().is_none()
+    Ok(())
 }
 
 pub(crate) fn scopes_are_allowed(
@@ -417,83 +229,4 @@ pub(crate) fn scopes_are_allowed(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        AuthorizationRequestError, PromptOptions, authentication_is_fresh,
-        reauthentication_is_satisfied,
-    };
-    use time::{Duration, OffsetDateTime};
-
-    #[test]
-    fn prompt_parser_accepts_supported_values_and_rejects_duplicates() {
-        let (options, normalized) =
-            PromptOptions::parse(Some("login consent")).expect("supported prompt values");
-        assert!(options.login && options.consent);
-        assert_eq!(normalized.as_deref(), Some("login consent"));
-        assert_eq!(
-            PromptOptions::parse(Some("login login")).expect_err("duplicate prompt"),
-            AuthorizationRequestError::InvalidPrompt
-        );
-    }
-
-    #[test]
-    fn prompt_none_cannot_be_combined_with_interaction() {
-        assert_eq!(
-            PromptOptions::parse(Some("none login")).expect_err("illegal prompt combination"),
-            AuthorizationRequestError::PromptNoneCombined
-        );
-    }
-
-    #[test]
-    fn max_age_zero_always_requires_reauthentication() {
-        let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(100);
-        assert!(!authentication_is_fresh(now, now, Some(0)));
-        assert!(authentication_is_fresh(
-            now - Duration::seconds(30),
-            now,
-            Some(30)
-        ));
-        assert!(!authentication_is_fresh(
-            now - Duration::seconds(31),
-            now,
-            Some(30)
-        ));
-    }
-
-    #[test]
-    fn reauthentication_fence_accepts_a_new_session_for_zero_max_age() {
-        let now = OffsetDateTime::UNIX_EPOCH + Duration::seconds(100);
-        assert!(reauthentication_is_satisfied(
-            "new-session",
-            Some("old-session"),
-            now,
-            now,
-            Some(0),
-            true,
-        ));
-        assert!(!reauthentication_is_satisfied(
-            "old-session",
-            Some("old-session"),
-            now,
-            now,
-            Some(0),
-            true,
-        ));
-        assert!(reauthentication_is_satisfied(
-            "new-session",
-            None,
-            now,
-            now,
-            Some(0),
-            true,
-        ));
-        assert!(!reauthentication_is_satisfied(
-            "new-session",
-            Some("old-session"),
-            now + Duration::seconds(1),
-            now,
-            Some(0),
-            true,
-        ));
-    }
-}
+mod tests;

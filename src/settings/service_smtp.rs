@@ -84,6 +84,8 @@ impl SettingsService {
         setting.password_configured = password_ciphertext
             .as_ref()
             .is_some_and(|value| !value.is_empty());
+        // keep 依赖锁内已有密码，必须在解析三态之后校验最终认证配置。
+        setting.validate_authentication()?;
         let stored = StoredSmtpSetting {
             host: setting.host.clone(),
             port: setting.port,
@@ -106,6 +108,38 @@ impl SettingsService {
             None => repository::set_registration_email_from(&mut **transaction, None).await?,
         }
         Ok((setting, password_action))
+    }
+
+    pub(super) fn decode_smtp_delivery_config(
+        &self,
+        stored: StoredSmtpSetting,
+    ) -> Result<crate::settings::SmtpDeliveryConfig, SettingsServiceError> {
+        if stored.host.is_empty() || stored.from_address.is_empty() {
+            return Err(SettingsServiceError::Corrupt {
+                key: crate::settings::SMTP_KEY,
+            });
+        }
+        let password = match stored.password_ciphertext.as_deref() {
+            Some(ciphertext) => self
+                .secrets
+                .decrypt_for(SecretContext::Smtp, &SecretManager::decode(ciphertext)?)?,
+            None => String::new(),
+        };
+        let config = crate::settings::SmtpDeliveryConfig {
+            host: stored.host,
+            port: stored.port,
+            username: stored.username,
+            from_address: stored.from_address,
+            ssl_enabled: stored.ssl_enabled,
+            force_auth_login: stored.force_auth_login,
+            password,
+        };
+        config
+            .validate_authentication()
+            .map_err(|_| SettingsServiceError::Corrupt {
+                key: crate::settings::SMTP_KEY,
+            })?;
+        Ok(config)
     }
 }
 
@@ -132,3 +166,7 @@ pub(super) fn normalize_email(
 pub(super) fn extract_email(value: &str) -> Option<String> {
     parse_smtp_sender(value).map(EmailAddress::into_display)
 }
+
+#[cfg(test)]
+#[path = "smtp_delivery_tests.rs"]
+mod tests;

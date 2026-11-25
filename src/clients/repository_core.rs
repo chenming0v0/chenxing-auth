@@ -184,9 +184,15 @@ fn to_listed_client(row: ClientRow) -> ListedClient {
     }
 }
 
-/// 单条 INSERT。owner 与 quota_exempt 由调用方按通道写入；本函数不计自助额度。
-/// 管理面 true，自助 false。返回生成的自增 id，由调用方一次性构造 `NewClient`
-/// （Issue #93）。
+pub(super) struct InsertedClientRow {
+    pub id: i64,
+    pub numeric_app_id: i64,
+    pub quota_limits: Option<AuthQuotaLimits>,
+}
+
+/// 自助调用方先锁定用户和套餐；INSERT 内再按数据库当前时间解析套餐并检查额度。
+/// 返回最终采用的授权配额，避免锁后到期回退却仍把旧套餐配额交给调用方。
+/// 管理面 quota_exempt=true，不依赖用户套餐，也不占用自助额度。
 pub(super) async fn insert_client_row<'executor, E>(
     executor: E,
     registration: &ValidatedClientRegistration,
@@ -195,16 +201,33 @@ pub(super) async fn insert_client_row<'executor, E>(
     created_at: OffsetDateTime,
     owner_user_id: Option<UserId>,
     quota_exempt: bool,
-) -> Result<(i64, i64), crate::sqlx::Error>
+) -> Result<Option<InsertedClientRow>, crate::sqlx::Error>
 where
     E: crate::sqlx::Executor<'executor, Database = crate::sqlx::Postgres>,
 {
-    crate::sqlx::query_as::<_, (i64, i64)>(
-        "INSERT INTO oauth_clients
+    let effective_plan_source = crate::plans::repository::EFFECTIVE_PLAN_FROM_USER;
+    let row: Option<(i64, i64, Option<i64>, Option<i64>)> = crate::sqlx::query_as(&format!(
+        "WITH decision_time AS MATERIALIZED (SELECT clock_timestamp() AS at),
+         effective_plan AS MATERIALIZED (
+             SELECT p.oauth_clients_limit, p.daily_auth_limit, p.monthly_auth_limit
+             {effective_plan_source} AND NOT $12
+         ), inserted AS (
+          INSERT INTO oauth_clients
           (client_id, client_name, client_secret_hash, redirect_uris, scopes, auth_method, status, created_at, owner_user_id, logo_uri, client_uri, description, quota_exempt)
-          VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11, $12)
-          RETURNING id, numeric_app_id",
-    )
+          SELECT $2, $3, $4, $5, $6, $7, 'active', $8, $1, $9, $10, $11, $12
+          WHERE $12 OR EXISTS (
+              SELECT 1 FROM effective_plan
+              WHERE (SELECT COUNT(*) FROM oauth_clients
+                     WHERE owner_user_id = $1 AND quota_exempt = false)
+                    < effective_plan.oauth_clients_limit
+          )
+          RETURNING id, numeric_app_id
+         )
+         SELECT inserted.id, inserted.numeric_app_id,
+                effective_plan.daily_auth_limit, effective_plan.monthly_auth_limit
+         FROM inserted LEFT JOIN effective_plan ON TRUE"
+    ))
+    .bind(owner_user_id)
     .bind(client_id)
     .bind(&registration.client_name)
     .bind(credential.secret_hash())
@@ -212,13 +235,23 @@ where
     .bind(serde_json::to_value(&registration.scopes).expect("scopes are serializable"))
     .bind(credential.auth_method().as_str())
     .bind(created_at)
-    .bind(owner_user_id)
     .bind(&registration.logo_uri)
     .bind(&registration.client_uri)
     .bind(&registration.description)
     .bind(quota_exempt)
-    .fetch_one(executor)
-    .await
+    .fetch_optional(executor)
+    .await?;
+    // 套餐配额由写入校验和数据库 CHECK 保证非负；管理创建没有 effective_plan 行。
+    Ok(
+        row.map(|(id, numeric_app_id, daily, monthly)| InsertedClientRow {
+            id,
+            numeric_app_id,
+            quota_limits: daily.map(|limit| AuthQuotaLimits {
+                daily_auth_limit: limit as u64,
+                monthly_auth_limit: monthly.map(|limit| limit as u64),
+            }),
+        }),
+    )
 }
 
 pub async fn insert_client(
@@ -231,7 +264,7 @@ pub async fn insert_client(
     // 保留墙钟（Issue #299 的明确例外）：Client 行的创建时间，不是凭据有效期。
     // Client Secret 本身没有过期语义，撤销通过 `revoke_client_tokens` 表达。
     let created_at = OffsetDateTime::now_utc();
-    let (id, numeric_app_id) = insert_client_row(
+    let inserted = insert_client_row(
         pool,
         &registration,
         &client_id,
@@ -240,10 +273,11 @@ pub async fn insert_client(
         owner_user_id,
         true,
     )
-    .await?;
+    .await?
+    .ok_or(crate::sqlx::Error::RowNotFound)?;
     Ok(NewClient {
-        id,
-        numeric_app_id,
+        id: inserted.id,
+        numeric_app_id: inserted.numeric_app_id,
         client_id,
         client_name: registration.client_name,
         redirect_uris: registration.redirect_uris,
@@ -279,7 +313,7 @@ where
     )
     .await?;
     let created_at = OffsetDateTime::now_utc();
-    let (id, numeric_app_id) = insert_client_row(
+    let inserted = insert_client_row(
         &mut *transaction,
         &registration,
         &client_id,
@@ -288,10 +322,11 @@ where
         owner_user_id,
         true,
     )
-    .await?;
+    .await?
+    .ok_or(crate::sqlx::Error::RowNotFound)?;
     let client = NewClient {
-        id,
-        numeric_app_id,
+        id: inserted.id,
+        numeric_app_id: inserted.numeric_app_id,
         client_id,
         client_name: registration.client_name,
         redirect_uris: registration.redirect_uris,

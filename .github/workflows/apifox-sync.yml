@@ -36,12 +36,27 @@ jobs:
     runs-on: ubuntu-latest
     environment: apifox
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Import OpenAPI specification
         env:
           API_FOX_KEY: ${{ secrets.API_FOX_KEY }}
         run: |
           set -euo pipefail
           test -n "$API_FOX_KEY"
+          # 上传触发提交的正文，避免远端抓取浮动分支 URL 带来失败或版本错位。
+          jq -n --rawfile spec openapi.yaml '{
+            "input": $spec,
+            "options": {
+              "endpointOverwriteBehavior": "AUTO_MERGE",
+              "schemaOverwriteBehavior": "AUTO_MERGE",
+              "updateFolderOfChangedEndpoint": true,
+              "prependBasePath": false,
+              "deleteUnmatchedResources": true
+            }
+          }' > "$RUNNER_TEMP/apifox-import.json"
           curl --fail-with-body --silent --show-error \
             --retry 3 \
             --retry-delay 20 \
@@ -51,15 +66,4 @@ jobs:
             --header "Authorization: Bearer $API_FOX_KEY" \
             --header "X-Apifox-Api-Version: 2024-03-28" \
             --header "Content-Type: application/json" \
-            --data '{
-              "input": {
-                "url": "https://raw.githubusercontent.com/chenming0v0/chenxing-auth/dev/openapi.yaml"
-              },
-              "options": {
-                "endpointOverwriteBehavior": "AUTO_MERGE",
-                "schemaOverwriteBehavior": "AUTO_MERGE",
-                "updateFolderOfChangedEndpoint": true,
-                "prependBasePath": false,
-                "deleteUnmatchedResources": true
-              }
-            }'
+            --data-binary @"$RUNNER_TEMP/apifox-import.json"

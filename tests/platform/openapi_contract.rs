@@ -31,6 +31,11 @@ const CI_WORKFLOW: &str = include_str!("../../.github/workflows/ci.yml");
 const OPENAPI: &str = include_str!("../../openapi.yaml");
 const ROUTE_SOURCES: &str = concat!(
     include_str!("../../src/api/routes.rs"),
+    include_str!("../../src/api/routes/account.rs"),
+    include_str!("../../src/api/routes/clients.rs"),
+    include_str!("../../src/api/routes/management.rs"),
+    include_str!("../../src/api/routes/oauth.rs"),
+    include_str!("../../src/api/routes/settings.rs"),
     include_str!("../../src/api/mod.rs"),
     include_str!("../../src/resource_services/routes.rs")
 );

@@ -66,6 +66,7 @@ const safeMessages = new Map<string, string>([
   ['invalid_credentials', '账号或密码不正确。'],
   ['invalid_factor', '验证码不正确，请重试。'],
   ['invalid_passkey', 'Passkey 验证未通过，请重试。'],
+  ['passkey_counter_conflict', 'Passkey 状态已更新，请重新发起验证。'],
   ['invalid_login_ticket', '验证流程已失效，请重新登录。'],
   ['email_already_registered', '注册信息无法使用，请检查后重试。'],
   ['email_domain_not_allowed', '当前邮箱域名不允许注册。'],

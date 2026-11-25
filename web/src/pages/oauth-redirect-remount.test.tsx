@@ -1,11 +1,11 @@
 /**
  * #731：/oauth/redirect 把 code/state 收进组件状态后立刻 scrub。
- * 未登录时页面在 loading 就挂上，随后 /api/v1/auth/me 401 会把 AuthProvider
+ * 未登录时页面在 loading 就挂上，真实跨标签登出会把 AuthProvider
  * 的 generation 从 0 抬到 1。这一页若仍挂在 <Fragment key={generation}> 下，
  * 新实例只能看到空 query，成功回调会被画成「授权回调无效」。
  *
  * 这里走真实 App（真实 AuthProvider + 真实路由），不 mock auth-state。
- * 401 的 clear() 会广播 logout；等到那条同步事件落地，再断言页面仍是成功分支，
+ * 先完成首次 401，再显式触发跨标签 logout，断言页面仍是成功分支，
  * 且地址栏没有被写回 code。
  */
 import { act, cleanup, render, screen } from '@testing-library/react'
@@ -48,8 +48,13 @@ describe('OAuth 回调页不随未登录 401 重挂（#731）', () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
 
-    const syncEvent = window.localStorage.getItem('chenxing-auth-sync-event')
-    expect(syncEvent).toContain('"type":"logout"')
+    expect(window.localStorage.getItem('chenxing-auth-sync-event')).toBeNull()
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: 'chenxing-auth-sync-event',
+        newValue: JSON.stringify({ type: 'logout', nonce: 'redirect-remote-logout', occurredAt: Date.now() + 1_000 }),
+      }))
+    })
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/auth/me',
       expect.objectContaining({ credentials: 'include' }),

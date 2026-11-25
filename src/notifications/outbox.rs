@@ -3,13 +3,12 @@ use std::{future::Future, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 use crate::{
-    config::AuthEncryptionKeyRing,
-    notifications::EmailSender,
-    sqlx::{PgPool, Postgres, Transaction},
-    users::domain::UserId,
+    config::AuthEncryptionKeyRing, notifications::EmailSender, sqlx::PgPool, users::domain::UserId,
     workers::WorkerContext,
 };
 
+#[path = "outbox_claims.rs"]
+mod claims;
 #[path = "outbox_messages.rs"]
 mod messages;
 #[path = "outbox_retention.rs"]
@@ -18,7 +17,7 @@ mod retention;
 mod retry;
 
 const OUTBOX_LEASE: time::Duration = time::Duration::minutes(5);
-const MAX_ATTEMPTS: i32 = 10;
+const MAX_FAILED_ATTEMPTS: i32 = 10;
 const EMAIL_SEND_TIMEOUT: Duration = Duration::from_secs(30);
 const WORKER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const WORKER_BATCH_TIME_BUDGET: Duration = Duration::from_secs(5);
@@ -80,6 +79,7 @@ struct OutboxEntry {
     challenge_id: Uuid,
     kind: String,
     attempts: i32,
+    failed_attempts: i32,
     claim_generation: i64,
     claim_token: String,
 }
@@ -187,58 +187,6 @@ impl EmailOutbox {
         }
     }
 
-    async fn claim(&self) -> Result<Option<OutboxEntry>, EmailOutboxError> {
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(EmailOutboxError::Database)?;
-        let claim_token = Uuid::new_v4().simple().to_string();
-        let row: Option<(i64, UserId, Uuid, String, i32, i64, String)> = crate::sqlx::query_as(
-            "WITH next AS (
-                 SELECT id FROM email_outbox
-                 WHERE processed_at IS NULL
-                   AND cancelled_at IS NULL
-                   AND dead_lettered_at IS NULL
-                   AND available_at <= NOW()
-                 ORDER BY id
-                 LIMIT 1
-                 FOR UPDATE SKIP LOCKED
-             )
-             UPDATE email_outbox AS outbox
-             SET attempts = LEAST(outbox.attempts, 2147483646) + 1,
-                 claim_generation = outbox.claim_generation + 1,
-                 claim_token = $2,
-                 available_at = NOW() + $1
-             FROM next
-             WHERE outbox.id = next.id
-             RETURNING outbox.id, outbox.user_id, outbox.challenge_id, outbox.kind,
-                       outbox.attempts, outbox.claim_generation, outbox.claim_token",
-        )
-        .bind(OUTBOX_LEASE)
-        .bind(&claim_token)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(EmailOutboxError::Database)?;
-        transaction
-            .commit()
-            .await
-            .map_err(EmailOutboxError::Database)?;
-        Ok(row.map(
-            |(id, user_id, challenge_id, kind, attempts, claim_generation, claim_token)| {
-                OutboxEntry {
-                    id,
-                    user_id,
-                    challenge_id,
-                    kind,
-                    attempts,
-                    claim_generation,
-                    claim_token,
-                }
-            },
-        ))
-    }
-
     async fn apply(&self, entry: &OutboxEntry) -> Result<bool, EmailOutboxError> {
         // Claim validation and payload reads use a short transaction. The
         // provider call must stay outside it: SMTP may wait for network I/O and
@@ -290,44 +238,6 @@ impl EmailOutbox {
             error_kind = error_value.failure_code(),
             "SMTP accepted an email but the durable terminal state could not be confirmed; retry may duplicate delivery"
         );
-    }
-
-    async fn mark_processed(&self, entry: &OutboxEntry) -> Result<bool, EmailOutboxError> {
-        let result = crate::sqlx::query(
-            "UPDATE email_outbox
-             SET processed_at = NOW(), claim_token = '', last_error = NULL
-             WHERE id = $1 AND processed_at IS NULL AND cancelled_at IS NULL
-               AND dead_lettered_at IS NULL
-               AND claim_generation = $2 AND claim_token = $3",
-        )
-        .bind(entry.id)
-        .bind(entry.claim_generation)
-        .bind(&entry.claim_token)
-        .execute(&self.pool)
-        .await
-        .map_err(EmailOutboxError::Database)?;
-        Ok(result.rows_affected() == 1)
-    }
-
-    async fn mark_cancelled(
-        &self,
-        transaction: &mut Transaction<'_, Postgres>,
-        entry: &OutboxEntry,
-    ) -> Result<(), EmailOutboxError> {
-        crate::sqlx::query(
-            "UPDATE email_outbox
-             SET cancelled_at = NOW(), claim_token = '', last_error = NULL
-             WHERE id = $1 AND processed_at IS NULL AND cancelled_at IS NULL
-               AND dead_lettered_at IS NULL
-               AND claim_generation = $2 AND claim_token = $3",
-        )
-        .bind(entry.id)
-        .bind(entry.claim_generation)
-        .bind(&entry.claim_token)
-        .execute(&mut **transaction)
-        .await
-        .map_err(EmailOutboxError::Database)?;
-        Ok(())
     }
 }
 

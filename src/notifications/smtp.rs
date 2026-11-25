@@ -1,10 +1,14 @@
 use crate::{
     notifications::email::{EmailMessage, EmailSendError, EmailSender},
-    settings::SettingsService,
+    settings::{SettingsService, SmtpDeliveryConfig},
 };
 use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::Mailbox,
-    transport::smtp::authentication::Credentials,
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+    message::Mailbox,
+    transport::smtp::{
+        AsyncSmtpTransportBuilder,
+        authentication::{Credentials, Mechanism},
+    },
 };
 use std::{future::Future, pin::Pin};
 
@@ -40,29 +44,37 @@ impl SmtpEmailSender {
             .subject(message.subject)
             .body(message.body)
             .map_err(|_| EmailSendError::InvalidConfiguration)?;
-        if config.username.is_empty() != config.password.is_empty()
-            || (config.force_auth_login && config.username.is_empty())
-        {
-            return Err(EmailSendError::InvalidConfiguration);
-        }
-        let mut client = if config.ssl_enabled {
-            AsyncSmtpTransport::<Tokio1Executor>::relay(&config.host)
-        } else {
-            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.host)
-        }
-        .map_err(|_| EmailSendError::InvalidConfiguration)?
-        .port(config.port);
-        if !config.username.is_empty() {
-            client = client.credentials(Credentials::new(config.username, config.password));
-        }
-        client
-            .build()
+        client_builder(config)?
+            .build::<Tokio1Executor>()
             .send(email)
             .await
             .map(|_| ())
             .map_err(|_| EmailSendError::Delivery)
     }
 }
+
+fn client_builder(config: SmtpDeliveryConfig) -> Result<AsyncSmtpTransportBuilder, EmailSendError> {
+    config
+        .validate_authentication()
+        .map_err(|_| EmailSendError::InvalidConfiguration)?;
+    // 587 是标准提交端口，使用强制 STARTTLS；其余端口保留既有隐式 TLS 选择。
+    // 两种构造器都校验证书和服务名，STARTTLS 不允许降级为明文投递。
+    let mut client = if config.ssl_enabled && config.port != 587 {
+        AsyncSmtpTransport::<Tokio1Executor>::relay(&config.host)
+    } else {
+        AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.host)
+    }
+    .map_err(|_| EmailSendError::InvalidConfiguration)?
+    .port(config.port);
+    if config.force_auth_login {
+        client = client.authentication(vec![Mechanism::Login]);
+    }
+    if !config.username.is_empty() {
+        client = client.credentials(Credentials::new(config.username, config.password));
+    }
+    Ok(client)
+}
+
 impl EmailSender for SmtpEmailSender {
     fn send<'a>(
         &'a self,
@@ -71,3 +83,7 @@ impl EmailSender for SmtpEmailSender {
         Box::pin(self.send_message(message))
     }
 }
+
+#[cfg(test)]
+#[path = "smtp_tests.rs"]
+mod tests;

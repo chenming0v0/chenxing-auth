@@ -100,24 +100,19 @@ where
             })
         }
         Claim::New { secret_kid } => {
-            if enforce_owner_quota && let Some(owner_user_id) = owner_user_id {
-                let Some(limit) =
-                    owned_registration::effective_limit(&mut transaction, owner_user_id).await?
-                else {
-                    transaction.rollback().await?;
-                    return Err(IdempotentClientOperationError::QuotaExceeded);
-                };
-                if !owned_registration::quota_available(&mut transaction, owner_user_id, limit)
+            if enforce_owner_quota
+                && let Some(owner_user_id) = owner_user_id
+                && owned_registration::locked_effective_plan(&mut transaction, owner_user_id)
                     .await?
-                {
-                    transaction.rollback().await?;
-                    return Err(IdempotentClientOperationError::QuotaExceeded);
-                }
+                    .is_none()
+            {
+                transaction.rollback().await?;
+                return Err(IdempotentClientOperationError::QuotaExceeded);
             }
 
             let created_at = OffsetDateTime::now_utc();
             let quota_exempt = !enforce_owner_quota;
-            let (id, numeric_app_id) = insert_client_row(
+            let inserted = insert_client_row(
                 &mut *transaction,
                 &registration,
                 &client_id,
@@ -127,9 +122,17 @@ where
                 quota_exempt,
             )
             .await?;
+            let Some(inserted) = inserted else {
+                transaction.rollback().await?;
+                return Err(if enforce_owner_quota {
+                    IdempotentClientOperationError::QuotaExceeded
+                } else {
+                    crate::sqlx::Error::RowNotFound.into()
+                });
+            };
             let client = NewClient {
-                id,
-                numeric_app_id,
+                id: inserted.id,
+                numeric_app_id: inserted.numeric_app_id,
                 client_id,
                 client_name: registration.client_name,
                 redirect_uris: registration.redirect_uris,

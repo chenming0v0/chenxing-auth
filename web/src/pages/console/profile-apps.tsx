@@ -55,9 +55,8 @@ export function ConsoleProfile() {
   const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
   const { busy, acquire, release, run } = useMutationLock()
   const profileRequestIdRef = useRef(0)
-  /* 撤销在途的会话 id。与 AuthorizedApps 的 busyClientId 同款约定：
-     null 表示无在途请求，非 null 期间所有撤销按钮禁用，防止快速连点并发 DELETE。 */
-  const [busySessionId, setBusySessionId] = useState<number | null>(null)
+  // 会话撤销单独互斥，阻止按钮尚未重渲染时的重复 DELETE，不等待后台列表刷新释放。
+  const sessionMutationLock = useMutationLock()
   const sessionsRequestId = useRef(0)
   const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
   const warn = (text: string) => notify(text, 'warning')
@@ -144,10 +143,10 @@ export function ConsoleProfile() {
   }
 
   async function revokeSession(session: SessionItem) {
-    if (!window.confirm(session.current ? '撤销当前会话后需要重新登录，继续吗？' : '确认撤销这个会话吗？')) return
-    setBusySessionId(session.id)
-    setNotice(null)
+    if (!sessionMutationLock.acquire()) return
     try {
+      if (!window.confirm(session.current ? '撤销当前会话后需要重新登录，继续吗？' : '确认撤销这个会话吗？')) return
+      setNotice(null)
       try {
         await apiFetch<void>(`/api/v1/auth/sessions/${session.id}`, { method: 'DELETE' })
       } catch (error) {
@@ -157,10 +156,13 @@ export function ConsoleProfile() {
           return
         }
       }
+      // 服务端撤销已完成，先让旧 GET 失效并移除本地会话；重拉失败也不能留下已撤销行。
+      sessionsRequestId.current += 1
+      setSessions((current) => current.filter((item) => item.id !== session.id))
       if (session.current) { clear(); navigate('/login?returnTo=%2Fconsole%2Fprofile'); return }
-      await loadSessions()
+      void loadSessions()
     } finally {
-      setBusySessionId((current) => current === session.id ? null : current)
+      sessionMutationLock.release()
     }
   }
 
@@ -343,7 +345,7 @@ export function ConsoleProfile() {
                   title={session.current ? '当前会话' : '其他会话'}
                   status={session.current ? <Badge tone="success">当前</Badge> : null}
                   description={<><p>创建于 <time dateTime={session.created_at}>{formatDate(session.created_at)}</time></p><p>到期时间 <time dateTime={session.expires_at}>{formatDate(session.expires_at)}</time></p></>}
-                  actions={<Button variant="danger" icon="x" disabled={busySessionId !== null} onClick={() => void revokeSession(session)}>撤销</Button>}
+                  actions={<Button variant="danger" icon="x" disabled={sessionMutationLock.busy} onClick={() => void revokeSession(session)}>撤销</Button>}
                 />
               ))}
             </div>

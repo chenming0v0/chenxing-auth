@@ -105,6 +105,7 @@ pub async fn finish_discoverable_passkey_authentication(
         Err(AuthFactorServiceError::PasskeyDisabled) => {
             error::bad_request("passkey_disabled", "passkey authentication is disabled")
         }
+        Err(AuthFactorServiceError::PasskeyCounterConflict) => passkey_counter_conflict_response(),
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to finish discoverable Passkey authentication");
             error::internal()
@@ -314,9 +315,17 @@ pub async fn finish_passkey_authentication(
             );
             error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
+        Err(AuthFactorServiceError::PasskeyCounterConflict) => passkey_counter_conflict_response(),
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to finish passkey authentication");
             error::internal()
         }
     }
+}
+
+fn passkey_counter_conflict_response() -> Response {
+    error::conflict(
+        "passkey_counter_conflict",
+        "Passkey state changed; start a new authentication challenge",
+    )
 }
